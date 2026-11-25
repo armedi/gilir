@@ -20,9 +20,10 @@ import (
 )
 
 const (
-	apiCommandPath = "/api/v1/command"
-	maxBodyBytes   = 1 << 20
-	defaultActor   = "user"
+	apiCommandPath         = "/api/v1/command"
+	maxBodyBytes           = 1 << 20
+	maxStaticFallbackBytes = 8 << 20
+	defaultActor           = "user"
 
 	codeInternal             = "internal_error"
 	codeInvalidHost          = "invalid_host"
@@ -63,17 +64,20 @@ type errorDetail struct {
 	Message string `json:"message"`
 }
 
-// Handler returns the HTTP handler for the local UI. port is the canonical
-// listener port, with or without a leading colon. Requests are accepted only
-// when Host is 127.0.0.1, [::1], or localhost at that exact port. When an
+// Handler returns the HTTP handler for the local UI. port is normalized to
+// its canonical decimal form; a leading colon is allowed. Requests are
+// accepted only when Host is 127.0.0.1, [::1], or localhost at that port.
+// When the canonical port is 80, the port may be omitted from Host. When an
 // Origin header is present it must be exactly http:// followed by the request
 // Host; no CORS headers are emitted.
 //
 // execute is called for valid POST /api/v1/command requests with the command,
 // the actor (default "user"), and the JSON args object (default {}). classify
 // maps execution errors to an HTTP status and a lower snake case error code;
-// 5xx responses always use a generic message. web may be nil; when set it is
-// served read-only for GET and HEAD requests with directory listings disabled.
+// 5xx responses always use a generic message. web may be nil; when set its
+// regular files are served read-only for GET and HEAD with directory listings
+// disabled. web must confine path resolution to a trusted root; main uses
+// os.OpenRoot. Plain os.DirFS can follow symlinks outside the served root.
 func Handler(port string, web fs.FS, execute func(context.Context, string, string, json.RawMessage) (any, error), classify func(error) (int, string)) http.Handler {
 	return &handler{
 		port:     canonicalPort(port),
@@ -170,8 +174,11 @@ func (h *handler) serveAPI(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status, code, expose := h.classifyError(err)
 		message := "internal server error"
-		if expose && err.Error() != "" {
+		if expose {
 			message = err.Error()
+			if message == "" {
+				message = http.StatusText(status)
+			}
 		}
 		writeAPIError(w, r, status, code, message)
 		return
@@ -214,30 +221,65 @@ func (h *handler) serveStatic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info, err := fs.Stat(h.web, name)
-	if err != nil || info.IsDir() {
+	if err != nil || !info.Mode().IsRegular() {
 		writeStaticNotFound(w, r)
 		return
 	}
-	data, err := fs.ReadFile(h.web, name)
+	file, err := h.web.Open(name)
 	if err != nil {
 		writePlainError(w, r, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	http.ServeContent(w, r, name, info.ModTime(), bytes.NewReader(data))
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		writePlainError(w, r, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if !openedInfo.Mode().IsRegular() {
+		writeStaticNotFound(w, r)
+		return
+	}
+	if seeker, ok := file.(io.ReadSeeker); ok {
+		http.ServeContent(w, r, name, openedInfo.ModTime(), seeker)
+		return
+	}
+	if openedInfo.Size() > maxStaticFallbackBytes {
+		writePlainError(w, r, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxStaticFallbackBytes+1))
+	if err != nil || int64(len(data)) > maxStaticFallbackBytes {
+		writePlainError(w, r, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	http.ServeContent(w, r, name, openedInfo.ModTime(), bytes.NewReader(data))
 }
 
-func (h *handler) validHost(hostport string) bool {
+func (h *handler) validHost(authority string) bool {
 	if h.port == "" {
 		return false
 	}
-	host, port, err := net.SplitHostPort(hostport)
-	if err != nil || port != h.port {
-		return false
+	host, port, err := net.SplitHostPort(authority)
+	if err != nil {
+		return h.port == "80" && isBareLoopbackAuthority(authority)
 	}
+	return port == h.port && isLoopbackHost(host)
+}
+
+func isLoopbackHost(host string) bool {
 	if host == "127.0.0.1" || host == "::1" {
 		return true
 	}
 	return strings.EqualFold(host, "localhost")
+}
+
+func isBareLoopbackAuthority(authority string) bool {
+	if authority == "127.0.0.1" || authority == "[::1]" {
+		return true
+	}
+	return strings.EqualFold(authority, "localhost")
 }
 
 func (h *handler) classifyError(err error) (status int, code string, expose bool) {
@@ -281,7 +323,7 @@ func canonicalPort(port string) string {
 	if err != nil || n < 1 || n > 65535 {
 		return ""
 	}
-	return port
+	return strconv.Itoa(n)
 }
 
 func validOrigin(r *http.Request) bool {

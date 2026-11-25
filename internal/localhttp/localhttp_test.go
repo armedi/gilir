@@ -1,10 +1,12 @@
 package localhttp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
 const (
@@ -39,6 +42,14 @@ func pageRequest(method, target string) *http.Request {
 	request := httptest.NewRequest(method, target, nil)
 	request.Host = testHost
 	return request
+}
+
+func unexpectedExecute(t *testing.T) func(context.Context, string, string, json.RawMessage) (any, error) {
+	t.Helper()
+	return func(context.Context, string, string, json.RawMessage) (any, error) {
+		t.Error("execute was called for a static request")
+		return nil, nil
+	}
 }
 
 func decodeObject(t *testing.T, recorder *httptest.ResponseRecorder) map[string]any {
@@ -269,6 +280,119 @@ func TestCommandAPIHostValidation(t *testing.T) {
 	}
 }
 
+func TestCommandAPIPortNormalizationAndDefaultPort(t *testing.T) {
+	tests := []struct {
+		name       string
+		port       string
+		host       string
+		origin     string
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "leading zeros in configured port",
+			port:       "0008080",
+			host:       "localhost:8080",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "leading colon and zeros",
+			port:       ":008080",
+			host:       "127.0.0.1:8080",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "port 80 omitted on localhost",
+			port:       "080",
+			host:       "localhost",
+			origin:     "http://localhost",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "port 80 omitted on ipv4",
+			port:       "00080",
+			host:       "127.0.0.1",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "port 80 omitted on ipv6",
+			port:       "80",
+			host:       "[::1]",
+			origin:     "http://[::1]",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "port 80 explicit",
+			port:       "80",
+			host:       "localhost:80",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "omitted port rejected for non-80",
+			port:       "8080",
+			host:       "localhost",
+			wantStatus: http.StatusForbidden,
+			wantCode:   "invalid_host",
+		},
+		{
+			name:       "empty host port rejected",
+			port:       "80",
+			host:       "localhost:",
+			wantStatus: http.StatusForbidden,
+			wantCode:   "invalid_host",
+		},
+		{
+			name:       "unbracketed ipv6 rejected",
+			port:       "80",
+			host:       "::1",
+			wantStatus: http.StatusForbidden,
+			wantCode:   "invalid_host",
+		},
+		{
+			name:       "bare external host rejected",
+			port:       "80",
+			host:       "example.com",
+			wantStatus: http.StatusForbidden,
+			wantCode:   "invalid_host",
+		},
+		{
+			name:       "noncanonical host port rejected",
+			port:       "00080",
+			host:       "localhost:0080",
+			wantStatus: http.StatusForbidden,
+			wantCode:   "invalid_host",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			handler := Handler(tt.port, nil, func(context.Context, string, string, json.RawMessage) (any, error) {
+				called = true
+				return map[string]any{"ok": true}, nil
+			}, nil)
+			request := commandRequest(`{"command":"status"}`)
+			request.Host = tt.host
+			if tt.origin != "" {
+				request.Header.Set("Origin", tt.origin)
+			}
+
+			recorder := serveRequest(handler, request)
+			if tt.wantStatus == http.StatusOK {
+				assertAPISuccess(t, recorder)
+				if !called {
+					t.Error("execute was not called for an accepted Host")
+				}
+				return
+			}
+			assertAPIError(t, recorder, tt.wantStatus, tt.wantCode)
+			if called {
+				t.Error("execute was called for a rejected Host")
+			}
+		})
+	}
+}
+
 func TestCommandAPIOriginValidation(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -485,6 +609,15 @@ func TestCommandAPIApplicationErrors(t *testing.T) {
 			wantMessage: "value is invalid",
 		},
 		{
+			name:        "empty message falls back to status text",
+			status:      http.StatusBadRequest,
+			code:        "invalid",
+			execErr:     "",
+			wantStatus:  http.StatusBadRequest,
+			wantCode:    "invalid",
+			wantMessage: "Bad Request",
+		},
+		{
 			name:        "conflict",
 			status:      http.StatusConflict,
 			code:        "conflict",
@@ -599,10 +732,7 @@ func TestStaticServing(t *testing.T) {
 			Data: []byte("nested index"),
 		},
 	}
-	handler := Handler(testPort, web, func(context.Context, string, string, json.RawMessage) (any, error) {
-		t.Error("execute was called for a static request")
-		return nil, nil
-	}, nil)
+	handler := Handler(testPort, web, unexpectedExecute(t), nil)
 
 	t.Run("index", func(t *testing.T) {
 		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/"))
@@ -708,14 +838,128 @@ func TestStaticServing(t *testing.T) {
 	})
 }
 
+func TestStaticRejectsNonRegularFiles(t *testing.T) {
+	tests := []struct {
+		name string
+		mode fs.FileMode
+	}{
+		{name: "named pipe", mode: fs.ModeNamedPipe},
+		{name: "device", mode: fs.ModeDevice},
+		{name: "socket", mode: fs.ModeSocket},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			web := fstest.MapFS{
+				"item": &fstest.MapFile{Data: []byte("non-regular payload"), Mode: tt.mode},
+			}
+			handler := Handler(testPort, web, unexpectedExecute(t), nil)
+			recorder := serveRequest(handler, pageRequest(http.MethodGet, "/item"))
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+			}
+			assertStaticHeaders(t, recorder)
+			if strings.Contains(recorder.Body.String(), "non-regular payload") {
+				t.Errorf("non-regular file was served: %q", recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestStaticSeekableRangeDoesNotReadWholeFile(t *testing.T) {
+	data := bytes.Repeat([]byte("x"), 1<<16)
+	web := &countingSeekableFS{
+		FS: fstest.MapFS{
+			"asset.txt": &fstest.MapFile{Data: data},
+		},
+	}
+	handler := Handler(testPort, web, unexpectedExecute(t), nil)
+
+	request := pageRequest(http.MethodGet, "/asset.txt")
+	request.Header.Set("Range", "bytes=0-3")
+	recorder := serveRequest(handler, request)
+	if recorder.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusPartialContent)
+	}
+	if got := recorder.Body.String(); got != "xxxx" {
+		t.Errorf("body = %q, want requested range", got)
+	}
+	if web.bytesRead >= len(data) {
+		t.Errorf("read %d of %d bytes for a 4-byte range", web.bytesRead, len(data))
+	}
+}
+
+func TestStaticNonSeekableFallback(t *testing.T) {
+	web := fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("fallback index")},
+		"asset.txt":  &fstest.MapFile{Data: []byte("non-seekable asset")},
+	}
+	handler := Handler(testPort, nonSeekableFS{FS: web}, unexpectedExecute(t), nil)
+
+	t.Run("get", func(t *testing.T) {
+		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/"))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+		}
+		if !strings.Contains(recorder.Body.String(), "fallback index") {
+			t.Errorf("body = %q, want index content", recorder.Body.String())
+		}
+	})
+
+	t.Run("head", func(t *testing.T) {
+		recorder := serveRequest(handler, pageRequest(http.MethodHead, "/asset.txt"))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+		}
+		if recorder.Body.Len() != 0 {
+			t.Errorf("HEAD body = %q, want empty", recorder.Body.String())
+		}
+	})
+
+	t.Run("range", func(t *testing.T) {
+		request := pageRequest(http.MethodGet, "/asset.txt")
+		request.Header.Set("Range", "bytes=0-2")
+		recorder := serveRequest(handler, request)
+		if recorder.Code != http.StatusPartialContent {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusPartialContent)
+		}
+		if got := recorder.Body.String(); got != "non" {
+			t.Errorf("body = %q, want requested range", got)
+		}
+	})
+
+	t.Run("oversized", func(t *testing.T) {
+		handler := Handler(testPort, oversizedStaticFS{}, unexpectedExecute(t), nil)
+		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/huge.bin"))
+		if recorder.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
+		}
+		if !strings.Contains(recorder.Body.String(), "internal server error") {
+			t.Errorf("body = %q, want generic error", recorder.Body.String())
+		}
+	})
+
+	t.Run("under-reported size is bounded", func(t *testing.T) {
+		web := &oversizedStreamFS{}
+		handler := Handler(testPort, web, unexpectedExecute(t), nil)
+		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/huge.bin"))
+		if recorder.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
+		}
+		if web.bytesRead <= maxStaticFallbackBytes {
+			t.Errorf("read %d bytes, want the fallback limit to be exceeded", web.bytesRead)
+		}
+		if web.bytesRead > maxStaticFallbackBytes+1 {
+			t.Errorf("read %d bytes, want at most %d", web.bytesRead, maxStaticFallbackBytes+1)
+		}
+	})
+}
+
 func TestStaticRequestGuards(t *testing.T) {
 	web := fstest.MapFS{
 		"index.html": &fstest.MapFile{Data: []byte("<h1>private ui</h1>")},
 	}
-	handler := Handler(testPort, web, func(context.Context, string, string, json.RawMessage) (any, error) {
-		t.Error("execute was called for a static request")
-		return nil, nil
-	}, nil)
+	handler := Handler(testPort, web, unexpectedExecute(t), nil)
 
 	t.Run("unexpected host", func(t *testing.T) {
 		request := pageRequest(http.MethodGet, "/")
@@ -816,10 +1060,7 @@ func TestStaticRejectsPathTraversal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := Handler(testPort, os.DirFS(root), func(context.Context, string, string, json.RawMessage) (any, error) {
-		t.Error("execute was called for a static request")
-		return nil, nil
-	}, nil)
+	handler := Handler(testPort, os.DirFS(root), unexpectedExecute(t), nil)
 
 	recorder := serveRequest(handler, pageRequest(http.MethodGet, "/"))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "public index") {
@@ -845,3 +1086,127 @@ func TestStaticRejectsPathTraversal(t *testing.T) {
 		})
 	}
 }
+
+type countingSeekableFS struct {
+	fs.FS
+	bytesRead int
+}
+
+func (f *countingSeekableFS) Open(name string) (fs.File, error) {
+	file, err := f.FS.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	seeker, ok := file.(io.ReadSeeker)
+	if !ok {
+		_ = file.Close()
+		return nil, errors.New("test file is not seekable")
+	}
+	return &countingSeekableFile{File: file, seeker: seeker, fs: f}, nil
+}
+
+type countingSeekableFile struct {
+	fs.File
+	seeker io.Seeker
+	fs     *countingSeekableFS
+}
+
+func (f *countingSeekableFile) Read(p []byte) (int, error) {
+	n, err := f.File.Read(p)
+	f.fs.bytesRead += n
+	return n, err
+}
+
+func (f *countingSeekableFile) Seek(offset int64, whence int) (int64, error) {
+	return f.seeker.Seek(offset, whence)
+}
+
+type nonSeekableFS struct {
+	fs.FS
+}
+
+func (f nonSeekableFS) Open(name string) (fs.File, error) {
+	file, err := f.FS.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return nonSeekableFile{File: file}, nil
+}
+
+type nonSeekableFile struct {
+	fs.File
+}
+
+type oversizedStaticFS struct{}
+
+func (oversizedStaticFS) Open(string) (fs.File, error) {
+	return oversizedStaticFile{}, nil
+}
+
+type oversizedStaticFile struct{}
+
+func (oversizedStaticFile) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (oversizedStaticFile) Close() error {
+	return nil
+}
+
+func (oversizedStaticFile) Stat() (fs.FileInfo, error) {
+	return oversizedStaticInfo{}, nil
+}
+
+type oversizedStaticInfo struct{}
+
+func (oversizedStaticInfo) Name() string       { return "huge.bin" }
+func (oversizedStaticInfo) Size() int64        { return maxStaticFallbackBytes + 1 }
+func (oversizedStaticInfo) Mode() fs.FileMode  { return 0 }
+func (oversizedStaticInfo) ModTime() time.Time { return time.Time{} }
+func (oversizedStaticInfo) IsDir() bool        { return false }
+func (oversizedStaticInfo) Sys() any           { return nil }
+
+type oversizedStreamFS struct {
+	bytesRead int
+}
+
+func (f *oversizedStreamFS) Open(string) (fs.File, error) {
+	return &oversizedStreamFile{fs: f}, nil
+}
+
+type oversizedStreamFile struct {
+	fs *oversizedStreamFS
+}
+
+func (f *oversizedStreamFile) Read(p []byte) (int, error) {
+	remaining := maxStaticFallbackBytes + 2 - f.fs.bytesRead
+	if remaining <= 0 {
+		return 0, io.EOF
+	}
+	n := len(p)
+	if n > remaining {
+		n = remaining
+	}
+	for i := 0; i < n; i++ {
+		p[i] = 'x'
+	}
+	f.fs.bytesRead += n
+	return n, nil
+}
+
+func (f *oversizedStreamFile) Close() error {
+	return nil
+}
+
+func (f *oversizedStreamFile) Stat() (fs.FileInfo, error) {
+	return underReportedStaticInfo{}, nil
+}
+
+type underReportedStaticInfo struct{}
+
+func (underReportedStaticInfo) Name() string       { return "huge.bin" }
+func (underReportedStaticInfo) Size() int64        { return 1 }
+func (underReportedStaticInfo) Mode() fs.FileMode  { return 0 }
+func (underReportedStaticInfo) ModTime() time.Time { return time.Time{} }
+func (underReportedStaticInfo) IsDir() bool        { return false }
+func (underReportedStaticInfo) Sys() any           { return nil }
