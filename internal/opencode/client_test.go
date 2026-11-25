@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -77,6 +78,8 @@ func TestNewAcceptsOnlyLoopbackBaseURLs(t *testing.T) {
 		"http://example.com:4096", "http://10.0.0.1", "http://0.0.0.0:4096", "ftp://127.0.0.1",
 		"http://u:secret@127.0.0.1", "http://127.0.0.1/api", "http://127.0.0.1/?x=1",
 		"http://127.0.0.1/#f", "127.0.0.1:4096", "http://localhost.example.com",
+		"http://127.0.0.1:", "http://[::1]:", "http://127.0.0.1:0", "http://127.0.0.1:65536",
+		"http://[::ffff:127.0.0.1]:4096",
 	} {
 		_, err := New(raw, "")
 		if err == nil {
@@ -170,6 +173,17 @@ func TestCreateSendsStableIDAndVerifiesResult(t *testing.T) {
 		t.Fatalf("Create body = %v, want %v", got, want)
 	}
 
+	// Uncleaned request and response paths compare equal after filepath.Clean;
+	// the cleaned path is what goes on the wire.
+	unclean := strings.Replace(sessionJSON("ses_new", "", ""), `"/work/repo"`, `"/work/repo/"`, 1)
+	c, reqs, _ = fixture(t, "", map[string]reply{"POST /api/session": {200, unclean}})
+	if _, err := c.Create(context.Background(), "ses_new", "Task 1", "/work/./repo//"); err != nil {
+		t.Fatalf("Create with uncleaned directories: %v", err)
+	}
+	if got := (*reqs)[0].Body["location"]; !reflect.DeepEqual(got, map[string]any{"directory": "/work/repo"}) {
+		t.Errorf("Create location = %v, want cleaned /work/repo", got)
+	}
+
 	for name, body := range map[string]string{
 		"other id":        sessionJSON("ses_other", "", ""),
 		"child session":   sessionJSON("ses_new", "ses_p", ""),
@@ -220,6 +234,9 @@ func TestMessageCreatedAtDistinguishesNotFound(t *testing.T) {
 	if !IsNotFound(err) || !errors.As(err, &se) || se.Tag != "MessageNotFoundError" {
 		t.Errorf("queued message err = %v, want typed 404", err)
 	}
+	if !IsMessageNotFound(err) || IsSessionNotFound(err) {
+		t.Errorf("queued message err = %v, want IsMessageNotFound only", err)
+	}
 	if _, err := c.MessageCreatedAt(ctx, "ses_a", "msg_s"); err == nil || IsNotFound(err) {
 		t.Errorf("server error = %v, want non-404 error", err)
 	}
@@ -230,8 +247,9 @@ func TestMessageCreatedAtDistinguishesNotFound(t *testing.T) {
 
 func TestInboxReturnsQueuedIDs(t *testing.T) {
 	c, _, _ := fixture(t, "", map[string]reply{
-		"GET /api/session/ses_a/inbox": {200, `{"data":[{"id":"msg_1","type":"user"},{"id":"msg_2","type":"synthetic"}]}`},
-		"GET /api/session/ses_b/inbox": {200, `{"data":[{"type":"user"}]}`},
+		"GET /api/session/ses_a/inbox":    {200, `{"data":[{"id":"msg_1","type":"user"},{"id":"msg_2","type":"synthetic"}]}`},
+		"GET /api/session/ses_b/inbox":    {200, `{"data":[{"type":"user"}]}`},
+		"GET /api/session/ses_gone/inbox": {404, `{"_tag":"SessionNotFoundError","sessionID":"ses_gone","message":"gone"}`},
 	})
 	got, err := c.Inbox(context.Background(), "ses_a")
 	if err != nil || !reflect.DeepEqual(got, []string{"msg_1", "msg_2"}) {
@@ -240,8 +258,14 @@ func TestInboxReturnsQueuedIDs(t *testing.T) {
 	if _, err := c.Inbox(context.Background(), "ses_b"); err == nil {
 		t.Error("Inbox accepted an item without id")
 	}
-	if _, err := c.Inbox(context.Background(), "ses_missing"); !IsNotFound(err) {
-		t.Errorf("Inbox missing session = %v, want 404", err)
+	if _, err := c.Inbox(context.Background(), "ses_gone"); !IsSessionNotFound(err) || IsMessageNotFound(err) {
+		t.Errorf("Inbox deleted session = %v, want IsSessionNotFound only", err)
+	}
+	// An untagged 404 (e.g. unknown route) is still IsNotFound but not a
+	// confirmed missing session.
+	_, err = c.Inbox(context.Background(), "ses_missing")
+	if !IsNotFound(err) || IsSessionNotFound(err) || IsMessageNotFound(err) {
+		t.Errorf("Inbox untagged 404 = %v, want IsNotFound only", err)
 	}
 }
 
@@ -300,5 +324,41 @@ func TestLink(t *testing.T) {
 	want := "http://127.0.0.1:4096/server/aHR0cDovLzEyNy4wLjAuMTo0MDk2/session/ses_abc"
 	if got := c.Link("ses_abc"); got != want {
 		t.Fatalf("Link = %q, want %q", got, want)
+	}
+}
+
+// Browser origins are lowercase, use compressed bracketed IPv6 and omit
+// default ports; the link must embed exactly that origin to match the web UI.
+func TestLinkUsesBrowserOrigin(t *testing.T) {
+	for raw, origin := range map[string]string{
+		"http://LOCALHOST:4096":         "http://localhost:4096",
+		"HTTP://LocalHost:4096/":        "http://localhost:4096",
+		"http://[0:0:0:0:0:0:0:1]:4096": "http://[::1]:4096",
+		"https://[0000::0001]":          "https://[::1]",
+		"http://127.0.0.1:80":           "http://127.0.0.1",
+		"https://localhost:443":         "https://localhost",
+		"https://localhost:80":          "https://localhost:80",
+		"http://127.0.0.1:04096":        "http://127.0.0.1:4096",
+	} {
+		c, err := New(raw, "")
+		if err != nil {
+			t.Errorf("New(%q): %v", raw, err)
+			continue
+		}
+		want := origin + "/server/" + base64.RawURLEncoding.EncodeToString([]byte(origin)) + "/session/ses_abc"
+		if got := c.Link("ses_abc"); got != want {
+			t.Errorf("Link via %q = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestRequestsUseCanonicalBase(t *testing.T) {
+	_, reqs, srvURL := fixture(t, "", map[string]reply{"GET /api/info": {200, `{"pid":7}`}})
+	c, err := New(strings.Replace(srvURL, "http://127.0.0.1:", "HTTP://127.0.0.1:0", 1), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pid, err := c.ServerPID(context.Background()); err != nil || pid != 7 || len(*reqs) != 1 {
+		t.Fatalf("ServerPID via uncanonical URL = %d, %v", pid, err)
 	}
 }
