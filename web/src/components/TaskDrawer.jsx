@@ -1,5 +1,13 @@
-import { For, Show, createEffect, createMemo, createSignal, createUniqueId } from 'solid-js';
-import { createStore } from 'solid-js/store';
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  createStore,
+  createUniqueId,
+  snapshot,
+} from 'solid-js';
 import { command } from '../api';
 import { PRIORITIES, PRIORITY_LABELS, STATUSES, STATUS_LABELS } from '../constants';
 import { clearDraft, draftKey, loadDraft, saveDraft } from '../drafts';
@@ -116,7 +124,9 @@ export default function TaskDrawer(props) {
     const base = formFromTask(current);
     const stored = loadDraft(activeTaskKey);
     const hasDraft = Boolean(stored && typeof stored === 'object');
-    setForm(storedForm(stored, base));
+    setForm((draft) => {
+      Object.assign(draft, storedForm(stored, base));
+    });
     setDraftActive(hasDraft);
     const storedComment = loadDraft(activeCommentKey);
     setComment(typeof storedComment === 'string' ? storedComment : '');
@@ -134,38 +144,50 @@ export default function TaskDrawer(props) {
     setCommentBusy(false);
   }
 
-  createEffect(() => {
-    if (!props.open) return;
-    const current = task();
-    if (!current) return;
-    if (loadedTaskId !== String(current.id)) {
-      loadTaskState(current);
-    } else if (!draftActive()) {
-      setForm(formFromTask(current));
-    }
-  });
+  createEffect(
+    () => {
+      if (!props.open) return;
+      const current = task();
+      if (!current) return;
+      return { current, draftActive: draftActive() };
+    },
+    (value) => {
+      if (!value) return;
+      const { current } = value;
+      if (loadedTaskId !== String(current.id)) {
+        loadTaskState(current);
+      } else if (!value.draftActive) {
+        setForm((draft) => {
+          Object.assign(draft, formFromTask(current));
+        });
+      }
+    },
+  );
 
-  createEffect(() => {
-    const available = availableBlockers();
-    if (
-      blockerChoice() &&
-      !available.some((item) => String(item.id) === String(blockerChoice()))
-    ) {
-      setBlockerChoice('');
-    }
-  });
+  createEffect(
+    () => ({ available: availableBlockers(), choice: blockerChoice() }),
+    ({ available, choice }) => {
+      if (choice && !available.some((item) => String(item.id) === String(choice))) {
+        setBlockerChoice('');
+      }
+    },
+  );
 
   function updateField(field, value) {
-    setForm(field, value);
+    setForm((draft) => {
+      draft[field] = value;
+      if (activeTaskKey) saveDraft(activeTaskKey, snapshot(draft));
+    });
     setDraftActive(true);
     setFormError(null);
-    if (activeTaskKey) saveDraft(activeTaskKey, { ...form });
   }
 
   function discardDraft() {
     if (activeTaskKey) clearDraft(activeTaskKey);
     setDraftActive(false);
-    setForm(formFromTask(task()));
+    setForm((draft) => {
+      Object.assign(draft, formFromTask(task()));
+    });
     setFormError(null);
   }
 

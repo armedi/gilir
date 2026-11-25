@@ -4,14 +4,17 @@ export default function Modal(props) {
   let dialog;
   let panel;
 
-  createEffect(() => {
-    if (!dialog) return;
-    if (props.open) {
-      if (!dialog.open) dialog.showModal();
-    } else if (dialog.open) {
-      dialog.close();
-    }
-  });
+  createEffect(
+    () => props.open,
+    (open) => {
+      if (!dialog) return;
+      if (open) {
+        if (!dialog.open) dialog.showModal();
+      } else if (dialog.open) {
+        dialog.close();
+      }
+    },
+  );
 
   function handleCancel(event) {
     event.preventDefault();

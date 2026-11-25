@@ -16,11 +16,17 @@ export default function DaemonCard(props) {
   const [saveBusy, setSaveBusy] = createSignal(false);
   const [actionError, setActionError] = createSignal(null);
 
-  createEffect(() => {
-    const status = props.status;
-    if (!status || dirty()) return;
-    setConcurrency(status.max_concurrency == null ? '' : String(status.max_concurrency));
-  });
+  createEffect(
+    () => {
+      const status = props.status;
+      if (!status || dirty()) return;
+      return status;
+    },
+    (status) => {
+      if (!status) return;
+      setConcurrency(status.max_concurrency == null ? '' : String(status.max_concurrency));
+    },
+  );
 
   function updateConcurrency(value) {
     setConcurrency(value);
