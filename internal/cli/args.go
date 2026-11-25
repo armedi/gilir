@@ -71,7 +71,7 @@ func parseArguments(argv []string) (*arguments, error) {
 				fail(fmt.Errorf("flag --actor requires a value"))
 				continue
 			}
-			if actor == "" {
+			if strings.TrimSpace(actor) == "" {
 				fail(fmt.Errorf("flag --actor requires a non-empty value"))
 				continue
 			}
