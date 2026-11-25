@@ -6,6 +6,7 @@ import {
   createStore,
   createUniqueId,
   snapshot,
+  untrack,
 } from 'solid-js';
 import { command } from '../api';
 import { PRIORITIES, PRIORITY_LABELS, STATUSES, STATUS_LABELS } from '../constants';
@@ -38,11 +39,11 @@ export default function NewTaskDialog(props) {
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal(null);
 
-  function initialize() {
-    activeKey = draftKey('new-task', props.projectId);
+  function initialize(projectId) {
+    activeKey = draftKey('new-task', projectId);
     const stored = loadDraft(activeKey);
-    const defaults = props.defaults;
-    const repos = props.repos;
+    const defaults = untrack(() => props.defaults);
+    const repos = untrack(() => props.repos);
     const next = {
       title: '',
       description: '',
@@ -77,7 +78,7 @@ export default function NewTaskDialog(props) {
       if (!lastOpen || String(projectId) !== String(lastProject)) {
         lastOpen = true;
         lastProject = projectId;
-        initialize();
+        initialize(projectId);
       }
     },
   );
