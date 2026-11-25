@@ -52,6 +52,7 @@ export default function App() {
   const [tasksLoading, setTasksLoading] = createSignal(true);
   const [tasksError, setTasksError] = createSignal(null);
   const [taskReload, setTaskReload] = createSignal(0);
+  const [projectTaskCounts, setProjectTaskCounts] = createSignal({});
 
   const [daemon, setDaemon] = createSignal(null);
   const [daemonError, setDaemonError] = createSignal(null);
@@ -160,6 +161,42 @@ export default function App() {
       repoAbort?.abort();
     };
   });
+
+  // Unfiltered task counts for the Projects & Repos view. They are fetched
+  // only while that view is on screen, so the Tasks tab keeps its single
+  // filtered poll, and they re-fetch whenever a mutation bumps taskReload.
+  createEffect(
+    () => ({ active: view() === 'projects', reload: taskReload() }),
+    ({ active }) => {
+      if (!active) {
+        setProjectTaskCounts({});
+        return;
+      }
+
+      const controller = new AbortController();
+      let cancelled = false;
+      (async () => {
+        try {
+          const data = await command('task.list', {}, { signal: controller.signal });
+          if (cancelled) return;
+          const counts = {};
+          for (const task of asArray(data)) {
+            if (!task || task.project_id == null) continue;
+            const key = String(task.project_id);
+            counts[key] = (counts[key] || 0) + 1;
+          }
+          setProjectTaskCounts(counts);
+        } catch (error) {
+          if (cancelled || isAbortError(error)) return;
+          setProjectTaskCounts({});
+        }
+      })();
+      return () => {
+        cancelled = true;
+        controller.abort();
+      };
+    },
+  );
 
   // A repo filter only survives while the selected project still links it.
   createEffect(
@@ -614,8 +651,11 @@ export default function App() {
             <ProjectsReposView
               projects={projects()}
               repos={repos()}
+              projectTaskCounts={projectTaskCounts()}
               projectsLoading={projectsLoading()}
               reposLoading={reposLoading()}
+              projectsError={projectsError()}
+              reposError={reposError()}
               onAddRepo={openAddRepo}
               onNewProject={() => setNewProjectOpen(true)}
               onLinkRepo={handleLinkRepo}

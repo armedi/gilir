@@ -12,6 +12,12 @@ function focusSoon(element) {
   requestAnimationFrame(() => element?.focus());
 }
 
+function taskCountFor(counts, projectId) {
+  if (!counts || typeof counts !== 'object') return 0;
+  const value = counts[String(projectId)];
+  return Number.isFinite(value) ? value : 0;
+}
+
 function RepoRow(props) {
   const [busy, setBusy] = createSignal(null);
   const [error, setError] = createSignal(null);
@@ -41,6 +47,17 @@ function RepoRow(props) {
       focusSoon(open ? confirmButton : removeButton);
     },
     { defer: true },
+  );
+
+  // A selected project can disappear from the picker (deleted elsewhere);
+  // drop the stale choice so the form cannot submit an unknown project.
+  createEffect(
+    () => ({ choice: linkChoice(), available: availableProjects() }),
+    ({ choice, available }) => {
+      if (!choice) return;
+      if (available.some((project) => String(project.id) === choice)) return;
+      setLinkChoice('');
+    },
   );
 
   async function unlink(projectId) {
@@ -233,17 +250,23 @@ function ProjectRow(props) {
   let confirmButton;
 
   const name = () => props.getProject().name;
+  const hasTasks = () => props.taskCount > 0;
+  const jumpable = () => props.repoCount > 0 || props.taskCount > 0;
 
+  // Focus moves once per transition: into the input when rename opens, back to
+  // the Rename button when it closes on its own. Leaving rename to open the
+  // remove confirmation hands focus to that effect instead.
   createEffect(
-    () => editing(),
-    (open) => {
-      if (open) {
+    () => ({ editing: editing(), confirming: confirming() }),
+    (state, previous) => {
+      if (state.editing) {
         requestAnimationFrame(() => {
           nameInput?.focus();
           nameInput?.select();
         });
         return;
       }
+      if (!previous?.editing || state.confirming) return;
       focusSoon(renameButton);
     },
     { defer: true },
@@ -258,9 +281,17 @@ function ProjectRow(props) {
   );
 
   function startRename() {
+    setConfirming(false);
     setDraft(name());
     setError(null);
     setEditing(true);
+  }
+
+  function startRemove() {
+    setEditing(false);
+    setDraft('');
+    setError(null);
+    setConfirming(true);
   }
 
   function cancelRename() {
@@ -362,19 +393,27 @@ function ProjectRow(props) {
           type="button"
           class="project-repos"
           onClick={() => props.onViewTasks(props.getProject().id)}
-          disabled={props.repoCount === 0}
+          disabled={!jumpable()}
           aria-label={`View tasks in project ${name()}: ${props.repoCount} ${
             props.repoCount === 1 ? 'repository' : 'repositories'
-          }`}
+          }, ${props.taskCount} ${props.taskCount === 1 ? 'task' : 'tasks'}`}
           title={
-            props.repoCount === 0
-              ? 'No repositories linked to this project'
-              : `View tasks in ${name()}`
+            jumpable()
+              ? `View tasks in ${name()}`
+              : 'No repositories or tasks in this project yet'
           }
         >
-          {props.repoCount}
-          <span class="project-repos-label">
-            {props.repoCount === 1 ? 'repo' : 'repos'}
+          <span class="project-repos-metric">
+            {props.repoCount}
+            <span class="project-repos-label">
+              {props.repoCount === 1 ? 'repo' : 'repos'}
+            </span>
+          </span>
+          <span class={['project-repos-metric', { 'is-empty': !hasTasks() }]}>
+            {props.taskCount}
+            <span class="project-repos-label">
+              {props.taskCount === 1 ? 'task' : 'tasks'}
+            </span>
           </span>
         </button>
 
@@ -399,10 +438,7 @@ function ProjectRow(props) {
                 type="button"
                 class="btn btn-ghost btn-sm"
                 aria-label={`Remove project ${name()}`}
-                onClick={() => {
-                  setError(null);
-                  setConfirming(true);
-                }}
+                onClick={startRemove}
                 disabled={busy() !== null}
               >
                 Remove
@@ -497,7 +533,7 @@ export default function ProjectsReposView(props) {
           </p>
         </Show>
 
-        <Show when={!props.reposLoading && asArray(props.repos).length === 0}>
+        <Show when={!props.reposLoading && !props.reposError && asArray(props.repos).length === 0}>
           <div class="manage-empty">
             <p>
               <strong>No repositories yet.</strong> Add a Git repository to start queuing work.
@@ -551,7 +587,9 @@ export default function ProjectsReposView(props) {
           </p>
         </Show>
 
-        <Show when={!props.projectsLoading && asArray(props.projects).length === 0}>
+        <Show
+          when={!props.projectsLoading && !props.projectsError && asArray(props.projects).length === 0}
+        >
           <div class="manage-empty">
             <p>
               <strong>No projects yet.</strong> Create one by name or add a repository.
@@ -569,6 +607,7 @@ export default function ProjectsReposView(props) {
                 <ProjectRow
                   getProject={project}
                   repoCount={reposPerProject().get(String(project().id)) || 0}
+                  taskCount={taskCountFor(props.projectTaskCounts, project().id)}
                   onRename={props.onRenameProject}
                   onRemove={props.onRemoveProject}
                   onViewTasks={props.onViewProjectTasks}
