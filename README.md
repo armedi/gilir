@@ -8,12 +8,19 @@ its history.
 
 ## Build
 
-Requirements: Go 1.24+ and Node.js 20+ with npm (for the Vite web build).
+Requirements: Go 1.24+, Node.js `^22.18.0 || ^24.11.0 || >=26.0.0`, and pnpm
+10.34.9 (the version pinned by `web/package.json`; Corepack or a global Vite+
+`vp env` can provide it). The web build installs the Vite+ 1.8.0 CLI as a
+development dependency.
 
 ```sh
-(cd web && npm ci && npm run build)   # writes web/dist
+(cd web && pnpm install --frozen-lockfile --prod=false && pnpm build)   # writes web/dist
 go build -o gilir ./cmd/gilir
 ```
+
+The explicit `--prod=false` keeps the Vite+ development dependencies installed
+when `NODE_ENV=production`. Run the CLI from that install as `pnpm exec vp` in
+`web` when you need it directly.
 
 Put `gilir` on your `PATH`. The daemon prompts each agent to run `gilir show
 <id> --json`, so the binary and the same `GILIR_DB` must also be available in
