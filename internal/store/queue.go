@@ -149,7 +149,7 @@ func (s *Store) Reserve(ctx context.Context, serverURL string, serverPID int64) 
 		err = tx.QueryRowContext(ctx, `
 			SELECT t.id, r.path
 			FROM tasks t
-			JOIN repos r ON r.id = t.repo_id AND r.project_id = t.project_id
+			JOIN repos r ON r.id = t.repo_id
 			WHERE t.status = 'todo'
 				AND NOT EXISTS (
 					SELECT 1 FROM dispatch_attempts a

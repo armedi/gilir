@@ -57,11 +57,13 @@ type Project struct {
 	Name string `json:"name"`
 }
 
-// Repo identifies a registered Git repository inside a project.
+// Repo identifies a globally registered Git repository. ProjectIDs lists the
+// projects the repository is linked to, sorted ascending. A repo is always
+// linked to at least one project.
 type Repo struct {
-	ID        int64  `json:"id"`
-	ProjectID int64  `json:"project_id"`
-	Path      string `json:"path"`
+	ID         int64   `json:"id"`
+	Path       string  `json:"path"`
+	ProjectIDs []int64 `json:"project_ids"`
 }
 
 // Task is the task representation exposed by the store.
@@ -113,6 +115,8 @@ const (
 	ActivityProjectRenamed = "project.renamed"
 	ActivityProjectDeleted = "project.deleted"
 	ActivityRepoAdded      = "repo.added"
+	ActivityRepoLinked     = "repo.linked"
+	ActivityRepoUnlinked   = "repo.unlinked"
 	ActivityRepoRemoved    = "repo.removed"
 	ActivityQueueUpdated   = "queue.updated"
 
@@ -128,8 +132,10 @@ const (
 	ActivitySessionOutcome    = "session.outcome"
 )
 
-// CreateTaskParams describes a new task. Empty Status and Priority select the
-// defaults backlog and medium.
+// CreateTaskParams describes a new task. RepoID is required. A zero ProjectID
+// infers the project when the repository belongs to exactly one; a repository
+// linked to multiple projects requires an explicit ProjectID. Empty Status and
+// Priority select the defaults backlog and medium.
 type CreateTaskParams struct {
 	ProjectID   int64
 	RepoID      int64

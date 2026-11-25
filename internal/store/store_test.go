@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +62,52 @@ func seedProjectRepo(t *testing.T, s *Store) (Project, Repo) {
 	project := mustCreateProject(t, s, "project")
 	repo := mustAddRepo(t, s, project.ID, newGitRepo(t))
 	return project, repo
+}
+
+func requireProjectIDs(t *testing.T, repo Repo, want ...int64) {
+	t.Helper()
+	if repo.ProjectIDs == nil {
+		t.Fatalf("repo %d ProjectIDs is nil, want %v", repo.ID, want)
+	}
+	if !slices.Equal(repo.ProjectIDs, want) {
+		t.Fatalf("repo %d ProjectIDs = %v, want %v", repo.ID, repo.ProjectIDs, want)
+	}
+}
+
+func mustProject(t *testing.T, s *Store, projectID int64) Project {
+	t.Helper()
+	projects, err := s.ListProjects(context.Background())
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	for _, project := range projects {
+		if project.ID == projectID {
+			return project
+		}
+	}
+	t.Fatalf("project %d not found in %+v", projectID, projects)
+	return Project{}
+}
+
+func mustListRepos(t *testing.T, s *Store, projectID int64) []Repo {
+	t.Helper()
+	repos, err := s.ListRepos(context.Background(), projectID)
+	if err != nil {
+		t.Fatalf("ListRepos(%d): %v", projectID, err)
+	}
+	if repos == nil {
+		t.Fatalf("ListRepos(%d) returned nil", projectID)
+	}
+	return repos
+}
+
+func mustActivityCount(t *testing.T, s *Store, activityType string) int {
+	t.Helper()
+	activities, err := s.ActivityAfter(context.Background(), 0, 1000)
+	if err != nil {
+		t.Fatalf("ActivityAfter: %v", err)
+	}
+	return countActivityType(activities, activityType)
 }
 
 func mustCreateTask(t *testing.T, s *Store, in CreateTaskParams) Task {
@@ -199,11 +246,18 @@ func TestProjectRepoLifecycleAndCanonicalization(t *testing.T) {
 
 	first := mustCreateProject(t, s, "first")
 	second := mustCreateProject(t, s, "second")
+	if _, err := s.CreateProject(ctx, "alice", "  first  "); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate trimmed project name error = %v, want ErrConflict", err)
+	}
+	spaced := mustCreateProject(t, s, "  spaced  ")
+	if spaced.Name != "spaced" {
+		t.Fatalf("trimmed project name = %q, want %q", spaced.Name, "spaced")
+	}
 	projects, err := s.ListProjects(ctx)
 	if err != nil {
 		t.Fatalf("ListProjects: %v", err)
 	}
-	if len(projects) != 2 || projects[0].ID != first.ID || projects[1].ID != second.ID || first.ID >= second.ID {
+	if len(projects) != 3 || projects[0].ID != first.ID || projects[1].ID != second.ID || first.ID >= second.ID {
 		t.Fatalf("projects = %+v, expected FIFO IDs", projects)
 	}
 
@@ -212,6 +266,7 @@ func TestProjectRepoLifecycleAndCanonicalization(t *testing.T) {
 	if repo.Path != root {
 		t.Fatalf("repo path = %q, want canonical root %q", repo.Path, root)
 	}
+	requireProjectIDs(t, repo, first.ID)
 	link := filepath.Join(t.TempDir(), "repo-link")
 	if err := os.Symlink(root, link); err != nil {
 		t.Fatalf("create symlink: %v", err)
@@ -219,15 +274,25 @@ func TestProjectRepoLifecycleAndCanonicalization(t *testing.T) {
 	if _, err := s.AddRepo(ctx, "alice", first.ID, filepath.Join(link, "sub")); !errors.Is(err, ErrConflict) {
 		t.Fatalf("duplicate canonical repo error = %v, want ErrConflict", err)
 	}
-	otherProjectRepo := mustAddRepo(t, s, second.ID, link)
-	if otherProjectRepo.Path != root {
-		t.Fatalf("second project repo path = %q, want %q", otherProjectRepo.Path, root)
+	if _, err := s.AddRepo(ctx, "alice", second.ID, link); !errors.Is(err, ErrConflict) {
+		t.Fatalf("cross-project duplicate canonical repo error = %v, want ErrConflict", err)
 	}
+	linked, err := s.LinkRepo(ctx, "alice", repo.ID, second.ID)
+	if err != nil {
+		t.Fatalf("LinkRepo: %v", err)
+	}
+	requireProjectIDs(t, linked, first.ID, second.ID)
 	if _, err := s.AddRepo(ctx, "alice", first.ID, t.TempDir()); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("non-git repo error = %v, want ErrInvalid", err)
 	}
 	if _, err := s.AddRepo(ctx, "  ", first.ID, root); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("blank repo actor error = %v, want ErrInvalid", err)
+	}
+	if _, err := s.AddRepo(ctx, "alice", -1, root); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("negative project error = %v, want ErrInvalid", err)
+	}
+	if _, err := s.AddRepo(ctx, "alice", 99999, newGitRepo(t)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing project error = %v, want ErrNotFound", err)
 	}
 
 	repos, err := s.ListRepos(ctx, first.ID)
@@ -237,8 +302,16 @@ func TestProjectRepoLifecycleAndCanonicalization(t *testing.T) {
 	if len(repos) != 1 || repos[0].ID != repo.ID {
 		t.Fatalf("repos = %+v, want only %+v", repos, repo)
 	}
+	requireProjectIDs(t, repos[0], first.ID, second.ID)
+	global, err := s.ListRepos(ctx, 0)
+	if err != nil || len(global) != 1 || global[0].ID != repo.ID {
+		t.Fatalf("ListRepos(0) = %+v, %v", global, err)
+	}
 	if empty, err := s.ListRepos(ctx, 99999); err != nil || empty == nil || len(empty) != 0 {
 		t.Fatalf("ListRepos(missing) = %#v, %v; want empty non-nil", empty, err)
+	}
+	if _, err := s.ListRepos(ctx, -1); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("ListRepos(-1) error = %v, want ErrInvalid", err)
 	}
 
 	renamed, err := s.RenameProject(ctx, "bob", first.ID, "first-renamed")
@@ -247,6 +320,9 @@ func TestProjectRepoLifecycleAndCanonicalization(t *testing.T) {
 	}
 	if renamed.Name != "first-renamed" {
 		t.Fatalf("renamed project = %+v", renamed)
+	}
+	if _, err := s.RenameProject(ctx, "bob", second.ID, "first-renamed"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("rename to taken name error = %v, want ErrConflict", err)
 	}
 	var version int
 	if err := s.db.QueryRowContext(ctx,
@@ -282,16 +358,30 @@ func TestProjectRepoLifecycleAndCanonicalization(t *testing.T) {
 		t.Fatalf("RemoveRepo with task error = %v, want ErrConflict", err)
 	}
 	if err := s.DeleteProject(ctx, "alice", first.ID); !errors.Is(err, ErrConflict) {
-		t.Fatalf("DeleteProject with work error = %v, want ErrConflict", err)
-	}
-	if err := s.DeleteProject(ctx, "alice", second.ID); !errors.Is(err, ErrConflict) {
-		t.Fatalf("DeleteProject with repo error = %v, want ErrConflict", err)
-	}
-	if err := s.RemoveRepo(ctx, "alice", otherProjectRepo.ID); err != nil {
-		t.Fatalf("RemoveRepo empty: %v", err)
+		t.Fatalf("DeleteProject with task error = %v, want ErrConflict", err)
 	}
 	if err := s.DeleteProject(ctx, "alice", second.ID); err != nil {
-		t.Fatalf("DeleteProject empty: %v", err)
+		t.Fatalf("DeleteProject with shared repo: %v", err)
+	}
+	afterDelete, err := s.ListRepos(ctx, 0)
+	if err != nil || len(afterDelete) != 1 || afterDelete[0].ID != repo.ID {
+		t.Fatalf("repos after shared-project delete = %+v, %v", afterDelete, err)
+	}
+	requireProjectIDs(t, afterDelete[0], first.ID)
+	if err := s.DeleteProject(ctx, "alice", second.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second DeleteProject error = %v, want ErrNotFound", err)
+	}
+
+	removable := mustAddRepo(t, s, first.ID, newGitRepo(t))
+	if err := s.RemoveRepo(ctx, "alice", removable.ID); err != nil {
+		t.Fatalf("RemoveRepo empty: %v", err)
+	}
+	if err := s.RemoveRepo(ctx, "alice", removable.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second RemoveRepo error = %v, want ErrNotFound", err)
+	}
+	remaining, err := s.ListRepos(ctx, 0)
+	if err != nil || len(remaining) != 1 || remaining[0].ID != repo.ID {
+		t.Fatalf("repos after removal = %+v, %v", remaining, err)
 	}
 
 	if _, err := s.CreateTask(ctx, "alice", CreateTaskParams{

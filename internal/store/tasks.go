@@ -160,8 +160,8 @@ func (s *Store) CreateTask(ctx context.Context, actor string, in CreateTaskParam
 	if err != nil {
 		return Task{}, err
 	}
-	if err := validateID("project", in.ProjectID); err != nil {
-		return Task{}, err
+	if in.ProjectID < 0 {
+		return Task{}, fmt.Errorf("%w: project must be a non-negative ID", ErrInvalid)
 	}
 	if err := validateID("repository", in.RepoID); err != nil {
 		return Task{}, err
@@ -187,30 +187,41 @@ func (s *Store) CreateTask(ctx context.Context, actor string, in CreateTaskParam
 
 	var created Task
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		var projectMarker int
-		err := tx.QueryRowContext(ctx, `SELECT 1 FROM projects WHERE id = ?`, in.ProjectID).Scan(&projectMarker)
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: project %d", ErrNotFound, in.ProjectID)
+		projectID := in.ProjectID
+		if projectID > 0 {
+			if _, err := requireProjectName(ctx, tx, projectID); err != nil {
+				return err
+			}
 		}
+		repo, err := repoByID(ctx, tx, in.RepoID)
 		if err != nil {
-			return fmt.Errorf("store: load project %d: %w", in.ProjectID, err)
+			return err
 		}
-		var repoMarker int
-		err = tx.QueryRowContext(ctx,
-			`SELECT 1 FROM repos WHERE id = ? AND project_id = ?`, in.RepoID, in.ProjectID,
-		).Scan(&repoMarker)
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: repository %d does not belong to project %d", ErrInvalid, in.RepoID, in.ProjectID)
-		}
-		if err != nil {
-			return fmt.Errorf("store: load repository %d: %w", in.RepoID, err)
+		if projectID == 0 {
+			switch len(repo.ProjectIDs) {
+			case 1:
+				projectID = repo.ProjectIDs[0]
+			case 0:
+				return fmt.Errorf("%w: repository %d is not linked to any project", ErrConflict, in.RepoID)
+			default:
+				return fmt.Errorf("%w: project_id is required: repository %d belongs to projects %v",
+					ErrInvalid, in.RepoID, repo.ProjectIDs)
+			}
+		} else {
+			linked, err := projectRepoLinked(ctx, tx, projectID, in.RepoID)
+			if err != nil {
+				return err
+			}
+			if !linked {
+				return fmt.Errorf("%w: repository %d does not belong to project %d", ErrInvalid, in.RepoID, projectID)
+			}
 		}
 
 		now := nowUTC()
 		result, err := tx.ExecContext(ctx, `
 			INSERT INTO tasks (project_id, repo_id, title, description, status, priority, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			in.ProjectID, in.RepoID, title, in.Description, string(status), string(priority),
+			projectID, in.RepoID, title, in.Description, string(status), string(priority),
 			formatTime(now), formatTime(now),
 		)
 		if err != nil {
@@ -222,7 +233,7 @@ func (s *Store) CreateTask(ctx context.Context, actor string, in CreateTaskParam
 		}
 		created = Task{
 			ID:          id,
-			ProjectID:   in.ProjectID,
+			ProjectID:   projectID,
 			RepoID:      in.RepoID,
 			Title:       title,
 			Description: in.Description,
@@ -236,7 +247,7 @@ func (s *Store) CreateTask(ctx context.Context, actor string, in CreateTaskParam
 			Type:      ActivityTaskCreated,
 			Actor:     actor,
 			TaskID:    int64Pointer(id),
-			ProjectID: int64Pointer(in.ProjectID),
+			ProjectID: int64Pointer(projectID),
 			Timestamp: now,
 			Data: map[string]any{
 				"repo_id":     in.RepoID,
@@ -325,15 +336,12 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID int64, patc
 			if openAttempts > 0 {
 				return fmt.Errorf("%w: task %d has an outstanding dispatch attempt", ErrConflict, taskID)
 			}
-			var repoMarker int
-			err := tx.QueryRowContext(ctx,
-				`SELECT 1 FROM repos WHERE id = ? AND project_id = ?`, newRepoID, old.ProjectID,
-			).Scan(&repoMarker)
-			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("%w: repository %d does not belong to project %d", ErrInvalid, newRepoID, old.ProjectID)
-			}
+			linked, err := projectRepoLinked(ctx, tx, old.ProjectID, newRepoID)
 			if err != nil {
-				return fmt.Errorf("store: load repository %d: %w", newRepoID, err)
+				return err
+			}
+			if !linked {
+				return fmt.Errorf("%w: repository %d does not belong to project %d", ErrInvalid, newRepoID, old.ProjectID)
 			}
 		}
 
