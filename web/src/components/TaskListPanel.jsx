@@ -7,7 +7,7 @@ export default function TaskListPanel(props) {
       id="tasks"
       class="panel list-panel"
       aria-labelledby="tasks-title"
-      aria-busy={props.loading}
+      aria-busy={props.loading ? 'true' : 'false'}
     >
       <div class="list-toolbar">
         <div class="list-title-row">

@@ -1,5 +1,5 @@
-import { defineConfig } from 'vite';
-import solid from 'vite-plugin-solid';
+import { defineConfig, lazyPlugins } from 'vite-plus';
+import solid from '@solidjs/vite-plugin';
 
 const API_TARGET = 'http://127.0.0.1:4718';
 const DEV_PORT = 5173;
@@ -26,7 +26,7 @@ function isExactDevOrigin(origin, host) {
 }
 
 export default defineConfig({
-  plugins: [solid()],
+  plugins: lazyPlugins(() => [solid()]),
   server: {
     port: DEV_PORT,
     strictPort: true,

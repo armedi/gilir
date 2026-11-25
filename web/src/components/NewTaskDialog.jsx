@@ -1,5 +1,13 @@
-import { For, Show, createEffect, createSignal, createUniqueId, untrack } from 'solid-js';
-import { createStore } from 'solid-js/store';
+import {
+  For,
+  Show,
+  createEffect,
+  createSignal,
+  createStore,
+  createUniqueId,
+  snapshot,
+  untrack,
+} from 'solid-js';
 import { command } from '../api';
 import { PRIORITIES, PRIORITY_LABELS, STATUSES, STATUS_LABELS } from '../constants';
 import { clearDraft, draftKey, loadDraft, saveDraft } from '../drafts';
@@ -27,12 +35,12 @@ export default function NewTaskDialog(props) {
   let lastProject = null;
   let activeKey = null;
 
-  const [form, setForm] = createStore(EMPTY_FORM);
+  const [form, setForm] = createStore({ ...EMPTY_FORM });
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal(null);
 
-  function initialize() {
-    activeKey = draftKey('new-task', props.projectId);
+  function initialize(projectId) {
+    activeKey = draftKey('new-task', projectId);
     const stored = loadDraft(activeKey);
     const defaults = untrack(() => props.defaults);
     const repos = untrack(() => props.repos);
@@ -53,36 +61,44 @@ export default function NewTaskDialog(props) {
     if (!repos.some((repo) => String(repo.id) === String(next.repo_id))) {
       next.repo_id = repos[0] ? String(repos[0].id) : '';
     }
-    setForm(next);
+    setForm((draft) => {
+      Object.assign(draft, next);
+    });
     setError(null);
     setBusy(false);
   }
 
-  createEffect(() => {
-    const open = props.open;
-    const projectId = props.projectId;
-    if (!open) {
-      lastOpen = false;
-      return;
-    }
-    if (!lastOpen || String(projectId) !== String(lastProject)) {
-      lastOpen = true;
-      lastProject = projectId;
-      initialize();
-    }
-  });
+  createEffect(
+    () => ({ open: props.open, projectId: props.projectId }),
+    ({ open, projectId }) => {
+      if (!open) {
+        lastOpen = false;
+        return;
+      }
+      if (!lastOpen || String(projectId) !== String(lastProject)) {
+        lastOpen = true;
+        lastProject = projectId;
+        initialize(projectId);
+      }
+    },
+  );
 
-  createEffect(() => {
-    if (!props.open) return;
-    requestAnimationFrame(() => {
-      if (props.open && titleInput) titleInput.focus();
-    });
-  });
+  createEffect(
+    () => props.open,
+    (open) => {
+      if (!open) return;
+      requestAnimationFrame(() => {
+        if (props.open && titleInput) titleInput.focus();
+      });
+    },
+  );
 
   function update(field, value) {
-    setForm(field, value);
+    setForm((draft) => {
+      draft[field] = value;
+      if (activeKey) saveDraft(activeKey, snapshot(draft));
+    });
     setError(null);
-    if (activeKey) saveDraft(activeKey, { ...form });
   }
 
   async function submit(event) {
@@ -113,7 +129,9 @@ export default function NewTaskDialog(props) {
       await command('task.create', args);
       if (activeKey) clearDraft(activeKey);
       activeKey = null;
-      setForm(EMPTY_FORM);
+      setForm((draft) => {
+        Object.assign(draft, EMPTY_FORM);
+      });
       await props.onCreated?.();
     } catch (requestError) {
       setError(errorText(requestError));

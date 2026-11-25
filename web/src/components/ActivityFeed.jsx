@@ -131,7 +131,7 @@ export default function ActivityFeed(props) {
             const rawData = () =>
               typeof event.data === 'string' && event.data.trim() ? event.data : '';
             return (
-              <li class="activity-item" classList={{ 'is-comment': Boolean(body()) }}>
+              <li class={{ 'activity-item': true, 'is-comment': Boolean(body()) }}>
                 <div class="activity-head">
                   <span class="activity-title">{eventTitle(event.type)}</span>
                   <span class="activity-meta">

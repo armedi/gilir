@@ -1,13 +1,12 @@
 import {
   Show,
-  batch,
   createEffect,
   createMemo,
   createSignal,
+  createStore,
   onCleanup,
-  onMount,
+  onSettled,
 } from 'solid-js';
-import { createStore } from 'solid-js/store';
 import { command } from './api';
 import { POLL_INTERVAL } from './constants';
 import { storedProjectId, storeProjectId } from './drafts';
@@ -91,7 +90,6 @@ export default function App() {
   let projectAbort = null;
   let lastTaskQuery = null;
   let lastDetailSelection = null;
-  let markingTimer;
 
   const currentProject = createMemo(() =>
     projects().find((project) => String(project.id) === String(projectId())),
@@ -126,23 +124,23 @@ export default function App() {
         nextId != null &&
         String(current) === String(nextId));
     if (same) return;
-    batch(() => {
-      setProjectId(nextId);
-      setSelectedTaskId(null);
-      setDetail(null);
-      setDetailError(null);
-      setDetailLoading(false);
-      setRepos([]);
-      setReposError(null);
-      setTasks([]);
-      setTasksError(null);
-      setTasksInitialized(false);
-      setFilters({ repo: '', status: '', priority: '', marking: '' });
-      setMarkingInput('');
-      setKnownMarkings([]);
-      setBlockerSource({ tasks: [], loading: false, error: null });
-      setNewTaskOpen(false);
+    setProjectId(nextId);
+    setSelectedTaskId(null);
+    setDetail(null);
+    setDetailError(null);
+    setDetailLoading(false);
+    setRepos([]);
+    setReposError(null);
+    setTasks([]);
+    setTasksError(null);
+    setTasksInitialized(false);
+    setFilters((draft) => {
+      Object.assign(draft, { repo: '', status: '', priority: '', marking: '' });
     });
+    setMarkingInput('');
+    setKnownMarkings([]);
+    setBlockerSource({ tasks: [], loading: false, error: null });
+    setNewTaskOpen(false);
     storeProjectId(nextId);
   }
 
@@ -189,143 +187,150 @@ export default function App() {
     }
   }
 
-  onMount(() => {
+  onSettled(() => {
     loadProjects();
-    onCleanup(() => projectAbort?.abort());
+    return () => projectAbort?.abort();
   });
 
-  createEffect(() => {
-    const project = projectId();
-    repoReload();
-    if (project == null) {
-      setRepos([]);
-      setReposLoading(false);
-      setReposError(null);
-      return;
-    }
-    const controller = new AbortController();
-    let cancelled = false;
-    setReposLoading(true);
-    (async () => {
-      try {
-        const data = await command(
-          'repo.list',
-          { project_id: project },
-          { signal: controller.signal },
-        );
-        if (cancelled) return;
-        setRepos(asArray(data).filter((repo) => repo && typeof repo === 'object'));
+  createEffect(
+    () => [projectId(), repoReload()],
+    ([project]) => {
+      if (project == null) {
+        setRepos([]);
+        setReposLoading(false);
         setReposError(null);
-      } catch (error) {
-        if (cancelled || isAbortError(error)) return;
-        setReposError(errorText(error));
-      } finally {
-        if (!cancelled) setReposLoading(false);
+        return;
       }
-    })();
-    onCleanup(() => {
-      cancelled = true;
-      controller.abort();
-    });
-  });
-
-  createEffect(() => {
-    const project = projectId();
-    const repoFilter = filters.repo;
-    const status = filters.status;
-    const priority = filters.priority;
-    const marking = filters.marking;
-    taskReload();
-
-    if (project == null) {
-      setTasks([]);
-      setTasksInitialized(false);
-      setTasksLoading(false);
-      setTasksError(null);
-      return;
-    }
-
-    const repo = repoFilter
-      ? repos().find((item) => String(item.id) === String(repoFilter))
-      : null;
-    const args = { project_id: project };
-    if (repo) args.repo_id = repo.id;
-    if (status) args.status = status;
-    if (priority) args.priority = priority;
-    if (marking) args.marking = marking;
-
-    const query = JSON.stringify([
-      project,
-      repo ? repo.id : '',
-      status,
-      priority,
-      marking,
-    ]);
-    if (query !== lastTaskQuery) {
-      lastTaskQuery = query;
-      setTasks([]);
-    }
-
-    setTasksLoading(true);
-    setTasksError(null);
-    const controller = new AbortController();
-    let cancelled = false;
-    let timer = null;
-
-    const load = async () => {
-      try {
-        const data = await command('task.list', args, { signal: controller.signal });
-        if (cancelled || String(projectId() ?? '') !== String(project)) return;
-        const list = sortTasks(
-          asArray(data)
-            .map((task) => normalizeTask(task))
-            .filter(Boolean),
-        );
-        setTasks(list);
-        setTasksError(null);
-        setTasksInitialized(true);
-        const discovered = uniqueMarkings(list);
-        if (discovered.length > 0) {
-          setKnownMarkings((previous) => addMarkings(previous, discovered));
+      const controller = new AbortController();
+      let cancelled = false;
+      setReposLoading(true);
+      (async () => {
+        try {
+          const data = await command(
+            'repo.list',
+            { project_id: project },
+            { signal: controller.signal },
+          );
+          if (cancelled) return;
+          setRepos(asArray(data).filter((repo) => repo && typeof repo === 'object'));
+          setReposError(null);
+        } catch (error) {
+          if (cancelled || isAbortError(error)) return;
+          setReposError(errorText(error));
+        } finally {
+          if (!cancelled) setReposLoading(false);
         }
-      } catch (error) {
-        if (cancelled || isAbortError(error)) return;
-        setTasksError(errorText(error));
-        setTasksInitialized(true);
-      } finally {
-        if (!cancelled) setTasksLoading(false);
+      })();
+      return () => {
+        cancelled = true;
+        controller.abort();
+      };
+    },
+  );
+
+  createEffect(
+    () => {
+      const project = projectId();
+      const repoFilter = filters.repo;
+      const status = filters.status;
+      const priority = filters.priority;
+      const marking = filters.marking;
+      taskReload();
+      const repo =
+        project != null && repoFilter
+          ? repos().find((item) => String(item.id) === String(repoFilter))
+          : null;
+      return { project, repo, status, priority, marking };
+    },
+    ({ project, repo, status, priority, marking }) => {
+      if (project == null) {
+        setTasks([]);
+        setTasksInitialized(false);
+        setTasksLoading(false);
+        setTasksError(null);
+        return;
       }
-    };
 
-    const tick = async () => {
-      await load();
-      if (!cancelled) timer = setTimeout(tick, POLL_INTERVAL);
-    };
+      const args = { project_id: project };
+      if (repo) args.repo_id = repo.id;
+      if (status) args.status = status;
+      if (priority) args.priority = priority;
+      if (marking) args.marking = marking;
 
-    tick();
-    onCleanup(() => {
-      cancelled = true;
-      clearTimeout(timer);
-      controller.abort();
-    });
-  });
+      const query = JSON.stringify([
+        project,
+        repo ? repo.id : '',
+        status,
+        priority,
+        marking,
+      ]);
+      if (query !== lastTaskQuery) {
+        lastTaskQuery = query;
+        setTasks([]);
+      }
 
-  createEffect(() => {
-    const previous = markingInput();
-    clearTimeout(markingTimer);
-    markingTimer = setTimeout(() => {
+      setTasksLoading(true);
+      setTasksError(null);
+      const controller = new AbortController();
+      let cancelled = false;
+      let timer = null;
+
+      const load = async () => {
+        try {
+          const data = await command('task.list', args, { signal: controller.signal });
+          if (cancelled || String(projectId() ?? '') !== String(project)) return;
+          const list = sortTasks(
+            asArray(data)
+              .map((task) => normalizeTask(task))
+              .filter(Boolean),
+          );
+          setTasks(list);
+          setTasksError(null);
+          setTasksInitialized(true);
+          const discovered = uniqueMarkings(list);
+          if (discovered.length > 0) {
+            setKnownMarkings((previous) => addMarkings(previous, discovered));
+          }
+        } catch (error) {
+          if (cancelled || isAbortError(error)) return;
+          setTasksError(errorText(error));
+          setTasksInitialized(true);
+        } finally {
+          if (!cancelled) setTasksLoading(false);
+        }
+      };
+
+      const tick = async () => {
+        await load();
+        if (!cancelled) timer = setTimeout(tick, POLL_INTERVAL);
+      };
+
+      tick();
+      return () => {
+        cancelled = true;
+        clearTimeout(timer);
+        controller.abort();
+      };
+    },
+  );
+
+  createEffect(markingInput, (previous) => {
+    const markingTimer = setTimeout(() => {
       const next = previous.trim();
-      if (filters.marking !== next) setFilters('marking', next);
+      if (filters.marking !== next) {
+        setFilters((draft) => {
+          draft.marking = next;
+        });
+      }
     }, 300);
+    return () => clearTimeout(markingTimer);
   });
 
   onCleanup(() => {
-    clearTimeout(markingTimer);
     clearTimeout(noticeTimer);
   });
 
-  createEffect(() => {
-    daemonReload();
+  createEffect(daemonReload, () => {
     const controller = new AbortController();
     let cancelled = false;
     let timer = null;
@@ -348,115 +353,115 @@ export default function App() {
     };
 
     tick();
-    onCleanup(() => {
+    return () => {
       cancelled = true;
       clearTimeout(timer);
       controller.abort();
-    });
+    };
   });
 
-  createEffect(() => {
-    const taskId = selectedTaskId();
-    detailReload();
-    const project = projectId();
-
-    if (taskId == null || project == null) {
-      lastDetailSelection = null;
-      setDetail(null);
-      setDetailError(null);
-      setDetailLoading(false);
-      return;
-    }
-
-    if (String(lastDetailSelection) !== String(taskId)) {
-      lastDetailSelection = taskId;
-      setDetail(null);
-      setDetailError(null);
-    }
-
-    setDetailLoading(true);
-    const controller = new AbortController();
-    let cancelled = false;
-    let timer = null;
-
-    const load = async () => {
-      try {
-        const data = await command('task.show', { id: taskId }, { signal: controller.signal });
-        if (cancelled || String(selectedTaskId() ?? '') !== String(taskId)) return;
-        const normalized = normalizeDetail(data);
-        if (!normalized) throw new Error('The task details were not returned.');
-        setDetail(normalized);
+  createEffect(
+    () => [selectedTaskId(), projectId(), detailReload()],
+    ([taskId, project]) => {
+      if (taskId == null || project == null) {
+        lastDetailSelection = null;
+        setDetail(null);
         setDetailError(null);
-      } catch (error) {
-        if (cancelled || isAbortError(error)) return;
-        setDetailError(errorText(error));
-      } finally {
-        if (!cancelled) setDetailLoading(false);
+        setDetailLoading(false);
+        return;
       }
-    };
 
-    const tick = async () => {
-      await load();
-      if (!cancelled) timer = setTimeout(tick, POLL_INTERVAL);
-    };
-
-    tick();
-    onCleanup(() => {
-      cancelled = true;
-      clearTimeout(timer);
-      controller.abort();
-    });
-  });
-
-  createEffect(() => {
-    const taskId = selectedTaskId();
-    const project = projectId();
-    blockerReload();
-
-    if (taskId == null || project == null) {
-      setBlockerSource({ tasks: [], loading: false, error: null });
-      return;
-    }
-
-    const controller = new AbortController();
-    let cancelled = false;
-    setBlockerSource({ tasks: [], loading: true, error: null });
-    (async () => {
-      try {
-        const data = await command(
-          'task.list',
-          { project_id: project },
-          { signal: controller.signal },
-        );
-        if (cancelled || String(selectedTaskId() ?? '') !== String(taskId)) return;
-        setBlockerSource({
-          tasks: sortTasks(
-            asArray(data)
-              .map((item) => normalizeTask(item))
-              .filter(Boolean),
-          ),
-          loading: false,
-          error: null,
-        });
-      } catch (error) {
-        if (cancelled || isAbortError(error)) return;
-        setBlockerSource({ tasks: [], loading: false, error: errorText(error) });
+      if (String(lastDetailSelection) !== String(taskId)) {
+        lastDetailSelection = taskId;
+        setDetail(null);
+        setDetailError(null);
       }
-    })();
-    onCleanup(() => {
-      cancelled = true;
-      controller.abort();
-    });
-  });
 
-  createEffect(() => {
-    const current = detail()?.task;
-    if (!current) return;
-    const discovered = uniqueMarkings([current]);
-    if (discovered.length > 0) {
-      setKnownMarkings((previous) => addMarkings(previous, discovered));
-    }
-  });
+      setDetailLoading(true);
+      const controller = new AbortController();
+      let cancelled = false;
+      let timer = null;
+
+      const load = async () => {
+        try {
+          const data = await command('task.show', { id: taskId }, { signal: controller.signal });
+          if (cancelled || String(selectedTaskId() ?? '') !== String(taskId)) return;
+          const normalized = normalizeDetail(data);
+          if (!normalized) throw new Error('The task details were not returned.');
+          setDetail(normalized);
+          setDetailError(null);
+        } catch (error) {
+          if (cancelled || isAbortError(error)) return;
+          setDetailError(errorText(error));
+        } finally {
+          if (!cancelled) setDetailLoading(false);
+        }
+      };
+
+      const tick = async () => {
+        await load();
+        if (!cancelled) timer = setTimeout(tick, POLL_INTERVAL);
+      };
+
+      tick();
+      return () => {
+        cancelled = true;
+        clearTimeout(timer);
+        controller.abort();
+      };
+    },
+  );
+
+  createEffect(
+    () => [selectedTaskId(), projectId(), blockerReload()],
+    ([taskId, project]) => {
+      if (taskId == null || project == null) {
+        setBlockerSource({ tasks: [], loading: false, error: null });
+        return;
+      }
+
+      const controller = new AbortController();
+      let cancelled = false;
+      setBlockerSource({ tasks: [], loading: true, error: null });
+      (async () => {
+        try {
+          const data = await command(
+            'task.list',
+            { project_id: project },
+            { signal: controller.signal },
+          );
+          if (cancelled || String(selectedTaskId() ?? '') !== String(taskId)) return;
+          setBlockerSource({
+            tasks: sortTasks(
+              asArray(data)
+                .map((item) => normalizeTask(item))
+                .filter(Boolean),
+            ),
+            loading: false,
+            error: null,
+          });
+        } catch (error) {
+          if (cancelled || isAbortError(error)) return;
+          setBlockerSource({ tasks: [], loading: false, error: errorText(error) });
+        }
+      })();
+      return () => {
+        cancelled = true;
+        controller.abort();
+      };
+    },
+  );
+
+  createEffect(
+    () => detail()?.task,
+    (current) => {
+      if (!current) return;
+      const discovered = uniqueMarkings([current]);
+      if (discovered.length > 0) {
+        setKnownMarkings((previous) => addMarkings(previous, discovered));
+      }
+    },
+  );
 
   function refreshRepos() {
     setRepoReload((value) => value + 1);
@@ -471,11 +476,9 @@ export default function App() {
   }
 
   function refreshAfterTaskChange() {
-    batch(() => {
-      setTaskReload((value) => value + 1);
-      setDetailReload((value) => value + 1);
-      setBlockerReload((value) => value + 1);
-    });
+    setTaskReload((value) => value + 1);
+    setDetailReload((value) => value + 1);
+    setBlockerReload((value) => value + 1);
   }
 
   async function handleProjectCreated(name) {
@@ -502,19 +505,15 @@ export default function App() {
       notify('Add a repository first.');
       return;
     }
-    batch(() => {
-      setSelectedTaskId(null);
-      setDetail(null);
-      setNewTaskOpen(true);
-    });
+    setSelectedTaskId(null);
+    setDetail(null);
+    setNewTaskOpen(true);
   }
 
   function openNewProject() {
-    batch(() => {
-      setSelectedTaskId(null);
-      setDetail(null);
-      setNewProjectOpen(true);
-    });
+    setSelectedTaskId(null);
+    setDetail(null);
+    setNewProjectOpen(true);
   }
 
   function openTask(id) {
@@ -522,12 +521,10 @@ export default function App() {
   }
 
   function closeTask() {
-    batch(() => {
-      setSelectedTaskId(null);
-      setDetail(null);
-      setDetailError(null);
-      setDetailLoading(false);
-    });
+    setSelectedTaskId(null);
+    setDetail(null);
+    setDetailError(null);
+    setDetailLoading(false);
   }
 
   function selectProject(value) {
@@ -536,14 +533,16 @@ export default function App() {
   }
 
   function updateFilter(name, value) {
-    setFilters(name, value);
+    setFilters((draft) => {
+      draft[name] = value;
+    });
   }
 
   function clearFilters() {
-    batch(() => {
-      setFilters({ repo: '', status: '', priority: '', marking: '' });
-      setMarkingInput('');
+    setFilters((draft) => {
+      Object.assign(draft, { repo: '', status: '', priority: '', marking: '' });
     });
+    setMarkingInput('');
   }
 
   function newTaskDefaults() {

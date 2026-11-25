@@ -39,8 +39,7 @@ export default function TaskTable(props) {
               const repo = () => repoFor(task);
               return (
                 <tr
-                  class="task-row"
-                  classList={{ selected: selected() }}
+                  class={{ 'task-row': true, selected: selected() }}
                   onClick={() => props.onOpen(task.id)}
                 >
                   <td class="col-task">

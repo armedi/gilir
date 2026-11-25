@@ -11,19 +11,21 @@ export default function RepoForm(props) {
   const [error, setError] = createSignal(null);
   let activeProject;
 
-  createEffect(() => {
-    const projectId = props.projectId;
-    if (projectId == null) {
-      activeProject = null;
-      setPath('');
-      return;
-    }
-    if (String(projectId) === String(activeProject)) return;
-    activeProject = projectId;
-    const stored = loadDraft(draftKey('repo-path', projectId));
-    setPath(typeof stored === 'string' ? stored : '');
-    setError(null);
-  });
+  createEffect(
+    () => props.projectId,
+    (projectId) => {
+      if (projectId == null) {
+        activeProject = null;
+        setPath('');
+        return;
+      }
+      if (String(projectId) === String(activeProject)) return;
+      activeProject = projectId;
+      const stored = loadDraft(draftKey('repo-path', projectId));
+      setPath(typeof stored === 'string' ? stored : '');
+      setError(null);
+    },
+  );
 
   function updatePath(value) {
     setPath(value);
@@ -75,7 +77,7 @@ export default function RepoForm(props) {
           placeholder="/home/you/code/project"
           autocomplete="off"
           autocapitalize="off"
-          spellcheck={false}
+          spellcheck="false"
           disabled={busy()}
         />
       </div>
