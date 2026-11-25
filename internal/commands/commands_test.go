@@ -220,8 +220,9 @@ func TestStrictArgsRejectUnknownAndMissingFields(t *testing.T) {
 }
 
 func TestDaemonStatusShape(t *testing.T) {
+	parents := 3
 	f := newFixture(t, func() Snapshot {
-		return Snapshot{ActiveParents: 3, WatcherError: "watcher crashed"}
+		return Snapshot{ActiveParents: &parents, WatcherError: "watcher crashed"}
 	})
 
 	result, err := f.run(t, "daemon.status", map[string]any{})
@@ -270,6 +271,60 @@ func TestDaemonStatusShape(t *testing.T) {
 	}
 	if decoded["paused"] != true || decoded["max_concurrency"] != float64(2) {
 		t.Fatalf("status after update = %v", decoded)
+	}
+}
+
+func TestDaemonStatusUnknownHealthStaysNull(t *testing.T) {
+	f := newFixture(t, func() Snapshot {
+		return Snapshot{ActiveParents: nil, WatcherError: "watcher crashed"}
+	})
+
+	result, err := f.run(t, "daemon.status", map[string]any{})
+	if err != nil {
+		t.Fatalf("daemon.status: %v", err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("encode status: %v", err)
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if string(decoded["active_parents"]) != "null" {
+		t.Fatalf("active_parents = %s, want null when watcher health is unknown", decoded["active_parents"])
+	}
+	if string(decoded["watcher_error"]) != `"watcher crashed"` {
+		t.Fatalf("watcher_error = %s", decoded["watcher_error"])
+	}
+	if string(decoded["running"]) != "true" || string(decoded["paused"]) != "false" {
+		t.Fatalf("status = %s", encoded)
+	}
+}
+
+func TestDaemonStatusZeroParentsIsNotUnknown(t *testing.T) {
+	parents := 0
+	f := newFixture(t, func() Snapshot {
+		return Snapshot{ActiveParents: &parents}
+	})
+
+	result, err := f.run(t, "daemon.status", map[string]any{})
+	if err != nil {
+		t.Fatalf("daemon.status: %v", err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("encode status: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if decoded["active_parents"] != float64(0) {
+		t.Fatalf("active_parents = %v, want 0", decoded["active_parents"])
+	}
+	if _, present := decoded["watcher_error"]; present {
+		t.Fatalf("watcher_error = %v, want omitted", decoded["watcher_error"])
 	}
 }
 

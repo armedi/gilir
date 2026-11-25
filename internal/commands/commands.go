@@ -16,9 +16,10 @@ import (
 	"github.com/armedi/gilir/internal/store"
 )
 
-// Snapshot is the dynamic watch state of a running daemon.
+// Snapshot is the dynamic watch state of a running daemon. ActiveParents is
+// nil when watcher health is unknown; zero is a known count of zero.
 type Snapshot struct {
-	ActiveParents int
+	ActiveParents *int
 	WatcherError  string
 }
 
@@ -278,8 +279,7 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		}
 		if s.status != nil {
 			snapshot := s.status()
-			active := snapshot.ActiveParents
-			status.ActiveParents = &active
+			status.ActiveParents = snapshot.ActiveParents
 			status.WatcherError = snapshot.WatcherError
 		}
 		return status, nil
