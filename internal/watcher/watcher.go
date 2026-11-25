@@ -146,28 +146,32 @@ func (w *Watcher) tick(ctx context.Context) (int, error) {
 	if err != nil || settings.Paused {
 		return len(active), err
 	}
+	// A candidate blocked by capacity is skipped, so a later uncertain one
+	// that already owns its slot can still retry its message ID.
+	blocked := false
 	for _, a := range candidates {
 		others := occupied
 		if w.uncertain[a.ID] {
 			others-- // its own slot is already counted
 		}
 		if others >= settings.MaxConcurrency {
-			return len(active), nil
+			blocked = true
+			continue
 		}
-		done, err := w.bootstrap(ctx, a, pid, others)
+		done, err := w.bootstrap(ctx, a, others)
 		if err != nil || !done {
 			return len(active), err
 		}
 		occupied = others
 	}
-	if occupied >= settings.MaxConcurrency {
+	if blocked || occupied >= settings.MaxConcurrency {
 		return len(active), nil
 	}
 	a, err := w.store.Reserve(ctx, w.serverURL, pid)
 	if err != nil || a == nil {
 		return len(active), err
 	}
-	_, err = w.bootstrap(ctx, *a, pid, occupied)
+	_, err = w.bootstrap(ctx, *a, occupied)
 	return len(active), err
 }
 
@@ -187,21 +191,27 @@ func Prompt(taskID int64) string {
 func (w *Watcher) observe(ctx context.Context, a store.DispatchAttempt, active map[string]struct{}, pid int64) (state, error) {
 	if a.SessionID == nil {
 		// Bootstrap order is create, link, prompt: unlinked means unprompted.
-		return unprompted, nil
+		return w.unprompted(ctx, a, pid)
 	}
 	sid, mid := SessionID(a.ID), MessageID(a.ID)
 	if *a.SessionID != sid {
 		return 0, fmt.Errorf("watcher: attempt %s is linked to unexpected session %s", a.ID, *a.SessionID)
 	}
 
-	s, err := w.oc.Get(ctx, sid)
-	if opencode.IsNotFound(err) {
+	missing := func() (state, error) {
 		return finished, w.finish(ctx, a, store.OutcomeFailure, "OpenCode session "+sid+" no longer exists")
+	}
+	s, err := w.oc.Get(ctx, sid)
+	if opencode.IsSessionNotFound(err) {
+		return missing()
 	}
 	if err != nil {
 		return 0, err
 	}
 	inbox, err := w.oc.Inbox(ctx, sid)
+	if opencode.IsSessionNotFound(err) {
+		return missing()
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -216,7 +226,9 @@ func (w *Watcher) observe(ctx context.Context, a store.DispatchAttempt, active m
 		switch {
 		case err == nil:
 			delivered = true
-		case !opencode.IsNotFound(err):
+		case opencode.IsSessionNotFound(err):
+			return missing()
+		case !opencode.IsMessageNotFound(err):
 			return 0, err
 		}
 	}
@@ -244,21 +256,32 @@ func (w *Watcher) observe(ctx context.Context, a store.DispatchAttempt, active m
 	case accepted:
 		return pending, nil
 	}
-	return unprompted, nil
+	return w.unprompted(ctx, a, pid)
+}
+
+// unprompted keeps an attempt with no accepted prompt as a candidate, unless
+// it was reserved against an earlier server process. That is settled now,
+// even while paused or full: abandoned if the task was moved away, otherwise
+// a visible failure the user can retry by moving the task back to todo.
+func (w *Watcher) unprompted(ctx context.Context, a store.DispatchAttempt, pid int64) (state, error) {
+	if a.ServerPID == pid {
+		return unprompted, nil
+	}
+	if stale, err := w.abandonIfMoved(ctx, a); stale || err != nil {
+		return finished, err
+	}
+	return finished, w.finish(ctx, a, store.OutcomeFailure,
+		fmt.Sprintf("OpenCode server restarted (pid %d -> %d) before the task prompt was sent; move the task to todo to retry", a.ServerPID, pid))
 }
 
 // bootstrap creates, links and prompts an attempt with no accepted prompt,
 // given the slots occupied by everything else. It is idempotent because the
 // session and message IDs are deterministic. done reports that the attempt
 // was resolved without sending, so the caller may move on to the next one.
-func (w *Watcher) bootstrap(ctx context.Context, a store.DispatchAttempt, pid int64, others int) (done bool, err error) {
+func (w *Watcher) bootstrap(ctx context.Context, a store.DispatchAttempt, others int) (done bool, err error) {
 	sid, mid := SessionID(a.ID), MessageID(a.ID)
 	if proceed, done, err := w.ready(ctx, a, others); !proceed {
 		return done, err
-	}
-	if a.ServerPID != pid {
-		return true, w.finish(ctx, a, store.OutcomeFailure,
-			fmt.Sprintf("OpenCode server restarted (pid %d -> %d) before the task prompt was sent; move the task to todo to retry", a.ServerPID, pid))
 	}
 	if _, err := w.oc.Create(ctx, sid, fmt.Sprintf("Gilir task %d", a.TaskID), a.RepoPath); err != nil {
 		return w.rejected(ctx, a, "create session", err)
@@ -285,13 +308,8 @@ func (w *Watcher) bootstrap(ctx context.Context, a store.DispatchAttempt, pid in
 // ready rereads state just before unprompted work. A task moved away from
 // in-progress is abandoned; a paused or full queue holds without progress.
 func (w *Watcher) ready(ctx context.Context, a store.DispatchAttempt, others int) (proceed, done bool, err error) {
-	d, err := w.store.Show(ctx, a.TaskID)
-	if err != nil {
-		return false, false, err
-	}
-	if d.Task.Status != store.StatusInProgress {
-		return false, true, w.finish(ctx, a, store.OutcomeAbandoned,
-			fmt.Sprintf("task moved to %s before the prompt was sent", d.Task.Status))
+	if stale, err := w.abandonIfMoved(ctx, a); stale || err != nil {
+		return false, stale, err
 	}
 	settings, err := w.store.QueueSettings(ctx)
 	if err != nil {
@@ -300,14 +318,34 @@ func (w *Watcher) ready(ctx context.Context, a store.DispatchAttempt, others int
 	return !settings.Paused && others < settings.MaxConcurrency, false, nil
 }
 
+// abandonIfMoved finishes an unprompted attempt as abandoned when its task
+// is no longer in progress.
+func (w *Watcher) abandonIfMoved(ctx context.Context, a store.DispatchAttempt) (bool, error) {
+	d, err := w.store.Show(ctx, a.TaskID)
+	if err != nil || d.Task.Status == store.StatusInProgress {
+		return false, err
+	}
+	return true, w.finish(ctx, a, store.OutcomeAbandoned,
+		fmt.Sprintf("task moved to %s before the prompt was sent", d.Task.Status))
+}
+
 // rejected fails the attempt when OpenCode definitively refused a request
-// with a 4xx response; anything else is uncertain and left pending.
+// with a 4xx response. Timeouts stay uncertain and auth or rate-limit
+// refusals fail closed; anything else is left pending.
 func (w *Watcher) rejected(ctx context.Context, a store.DispatchAttempt, op string, err error) (done bool, _ error) {
 	var se *opencode.StatusError
-	if errors.As(err, &se) && se.StatusCode >= http.StatusBadRequest && se.StatusCode < http.StatusInternalServerError {
+	if errors.As(err, &se) && definitive(se.StatusCode) {
 		return true, w.finish(ctx, a, store.OutcomeFailure, "OpenCode rejected "+op+": "+se.Error())
 	}
 	return false, err
+}
+
+func definitive(code int) bool {
+	switch code {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return false
+	}
+	return code >= http.StatusBadRequest && code < http.StatusInternalServerError
 }
 
 func (w *Watcher) finish(ctx context.Context, a store.DispatchAttempt, outcome store.AttemptOutcome, detail string) error {
