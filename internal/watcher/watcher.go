@@ -20,10 +20,20 @@ import (
 // Interval is the pause between ticks in Run.
 const Interval = time.Second
 
+// Connection resolves the OpenCode client for one tick. Failed is called with
+// a tick error: it reports that credentials or the endpoint were refreshed, so
+// the tick should be retried immediately. Redact removes secrets from text.
+// *opencode.Connector implements it.
+type Connection interface {
+	Client(ctx context.Context) (*opencode.Client, string, error)
+	Failed(err error) bool
+	Redact(text string) string
+}
+
 // Snapshot is the watcher's latest view for the daemon. ActiveParents is the
 // number of root sessions observed running on the server, including ones Gilir
 // did not start; it is nil when the last tick could not establish it. Error is
-// the last tick's error.
+// the last tick's error, already redacted and phrased for humans.
 type Snapshot struct {
 	ActiveParents *int
 	Error         string
@@ -32,9 +42,8 @@ type Snapshot struct {
 // Watcher schedules queued tasks onto one OpenCode server. Run one instance
 // per database; cross-process exclusion is the caller's job.
 type Watcher struct {
-	store     *store.Store
-	oc        *opencode.Client
-	serverURL string
+	store *store.Store
+	conn  Connection
 
 	tickMu sync.Mutex
 	// uncertain holds attempts whose prompt submission had no definitive
@@ -45,14 +54,35 @@ type Watcher struct {
 	snap Snapshot
 }
 
-// New returns a watcher that dispatches to the server at serverURL through oc.
+// New returns a watcher that always dispatches to the server at serverURL
+// through oc. It is the fixed-endpoint form of NewWithConnection.
 func New(st *store.Store, oc *opencode.Client, serverURL string) *Watcher {
+	return NewWithConnection(st, fixedConnection{oc: oc, serverURL: serverURL})
+}
+
+// NewWithConnection returns a watcher that resolves its client every tick,
+// so it can follow a managed OpenCode service that stops, starts or rotates
+// its password.
+func NewWithConnection(st *store.Store, conn Connection) *Watcher {
 	return &Watcher{
-		store: st, oc: oc, serverURL: serverURL,
+		store:     st,
+		conn:      conn,
 		uncertain: map[string]bool{},
 		snap:      Snapshot{Error: "not yet polled"},
 	}
 }
+
+type fixedConnection struct {
+	oc        *opencode.Client
+	serverURL string
+}
+
+func (f fixedConnection) Client(context.Context) (*opencode.Client, string, error) {
+	return f.oc, f.serverURL, nil
+}
+
+func (f fixedConnection) Failed(error) bool      { return false }
+func (f fixedConnection) Redact(s string) string { return s }
 
 // Snapshot returns the result of the most recent tick.
 func (w *Watcher) Snapshot() Snapshot {
@@ -81,16 +111,22 @@ func (w *Watcher) Run(ctx context.Context) {
 	}
 }
 
-// Tick runs one reconcile-and-dispatch pass and records its Snapshot.
+// Tick runs one reconcile-and-dispatch pass and records its Snapshot. When a
+// tick fails because OpenCode credentials or the endpoint changed, discovery
+// is refreshed and the tick is retried once with the new client.
 func (w *Watcher) Tick(ctx context.Context) error {
 	w.tickMu.Lock()
 	defer w.tickMu.Unlock()
 	running, err := w.tick(ctx)
+	if err != nil && w.conn.Failed(err) {
+		running, err = w.tick(ctx)
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err != nil {
-		w.snap = Snapshot{Error: err.Error()}
-		return err
+		message := w.conn.Redact(opencode.Describe(err))
+		w.snap = Snapshot{Error: message}
+		return errors.New(message)
 	}
 	w.snap = Snapshot{ActiveParents: &running}
 	return nil
@@ -106,11 +142,15 @@ const (
 )
 
 func (w *Watcher) tick(ctx context.Context) (int, error) {
-	pid, err := w.oc.ServerPID(ctx)
+	oc, serverURL, err := w.conn.Client(ctx)
 	if err != nil {
 		return 0, err
 	}
-	active, err := w.oc.ActiveParents(ctx)
+	pid, err := oc.ServerPID(ctx)
+	if err != nil {
+		return 0, err
+	}
+	active, err := oc.ActiveParents(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -119,8 +159,8 @@ func (w *Watcher) tick(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	for _, a := range attempts {
-		if a.ServerURL != w.serverURL {
-			return 0, fmt.Errorf("watcher: attempt %s for task %d belongs to OpenCode server %s, not %s", a.ID, a.TaskID, a.ServerURL, w.serverURL)
+		if a.ServerURL != serverURL {
+			return 0, fmt.Errorf("watcher: attempt %s for task %d belongs to OpenCode server %s, not %s", a.ID, a.TaskID, a.ServerURL, serverURL)
 		}
 	}
 
@@ -128,7 +168,7 @@ func (w *Watcher) tick(ctx context.Context) (int, error) {
 	occupied := len(active)
 	var candidates []store.DispatchAttempt
 	for _, a := range attempts {
-		st, err := w.observe(ctx, a, active, pid)
+		st, err := w.observe(ctx, oc, a, active, pid)
 		if err != nil {
 			return 0, err
 		}
@@ -158,7 +198,7 @@ func (w *Watcher) tick(ctx context.Context) (int, error) {
 			blocked = true
 			continue
 		}
-		done, err := w.bootstrap(ctx, a, others)
+		done, err := w.bootstrap(ctx, oc, a, others)
 		if err != nil || !done {
 			return len(active), err
 		}
@@ -167,11 +207,11 @@ func (w *Watcher) tick(ctx context.Context) (int, error) {
 	if blocked || occupied >= settings.MaxConcurrency {
 		return len(active), nil
 	}
-	a, err := w.store.Reserve(ctx, w.serverURL, pid)
+	a, err := w.store.Reserve(ctx, serverURL, pid)
 	if err != nil || a == nil {
 		return len(active), err
 	}
-	_, err = w.bootstrap(ctx, *a, occupied)
+	_, err = w.bootstrap(ctx, oc, *a, occupied)
 	return len(active), err
 }
 
@@ -188,7 +228,7 @@ func Prompt(taskID int64) string {
 
 // observe classifies one open attempt and terminalizes it when OpenCode shows
 // a durable outcome. Any read it cannot interpret is returned as an error.
-func (w *Watcher) observe(ctx context.Context, a store.DispatchAttempt, active map[string]struct{}, pid int64) (state, error) {
+func (w *Watcher) observe(ctx context.Context, oc *opencode.Client, a store.DispatchAttempt, active map[string]struct{}, pid int64) (state, error) {
 	if a.SessionID == nil {
 		// Bootstrap order is create, link, prompt: unlinked means unprompted.
 		return w.unprompted(ctx, a, pid)
@@ -201,14 +241,14 @@ func (w *Watcher) observe(ctx context.Context, a store.DispatchAttempt, active m
 	missing := func() (state, error) {
 		return finished, w.finish(ctx, a, store.OutcomeFailure, "OpenCode session "+sid+" no longer exists")
 	}
-	s, err := w.oc.Get(ctx, sid)
+	s, err := oc.Get(ctx, sid)
 	if opencode.IsSessionNotFound(err) {
 		return missing()
 	}
 	if err != nil {
 		return 0, err
 	}
-	inbox, err := w.oc.Inbox(ctx, sid)
+	inbox, err := oc.Inbox(ctx, sid)
 	if opencode.IsSessionNotFound(err) {
 		return missing()
 	}
@@ -222,7 +262,7 @@ func (w *Watcher) observe(ctx context.Context, a store.DispatchAttempt, active m
 	var deliveredAt int64
 	delivered := false
 	if !queued {
-		deliveredAt, err = w.oc.MessageCreatedAt(ctx, sid, mid)
+		deliveredAt, err = oc.MessageCreatedAt(ctx, sid, mid)
 		switch {
 		case err == nil:
 			delivered = true
@@ -278,21 +318,21 @@ func (w *Watcher) unprompted(ctx context.Context, a store.DispatchAttempt, pid i
 // given the slots occupied by everything else. It is idempotent because the
 // session and message IDs are deterministic. done reports that the attempt
 // was resolved without sending, so the caller may move on to the next one.
-func (w *Watcher) bootstrap(ctx context.Context, a store.DispatchAttempt, others int) (done bool, err error) {
+func (w *Watcher) bootstrap(ctx context.Context, oc *opencode.Client, a store.DispatchAttempt, others int) (done bool, err error) {
 	sid, mid := SessionID(a.ID), MessageID(a.ID)
 	if proceed, done, err := w.ready(ctx, a, others); !proceed {
 		return done, err
 	}
-	if _, err := w.oc.Create(ctx, sid, fmt.Sprintf("Gilir task %d", a.TaskID), a.RepoPath); err != nil {
+	if _, err := oc.Create(ctx, sid, fmt.Sprintf("Gilir task %d", a.TaskID), a.RepoPath); err != nil {
 		return w.rejected(ctx, a, "create session", err)
 	}
-	if err := w.store.LinkSession(ctx, a.ID, sid, w.oc.Link(sid)); err != nil {
+	if err := w.store.LinkSession(ctx, a.ID, sid, oc.Link(sid)); err != nil {
 		return false, err
 	}
 	if proceed, done, err := w.ready(ctx, a, others); !proceed {
 		return done, err
 	}
-	if err := w.oc.Prompt(ctx, sid, mid, Prompt(a.TaskID)); err != nil {
+	if err := oc.Prompt(ctx, sid, mid, Prompt(a.TaskID)); err != nil {
 		done, err := w.rejected(ctx, a, "send prompt", err)
 		if !done {
 			// No definitive answer: hold the slot until the same message ID

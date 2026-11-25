@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/armedi/gilir/internal/opencode"
 	"github.com/armedi/gilir/internal/store"
 )
 
@@ -159,6 +160,40 @@ func TestDaemonServesStatusAndRejectsSecondInstance(t *testing.T) {
 	cursor, initialized, err := st.HookCursor(context.Background(), "audit")
 	if err != nil || !initialized || cursor != latest || latest == 0 {
 		t.Fatalf("hook cursor = %d %v %v, want initialized at %d", cursor, initialized, err, latest)
+	}
+}
+
+func TestOpencodeOverridesDistinguishesUnsetFromEmpty(t *testing.T) {
+	t.Setenv("GILIR_OPENCODE_URL", "")
+	t.Setenv("OPENCODE_PASSWORD", "")
+	overrides := opencodeOverrides()
+	if overrides.URL == nil || *overrides.URL != "" {
+		t.Fatalf("URL override = %v, want an explicit empty value", overrides.URL)
+	}
+	if overrides.Password == nil || *overrides.Password != "" {
+		t.Fatalf("password override = %v, want an explicit empty value", overrides.Password)
+	}
+}
+
+func TestOpencodeOverridesLeavesUnsetFieldsForDiscovery(t *testing.T) {
+	t.Setenv("GILIR_OPENCODE_URL", "http://127.0.0.1:4096")
+	os.Unsetenv("OPENCODE_PASSWORD")
+	overrides := opencodeOverrides()
+	if overrides.URL == nil || *overrides.URL != "http://127.0.0.1:4096" {
+		t.Fatalf("URL override = %v", overrides.URL)
+	}
+	if overrides.Password != nil {
+		t.Fatalf("password override = %q, want nil so it is discovered", *overrides.Password)
+	}
+}
+
+func TestOpencodeEndpointNeverPrintsASecret(t *testing.T) {
+	url := "http://127.0.0.1:4096"
+	if got := opencodeEndpoint(opencode.Overrides{URL: &url}); got != url {
+		t.Fatalf("endpoint = %q, want %q", got, url)
+	}
+	if got := opencodeEndpoint(opencode.Overrides{}); !strings.Contains(got, "auto-discovered") {
+		t.Fatalf("endpoint without a URL = %q", got)
 	}
 }
 
