@@ -1,0 +1,116 @@
+# Gilir
+
+Gilir is a local task queue for coding agents. Tasks live in a local SQLite
+database. A single daemon assigns ready tasks to an OpenCode V2 server, one
+session per task, and serves a web dashboard on loopback.
+
+## Build
+
+Requirements: Go 1.24+ and Node.js 20+ with npm (for the Vite web build).
+
+```sh
+(cd web && npm ci && npm run build)   # writes web/dist
+go build -o gilir ./cmd/gilir
+```
+
+Put `gilir` on your `PATH`. The daemon prompts each agent to run `gilir show
+<id> --json`, so the binary and the same `GILIR_DB` must also be available in
+the environment where the OpenCode server runs its agents.
+
+## Run
+
+```sh
+gilir daemon run      # stays in the foreground; stop it with Ctrl-C or SIGTERM
+```
+
+Open <http://127.0.0.1:4718>. Startup details go to stderr. One daemon runs per
+database: a second `daemon run` on the same database exits with an error.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GILIR_DB` | `${XDG_DATA_HOME:-$HOME/.local/share}/gilir/gilir.sqlite` (Windows: `%LOCALAPPDATA%\gilir\gilir.sqlite`) | Database file. If missing, it is created with mode 0600 in a 0700 directory. An existing file keeps its mode. |
+| `GILIR_LISTEN` | `127.0.0.1:4718` | HTTP address. The host must be `127.0.0.1` or `[::1]`. |
+| `GILIR_WEB_DIR` | `web/dist` | Static web bundle. Gilir serves only the API if `index.html` is absent. |
+| `GILIR_OPENCODE_URL` | `http://127.0.0.1:49374` | OpenCode V2 server. It must be on loopback. |
+| `OPENCODE_PASSWORD` | unset | Sent as HTTP Basic auth (user `opencode`). |
+| `GILIR_HOOKS` | unset | Path to a hook config file (see below). |
+| `GILIR_ACTOR` | `user` | Default actor recorded for CLI changes. `--actor` overrides it. |
+
+### Connecting OpenCode
+
+Point Gilir at your running OpenCode V2 server. Read the password without
+echoing it, so it stays out of your terminal and shell history:
+
+```sh
+export GILIR_OPENCODE_URL=http://127.0.0.1:49374
+read -rs OPENCODE_PASSWORD && export OPENCODE_PASSWORD
+gilir daemon run
+```
+
+The CLI and API still work when OpenCode cannot be reached. In that case
+`gilir daemon status` shows `active_parents: null` and a `watcher_error`. Once
+connected, each dispatched task shows a session link in the dashboard. The
+link opens the session in OpenCode Web.
+
+## CLI
+
+Commands work directly on the database, so they also work when the daemon is
+stopped. The exception is `daemon status`, which asks the running daemon. Add
+`--json` to get machine-readable output on stdout.
+
+```sh
+gilir project create Payments                    # -> id 1
+gilir repo add ~/src/payments --project 1        # -> id 1
+gilir create "Fix rounding" --project 1 --repo 1 --status todo --priority high
+gilir list --project 1 --status todo
+gilir show 1 --json
+gilir depend 2 1                                 # task 2 waits for task 1
+gilir comment 1 "Repro in **ledger_test.go**" --actor agent:me
+gilir approve 1                                  # or: gilir request-changes 1
+gilir daemon status
+gilir daemon pause | resume | concurrency 2
+gilir --help
+gilir skill                                      # agent workflow instructions
+```
+
+## Queue semantics
+
+- Only `todo` tasks are dispatched. A task is ready when the queue is not
+  paused, the task has no open attempt, and every task it depends on is
+  `in-review` or `done`.
+- Ready tasks are ordered by priority (urgent, high, medium, low). Ties go
+  first to `changes-requested` tasks, then to tasks with fewer blockers still in
+  review, then to the lowest ID.
+- `max_concurrency` (default 1) caps all running root sessions on the OpenCode
+  server, including sessions that Gilir did not start. Gilir never interrupts
+  or steers a session. If it cannot read OpenCode state, it dispatches nothing.
+- A dispatched task moves to `in-progress`. A successful session moves it to
+  `in-review`. A failed session leaves it `in-progress` and marks it `error`.
+  To retry, move it back to `todo`.
+- `approve` moves an `in-review` task to `done`. `request-changes` moves it to
+  `todo` and marks it `changes-requested`.
+
+## Hooks
+
+`GILIR_HOOKS` points to a JSON array. Each hook has a `name` and exactly one
+of `command` (an argv array, run without a shell, that receives the event on
+stdin) or `url` (receives a POST with the event as the JSON body). `events`
+is optional. It defaults to the task, dependency and session events.
+
+```json
+[
+  {"name": "notify", "events": ["task.commented", "task.status_changed"], "command": ["/usr/local/bin/notify-gilir"]},
+  {"name": "ci", "url": "http://127.0.0.1:9000/gilir"}
+]
+```
+
+- A new hook starts at the current latest event. It does not replay history.
+- Delivery is at least once. A per-hook cursor advances only after success, so
+  handlers must be idempotent. Use the `id` in the payload, the
+  `X-Gilir-Event-ID` header or `GILIR_EVENT_ID` to drop duplicates.
+- Failures are retried with backoff (up to 30s apart) and logged to stderr. A
+  failing hook blocks only its own later events. To skip an event, fix the
+  handler so it succeeds.
+- Command hooks run with `GILIR_ACTOR=hook:<name>`, and OpenCode passwords are
+  removed from their environment. A `gilir` change made from a hook is not
+  delivered back to that same hook.
