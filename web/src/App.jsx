@@ -47,12 +47,12 @@ export default function App() {
   const [repos, setRepos] = createSignal([]);
   const [reposLoading, setReposLoading] = createSignal(true);
   const [reposError, setReposError] = createSignal(null);
-  const [repoReload, setRepoReload] = createSignal(0);
 
   const [tasks, setTasks] = createSignal([]);
   const [tasksLoading, setTasksLoading] = createSignal(true);
   const [tasksError, setTasksError] = createSignal(null);
   const [taskReload, setTaskReload] = createSignal(0);
+  const [projectTaskCounts, setProjectTaskCounts] = createSignal({});
 
   const [daemon, setDaemon] = createSignal(null);
   const [daemonError, setDaemonError] = createSignal(null);
@@ -162,10 +162,39 @@ export default function App() {
     };
   });
 
+  // Unfiltered task counts for the Projects & Repos view. They are fetched
+  // only while that view is on screen, so the Tasks tab keeps its single
+  // filtered poll, and they re-fetch whenever a mutation bumps taskReload.
   createEffect(
-    () => repoReload(),
-    () => {
-      loadRepos();
+    () => ({ active: view() === 'projects', reload: taskReload() }),
+    ({ active }) => {
+      if (!active) {
+        setProjectTaskCounts({});
+        return;
+      }
+
+      const controller = new AbortController();
+      let cancelled = false;
+      (async () => {
+        try {
+          const data = await command('task.list', {}, { signal: controller.signal });
+          if (cancelled) return;
+          const counts = {};
+          for (const task of asArray(data)) {
+            if (!task || task.project_id == null) continue;
+            const key = String(task.project_id);
+            counts[key] = (counts[key] || 0) + 1;
+          }
+          setProjectTaskCounts(counts);
+        } catch (error) {
+          if (cancelled || isAbortError(error)) return;
+          setProjectTaskCounts({});
+        }
+      })();
+      return () => {
+        cancelled = true;
+        controller.abort();
+      };
     },
   );
 
@@ -178,6 +207,28 @@ export default function App() {
       if (found && repoLinkedTo(found, project)) return;
       setFilters((draft) => {
         draft.repo = '';
+      });
+    },
+  );
+
+  // A deleted project or repository cannot stay selected in the task filters.
+  createEffect(
+    () => ({
+      project: filters.project,
+      repo: filters.repo,
+      projects: projects(),
+      repos: repos(),
+      settling: projectsLoading() || reposLoading(),
+    }),
+    ({ project, repo, projects: projectList, repos: repoList, settling }) => {
+      if (settling) return;
+      const projectGone =
+        project && !projectList.some((item) => String(item.id) === String(project));
+      const repoGone = repo && !repoList.some((item) => String(item.id) === String(repo));
+      if (!projectGone && !repoGone) return;
+      setFilters((draft) => {
+        if (projectGone) draft.project = '';
+        if (repoGone) draft.repo = '';
       });
     },
   );
@@ -429,12 +480,11 @@ export default function App() {
     else openAddRepo();
   }
 
-  function handleRepoAdded() {
+  async function handleRepoAdded() {
     setAddRepoOpen(false);
-    setReposLoading(true);
-    setRepoReload((value) => value + 1);
-    loadProjects();
+    refreshTasks();
     notify('Repository added');
+    await Promise.all([loadRepos(), loadProjects()]);
   }
 
   async function handleTaskCreated() {
@@ -447,6 +497,49 @@ export default function App() {
     setNewProjectOpen(false);
     await loadProjects();
     notify('Project created');
+  }
+
+  async function handleLinkRepo(repoId, projectId) {
+    await command('repo.link', { repo_id: repoId, project_id: projectId });
+    refreshTasks();
+    notify('Repository linked');
+    await loadRepos();
+  }
+
+  async function handleUnlinkRepo(repoId, projectId) {
+    await command('repo.unlink', { repo_id: repoId, project_id: projectId });
+    refreshTasks();
+    notify('Repository unlinked');
+    await loadRepos();
+  }
+
+  async function handleRemoveRepo(repoId) {
+    await command('repo.remove', { id: repoId });
+    refreshTasks();
+    notify('Repository removed');
+    await loadRepos();
+  }
+
+  async function handleRenameProject(projectId, name) {
+    await command('project.rename', { id: projectId, name });
+    refreshTasks();
+    notify('Project renamed');
+    await loadProjects();
+  }
+
+  async function handleRemoveProject(projectId) {
+    await command('project.remove', { id: projectId });
+    refreshTasks();
+    notify('Project removed');
+    await Promise.all([loadProjects(), loadRepos()]);
+  }
+
+  function viewProjectTasks(projectId) {
+    setFilters((draft) => {
+      draft.project = String(projectId);
+      draft.repo = '';
+    });
+    setView('tasks');
   }
 
   function openTask(id) {
@@ -558,11 +651,19 @@ export default function App() {
             <ProjectsReposView
               projects={projects()}
               repos={repos()}
-              loading={projectsLoading() || reposLoading()}
-              error={reposError()}
+              projectTaskCounts={projectTaskCounts()}
+              projectsLoading={projectsLoading()}
+              reposLoading={reposLoading()}
+              projectsError={projectsError()}
+              reposError={reposError()}
               onAddRepo={openAddRepo}
               onNewProject={() => setNewProjectOpen(true)}
-              onRetry={loadRepos}
+              onLinkRepo={handleLinkRepo}
+              onUnlinkRepo={handleUnlinkRepo}
+              onRemoveRepo={handleRemoveRepo}
+              onRenameProject={handleRenameProject}
+              onRemoveProject={handleRemoveProject}
+              onViewProjectTasks={viewProjectTasks}
             />
           }
         >
