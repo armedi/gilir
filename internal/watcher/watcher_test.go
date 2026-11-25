@@ -59,7 +59,6 @@ func (f *fakeOC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(v)
 	}
-	notFound := map[string]any{"_tag": "SessionNotFoundError", "message": "not found"}
 	var after func()
 	defer func() {
 		f.mu.Unlock()
@@ -97,7 +96,7 @@ func (f *fakeOC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case len(parts) >= 2 && parts[0] == "session":
 		s := f.sessions[parts[1]]
 		if s == nil {
-			reply(404, notFound)
+			reply(404, map[string]any{"_tag": "SessionNotFoundError", "sessionID": parts[1], "message": "session not found"})
 			return
 		}
 		switch {
@@ -112,7 +111,7 @@ func (f *fakeOC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case r.Method == "GET" && len(parts) == 4 && parts[2] == "message":
 			at, ok := s.delivered[parts[3]]
 			if !ok {
-				reply(404, map[string]any{"_tag": "MessageNotFoundError"})
+				reply(404, map[string]any{"_tag": "MessageNotFoundError", "sessionID": s.id, "messageID": parts[3], "message": "message not found"})
 				return
 			}
 			reply(200, map[string]any{"data": map[string]any{"id": parts[3], "type": "user", "time": map[string]any{"created": at}}})
@@ -125,10 +124,10 @@ func (f *fakeOC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.promptFault = ""
 			switch fault {
 			case "503":
-				reply(503, map[string]any{"_tag": "Unavailable"})
+				reply(503, map[string]any{"_tag": "Unavailable", "message": "busy"})
 				return
 			case "400":
-				reply(400, map[string]any{"_tag": "InvalidRequestError"})
+				reply(400, map[string]any{"_tag": "InvalidRequestError", "message": "invalid"})
 				return
 			}
 			mid := body["id"].(string)
@@ -522,5 +521,73 @@ func TestUncertainPromptRetryReusesMessageID(t *testing.T) {
 				t.Fatalf("tasks = %s, %s; want in-progress, todo", first, second)
 			}
 		})
+	}
+}
+
+func TestServerRestartSettlesUnpromptedReservationWhilePaused(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		moved   bool
+		want    store.Status
+		wantErr bool
+	}{
+		{"still in progress", false, store.StatusInProgress, true},
+		{"moved before prompt", true, store.StatusBacklog, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := setup(t, 1, 1)
+			if a, err := e.st.Reserve(e.ctx, e.url, 99); err != nil || a == nil {
+				t.Fatalf("Reserve = %+v, %v", a, err)
+			}
+			if tc.moved {
+				backlog := store.StatusBacklog
+				if _, err := e.st.UpdateTask(e.ctx, "alice", e.tasks[0], store.TaskPatch{Status: &backlog}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.setPaused(t, true)
+			e.tick(t, e.watcher()) // the fake server reports pid 100
+
+			if open, err := e.st.ListOpenAttempts(e.ctx); err != nil || len(open) != 0 {
+				t.Fatalf("open attempts = %v, %v; want settled while paused", open, err)
+			}
+			d := e.task(t, 0)
+			if d.Task.Status != tc.want || slices.Contains(d.Task.Markings, store.MarkingError) != tc.wantErr {
+				t.Fatalf("task = %s %v, want %s with error=%v", d.Task.Status, d.Task.Markings, tc.want, tc.wantErr)
+			}
+			if n := e.oc.createCount(); n != 0 {
+				t.Fatalf("creates = %d, want none", n)
+			}
+		})
+	}
+}
+
+func TestUncertainCandidateRetriesBehindCapacityBlockedOlderOne(t *testing.T) {
+	e := setup(t, 2, 2)
+	w := e.watcher()
+	e.tick(t, w) // task 0 prompted and queued
+	e.oc.set(func(f *fakeOC) { f.promptFault = "503" })
+	if err := w.Tick(e.ctx); err == nil {
+		t.Fatal("Tick with refused prompt succeeded, want error")
+	}
+	older, newer := e.sessionOf(t, 0), e.sessionOf(t, 1)
+
+	// The server drops task 0's queued prompt, so the older attempt is
+	// unprompted again, and an external run takes the remaining slot.
+	e.oc.set(func(f *fakeOC) { f.sessions[older].inbox = nil })
+	e.oc.external("ses_ext", "", true)
+	e.tick(t, w)
+
+	var olderPrompts, newerPrompts []any
+	for _, p := range e.oc.promptBodies() {
+		switch p["id"] {
+		case MessageID(strings.TrimPrefix(older, "ses_gilir_")):
+			olderPrompts = append(olderPrompts, p)
+		case MessageID(strings.TrimPrefix(newer, "ses_gilir_")):
+			newerPrompts = append(newerPrompts, p)
+		}
+	}
+	if len(olderPrompts) != 1 || len(newerPrompts) != 2 {
+		t.Fatalf("prompts older=%d newer=%d, want 1 and a same-ID retry (2)", len(olderPrompts), len(newerPrompts))
 	}
 }
