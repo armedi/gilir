@@ -253,9 +253,8 @@ function ProjectRow(props) {
   const hasTasks = () => props.taskCount > 0;
   const jumpable = () => props.repoCount > 0 || props.taskCount > 0;
 
-  // Focus moves once per transition: into the input when rename opens, back to
-  // the Rename button when it closes on its own. Leaving rename to open the
-  // remove confirmation hands focus to that effect instead.
+  // Focus moves once per mode transition: into the input or confirm button when
+  // opening, and back to the trigger button only when returning to idle.
   createEffect(
     () => ({ editing: editing(), confirming: confirming() }),
     (state, previous) => {
@@ -266,16 +265,12 @@ function ProjectRow(props) {
         });
         return;
       }
-      if (!previous?.editing || state.confirming) return;
-      focusSoon(renameButton);
-    },
-    { defer: true },
-  );
-
-  createEffect(
-    () => confirming(),
-    (open) => {
-      focusSoon(open ? confirmButton : removeButton);
+      if (state.confirming) {
+        focusSoon(confirmButton);
+        return;
+      }
+      if (previous?.editing) focusSoon(renameButton);
+      else if (previous?.confirming) focusSoon(removeButton);
     },
     { defer: true },
   );
