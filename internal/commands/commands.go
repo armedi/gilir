@@ -88,23 +88,51 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
-		if err := requireID("project_id", in.ProjectID); err != nil {
+		projectID, err := optionalID("project_id", in.ProjectID)
+		if err != nil {
 			return nil, err
 		}
-		return s.store.ListRepos(ctx, in.ProjectID)
+		return s.store.ListRepos(ctx, projectID)
 
 	case "repo.add":
 		var in repoAddArgs
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
-		if err := requireID("project_id", in.ProjectID); err != nil {
+		projectID, err := optionalID("project_id", in.ProjectID)
+		if err != nil {
 			return nil, err
 		}
 		if strings.TrimSpace(in.Path) == "" {
 			return nil, fmt.Errorf("%w: path is required", store.ErrInvalid)
 		}
-		return s.store.AddRepo(ctx, actor, in.ProjectID, in.Path)
+		return s.store.AddRepo(ctx, actor, projectID, in.Path)
+
+	case "repo.link":
+		var in repoLinkArgs
+		if err := decodeArgs(args, &in); err != nil {
+			return nil, err
+		}
+		if err := requireID("repo_id", in.RepoID); err != nil {
+			return nil, err
+		}
+		if err := requireID("project_id", in.ProjectID); err != nil {
+			return nil, err
+		}
+		return s.store.LinkRepo(ctx, actor, in.RepoID, in.ProjectID)
+
+	case "repo.unlink":
+		var in repoUnlinkArgs
+		if err := decodeArgs(args, &in); err != nil {
+			return nil, err
+		}
+		if err := requireID("repo_id", in.RepoID); err != nil {
+			return nil, err
+		}
+		if err := requireID("project_id", in.ProjectID); err != nil {
+			return nil, err
+		}
+		return s.store.UnlinkRepo(ctx, actor, in.RepoID, in.ProjectID)
 
 	case "repo.remove":
 		var in repoRemoveArgs
@@ -124,7 +152,8 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
-		if err := requireID("project_id", in.ProjectID); err != nil {
+		projectID, err := optionalID("project_id", in.ProjectID)
+		if err != nil {
 			return nil, err
 		}
 		var repoID int64
@@ -135,7 +164,7 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 			repoID = *in.RepoID
 		}
 		return s.store.ListTasks(ctx, store.TaskFilter{
-			ProjectID: in.ProjectID,
+			ProjectID: projectID,
 			RepoID:    repoID,
 			Status:    store.Status(in.Status),
 			Priority:  store.Priority(in.Priority),
@@ -147,7 +176,8 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
-		if err := requireID("project_id", in.ProjectID); err != nil {
+		projectID, err := optionalID("project_id", in.ProjectID)
+		if err != nil {
 			return nil, err
 		}
 		if err := requireID("repo_id", in.RepoID); err != nil {
@@ -157,7 +187,7 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 			return nil, fmt.Errorf("%w: title is required", store.ErrInvalid)
 		}
 		return s.store.CreateTask(ctx, actor, store.CreateTaskParams{
-			ProjectID:   in.ProjectID,
+			ProjectID:   projectID,
 			RepoID:      in.RepoID,
 			Title:       in.Title,
 			Description: in.Description,
@@ -334,6 +364,39 @@ func requireID(field string, id int64) error {
 	return nil
 }
 
+// optionalIDValue distinguishes an absent ID field from one that was supplied
+// as null, zero, or a negative number. UnmarshalJSON records presence even for
+// null, which a plain *int64 cannot distinguish from an omitted key.
+type optionalIDValue struct {
+	present bool
+	value   int64
+}
+
+func (o *optionalIDValue) UnmarshalJSON(data []byte) error {
+	o.present = true
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) {
+		o.value = 0
+		return nil
+	}
+	if err := json.Unmarshal(trimmed, &o.value); err != nil {
+		return err
+	}
+	return nil
+}
+
+// optionalID resolves an optional ID argument: absent means zero, while an
+// explicitly supplied value must be a positive ID.
+func optionalID(field string, value optionalIDValue) (int64, error) {
+	if !value.present {
+		return 0, nil
+	}
+	if err := requireID(field, value.value); err != nil {
+		return 0, err
+	}
+	return value.value, nil
+}
+
 func requireName(field, value string) error {
 	if strings.TrimSpace(value) == "" {
 		return fmt.Errorf("%w: %s is required", store.ErrInvalid, field)
@@ -368,12 +431,22 @@ type projectRemoveArgs struct {
 }
 
 type repoListArgs struct {
-	ProjectID int64 `json:"project_id"`
+	ProjectID optionalIDValue `json:"project_id"`
 }
 
 type repoAddArgs struct {
-	ProjectID int64  `json:"project_id"`
-	Path      string `json:"path"`
+	ProjectID optionalIDValue `json:"project_id"`
+	Path      string          `json:"path"`
+}
+
+type repoLinkArgs struct {
+	RepoID    int64 `json:"repo_id"`
+	ProjectID int64 `json:"project_id"`
+}
+
+type repoUnlinkArgs struct {
+	RepoID    int64 `json:"repo_id"`
+	ProjectID int64 `json:"project_id"`
 }
 
 type repoRemoveArgs struct {
@@ -381,20 +454,20 @@ type repoRemoveArgs struct {
 }
 
 type taskListArgs struct {
-	ProjectID int64  `json:"project_id"`
-	RepoID    *int64 `json:"repo_id"`
-	Status    string `json:"status"`
-	Priority  string `json:"priority"`
-	Marking   string `json:"marking"`
+	ProjectID optionalIDValue `json:"project_id"`
+	RepoID    *int64          `json:"repo_id"`
+	Status    string          `json:"status"`
+	Priority  string          `json:"priority"`
+	Marking   string          `json:"marking"`
 }
 
 type taskCreateArgs struct {
-	ProjectID   int64  `json:"project_id"`
-	RepoID      int64  `json:"repo_id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Status      string `json:"status"`
-	Priority    string `json:"priority"`
+	ProjectID   optionalIDValue `json:"project_id"`
+	RepoID      int64           `json:"repo_id"`
+	Title       string          `json:"title"`
+	Description string          `json:"description"`
+	Status      string          `json:"status"`
+	Priority    string          `json:"priority"`
 }
 
 type taskShowArgs struct {

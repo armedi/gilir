@@ -77,8 +77,13 @@ stopped. The exception is `daemon status`, which asks the running daemon. Add
 ```sh
 gilir project create Payments                    # -> id 1
 gilir repo add ~/src/payments --project 1        # -> id 1
-gilir create "Fix rounding" --project 1 --repo 1 --status todo --priority high
-gilir create "Ship release notes" --project 1 --repo 1 --status todo   # -> id 2
+gilir repo add ~/src/ledger                      # -> auto-creates project "ledger"
+gilir repo list                                  # every repo with its project_ids
+gilir repo link 2 1                              # share repo 2 with project 1
+gilir repo unlink 2 1                            # remove that link
+gilir create "Fix rounding" --repo 1 --status todo --priority high
+gilir create "Ship release notes" --repo 1 --project 1 --status todo   # -> id 2
+gilir list --status todo                         # tasks across all projects
 gilir list --project 1 --status todo
 gilir show 1 --json
 gilir depend 2 1                                 # task 2 waits for task 1

@@ -73,34 +73,68 @@ var commandSpecs = []command{
 		},
 	},
 	{
-		path:     "repo list",
-		wire:     "repo.list",
-		usage:    "gilir repo list --project <id>",
-		summary:  "List repositories in a project.",
-		flags:    []string{"project"},
-		required: []string{"project"},
+		path:    "repo list",
+		wire:    "repo.list",
+		usage:   "gilir repo list [--project <id>]",
+		summary: "List repositories, optionally restricted to one project.",
+		flags:   []string{"project"},
 		build: func(_ []string, flags map[string]string) (map[string]any, error) {
-			projectID, err := parseID("project id", flags["project"])
-			if err != nil {
+			args := map[string]any{}
+			if err := addIDFlag(args, flags, "project", "project_id", "project id"); err != nil {
 				return nil, err
 			}
-			return map[string]any{"project_id": projectID}, nil
+			return args, nil
 		},
 	},
 	{
 		path:        "repo add",
 		wire:        "repo.add",
-		usage:       "gilir repo add <path> --project <id>",
-		summary:     "Add a repository to a project.",
+		usage:       "gilir repo add <path> [--project <id>]",
+		summary:     "Add a repository, creating a project from its basename when --project is omitted.",
 		positionals: []string{"<path>"},
 		flags:       []string{"project"},
-		required:    []string{"project"},
 		build: func(positionals []string, flags map[string]string) (map[string]any, error) {
-			projectID, err := parseID("project id", flags["project"])
+			args := map[string]any{"path": positionals[0]}
+			if err := addIDFlag(args, flags, "project", "project_id", "project id"); err != nil {
+				return nil, err
+			}
+			return args, nil
+		},
+	},
+	{
+		path:        "repo link",
+		wire:        "repo.link",
+		usage:       "gilir repo link <repo-id> <project-id>",
+		summary:     "Link a repository to another project.",
+		positionals: []string{"<repo-id>", "<project-id>"},
+		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
+			repoID, err := parseID("repo id", positionals[0])
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"project_id": projectID, "path": positionals[0]}, nil
+			projectID, err := parseID("project id", positionals[1])
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"repo_id": repoID, "project_id": projectID}, nil
+		},
+	},
+	{
+		path:        "repo unlink",
+		wire:        "repo.unlink",
+		usage:       "gilir repo unlink <repo-id> <project-id>",
+		summary:     "Unlink a repository from a project.",
+		positionals: []string{"<repo-id>", "<project-id>"},
+		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
+			repoID, err := parseID("repo id", positionals[0])
+			if err != nil {
+				return nil, err
+			}
+			projectID, err := parseID("project id", positionals[1])
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"repo_id": repoID, "project_id": projectID}, nil
 		},
 	},
 	{
@@ -118,18 +152,16 @@ var commandSpecs = []command{
 		},
 	},
 	{
-		path:     "list",
-		wire:     "task.list",
-		usage:    "gilir list --project <id> [--repo <id>] [--status <status>] [--priority <priority>] [--marking <marking>]",
-		summary:  "List tasks.",
-		flags:    []string{"project", "repo", "status", "priority", "marking"},
-		required: []string{"project"},
+		path:    "list",
+		wire:    "task.list",
+		usage:   "gilir list [--project <id>] [--repo <id>] [--status <status>] [--priority <priority>] [--marking <marking>]",
+		summary: "List tasks.",
+		flags:   []string{"project", "repo", "status", "priority", "marking"},
 		build: func(_ []string, flags map[string]string) (map[string]any, error) {
-			projectID, err := parseID("project id", flags["project"])
-			if err != nil {
+			args := map[string]any{}
+			if err := addIDFlag(args, flags, "project", "project_id", "project id"); err != nil {
 				return nil, err
 			}
-			args := map[string]any{"project_id": projectID}
 			if err := addIDFlag(args, flags, "repo", "repo_id", "repo id"); err != nil {
 				return nil, err
 			}
@@ -142,24 +174,22 @@ var commandSpecs = []command{
 	{
 		path:        "create",
 		wire:        "task.create",
-		usage:       "gilir create <title> --project <id> --repo <id> [--description <markdown>] [--status <status>] [--priority <priority>]",
+		usage:       "gilir create <title> --repo <id> [--project <id>] [--description <markdown>] [--status <status>] [--priority <priority>]",
 		summary:     "Create a task.",
 		positionals: []string{"<title>"},
 		flags:       []string{"project", "repo", "description", "status", "priority"},
-		required:    []string{"project", "repo"},
+		required:    []string{"repo"},
 		build: func(positionals []string, flags map[string]string) (map[string]any, error) {
-			projectID, err := parseID("project id", flags["project"])
-			if err != nil {
-				return nil, err
-			}
 			repoID, err := parseID("repo id", flags["repo"])
 			if err != nil {
 				return nil, err
 			}
 			args := map[string]any{
-				"project_id": projectID,
-				"repo_id":    repoID,
-				"title":      positionals[0],
+				"repo_id": repoID,
+				"title":   positionals[0],
+			}
+			if err := addIDFlag(args, flags, "project", "project_id", "project id"); err != nil {
+				return nil, err
 			}
 			addStringFlag(args, flags, "description", "description")
 			addStringFlag(args, flags, "status", "status")

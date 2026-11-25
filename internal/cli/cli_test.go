@@ -122,6 +122,154 @@ func TestRunFlagPlacementAndActorPrecedence(t *testing.T) {
 	}
 }
 
+func TestRunRepoAndTaskProjectOptionality(t *testing.T) {
+	tests := []struct {
+		name        string
+		argv        []string
+		wantCommand string
+		wantArgs    map[string]any
+	}{
+		{
+			name:        "repo list global",
+			argv:        []string{"repo", "list"},
+			wantCommand: "repo.list",
+			wantArgs:    map[string]any{},
+		},
+		{
+			name:        "repo list scoped",
+			argv:        []string{"repo", "list", "--project", "3"},
+			wantCommand: "repo.list",
+			wantArgs:    map[string]any{"project_id": int64(3)},
+		},
+		{
+			name:        "repo add auto project",
+			argv:        []string{"repo", "add", "/src/app"},
+			wantCommand: "repo.add",
+			wantArgs:    map[string]any{"path": "/src/app"},
+		},
+		{
+			name:        "repo add explicit project",
+			argv:        []string{"repo", "add", "/src/app", "--project", "3"},
+			wantCommand: "repo.add",
+			wantArgs:    map[string]any{"path": "/src/app", "project_id": int64(3)},
+		},
+		{
+			name:        "repo link",
+			argv:        []string{"repo", "link", "2", "3"},
+			wantCommand: "repo.link",
+			wantArgs:    map[string]any{"repo_id": int64(2), "project_id": int64(3)},
+		},
+		{
+			name:        "repo unlink",
+			argv:        []string{"repo", "unlink", "2", "3"},
+			wantCommand: "repo.unlink",
+			wantArgs:    map[string]any{"repo_id": int64(2), "project_id": int64(3)},
+		},
+		{
+			name:        "list global",
+			argv:        []string{"list"},
+			wantCommand: "task.list",
+			wantArgs:    map[string]any{},
+		},
+		{
+			name:        "list scoped with filters",
+			argv:        []string{"list", "--project", "3", "--repo", "2", "--status", "todo", "--priority", "high", "--marking", "error"},
+			wantCommand: "task.list",
+			wantArgs: map[string]any{
+				"project_id": int64(3),
+				"repo_id":    int64(2),
+				"status":     "todo",
+				"priority":   "high",
+				"marking":    "error",
+			},
+		},
+		{
+			name:        "create infers project",
+			argv:        []string{"create", "Fix rounding", "--repo", "2"},
+			wantCommand: "task.create",
+			wantArgs:    map[string]any{"repo_id": int64(2), "title": "Fix rounding"},
+		},
+		{
+			name:        "create with project and fields",
+			argv:        []string{"create", "Fix rounding", "--repo", "2", "--project", "3", "--description", "body", "--status", "todo", "--priority", "high"},
+			wantCommand: "task.create",
+			wantArgs: map[string]any{
+				"repo_id":     int64(2),
+				"project_id":  int64(3),
+				"title":       "Fix rounding",
+				"description": "body",
+				"status":      "todo",
+				"priority":    "high",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			executor := &recordingExecutor{}
+			code, stdout, stderr := runCLI(test.argv, "", executor)
+
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0 (stderr %q)", code, stderr)
+			}
+			if stderr != "" {
+				t.Fatalf("stderr = %q, want empty", stderr)
+			}
+			if len(executor.calls) != 1 {
+				t.Fatalf("execute calls = %d, want 1", len(executor.calls))
+			}
+			call := executor.calls[0]
+			if call.command != test.wantCommand {
+				t.Errorf("command = %q, want %q", call.command, test.wantCommand)
+			}
+			if !reflect.DeepEqual(call.args, test.wantArgs) {
+				t.Errorf("args = %#v, want %#v", call.args, test.wantArgs)
+			}
+			if strings.TrimSpace(stdout) != "ok" {
+				t.Errorf("stdout = %q, want ok", stdout)
+			}
+		})
+	}
+}
+
+func TestRunRejectsLinkAndOptionalIDArguments(t *testing.T) {
+	tests := []struct {
+		name string
+		argv []string
+		want string
+	}{
+		{name: "repo link missing project", argv: []string{"repo", "link", "2"}, want: "missing <project-id>"},
+		{name: "repo link invalid repo", argv: []string{"repo", "link", "nope", "3"}, want: "invalid repo id"},
+		{name: "repo link invalid project", argv: []string{"repo", "link", "2", "nope"}, want: "invalid project id"},
+		{name: "repo unlink zero repo", argv: []string{"repo", "unlink", "0", "3"}, want: "invalid repo id"},
+		{name: "repo unlink invalid project", argv: []string{"repo", "unlink", "2", "-1"}, want: "invalid project id"},
+		{name: "repo list invalid project", argv: []string{"repo", "list", "--project", "0"}, want: "invalid project id"},
+		{name: "list invalid project", argv: []string{"list", "--project", "nope"}, want: "invalid project id"},
+		{name: "create invalid project", argv: []string{"create", "Title", "--repo", "1", "--project", "0"}, want: "invalid project id"},
+		{name: "repo add unexpected flag", argv: []string{"repo", "add", "/src", "--status", "todo"}, want: "flag --status is not valid"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			executor := &recordingExecutor{}
+			code, stdout, stderr := runCLI(test.argv, "", executor)
+
+			if code != 2 {
+				t.Fatalf("exit code = %d, want 2 (stderr %q)", code, stderr)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if !strings.Contains(stderr, test.want) {
+				t.Fatalf("stderr = %q, want substring %q", stderr, test.want)
+			}
+			if len(executor.calls) != 0 {
+				t.Fatalf("execute calls = %d, want 0", len(executor.calls))
+			}
+		})
+	}
+}
+
 func TestRunRejectsRequiredAndInvalidArguments(t *testing.T) {
 	tests := []struct {
 		name string
@@ -276,6 +424,104 @@ func TestRunSkillObservableContract(t *testing.T) {
 	}
 	if payload.Skill != plain {
 		t.Fatalf("skill JSON and plain output differ")
+	}
+}
+
+func TestRunHelpReflectsRepoFirstCommands(t *testing.T) {
+	tests := []struct {
+		name string
+		argv []string
+		want []string
+	}{
+		{
+			name: "general help",
+			argv: []string{"--help"},
+			want: []string{
+				"repo list [--project <id>]",
+				"repo add <path> [--project <id>]",
+				"repo link <repo-id> <project-id>",
+				"repo unlink <repo-id> <project-id>",
+				"list [--project <id>] [--repo <id>]",
+				"create <title> --repo <id> [--project <id>]",
+			},
+		},
+		{
+			name: "repo group help",
+			argv: []string{"repo", "--help"},
+			want: []string{
+				"link <repo-id> <project-id>",
+				"unlink <repo-id> <project-id>",
+				"add <path> [--project <id>]",
+			},
+		},
+		{
+			name: "repo add help",
+			argv: []string{"repo", "add", "--help"},
+			want: []string{
+				"gilir repo add <path> [--project <id>]",
+				"creating a project from its basename when --project is omitted",
+			},
+		},
+		{
+			name: "create help marks only repo required",
+			argv: []string{"create", "--help"},
+			want: []string{
+				"gilir create <title> --repo <id> [--project <id>]",
+				"--repo <id>                 Repository ID (required)",
+				"--project <id>              Project ID",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			executor := &recordingExecutor{}
+			code, stdout, stderr := runCLI(test.argv, "", executor)
+
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0 (stderr %q)", code, stderr)
+			}
+			if stderr != "" {
+				t.Fatalf("stderr = %q, want empty", stderr)
+			}
+			for _, want := range test.want {
+				if !strings.Contains(stdout, want) {
+					t.Fatalf("help missing %q:\n%s", want, stdout)
+				}
+			}
+			if len(executor.calls) != 0 {
+				t.Fatalf("execute calls = %d, want 0", len(executor.calls))
+			}
+		})
+	}
+}
+
+func TestRunSkillDocumentsRepoFirstWorkflow(t *testing.T) {
+	executor := &recordingExecutor{}
+	code, plain, stderr := runCLI([]string{"skill"}, "", executor)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr %q)", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	for _, want := range []string{
+		"gilir repo add ~/src/payments                                    # auto-creates project",
+		"gilir repo add ~/src/payments --project 3",
+		"gilir repo list",
+		"gilir repo list --project 3",
+		"gilir repo link 1 4",
+		"gilir repo unlink 1 4",
+		`gilir create "Fix rounding" --repo 1 --status todo --priority high`,
+		"gilir list --project 3",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("skill missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "--project 1 --repo 1") {
+		t.Fatalf("skill still shows --project as required for create:\n%s", plain)
 	}
 }
 

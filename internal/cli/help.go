@@ -28,7 +28,7 @@ var flagPlaceholders = map[string]string{
 
 var groupSummaries = map[string]string{
 	"project": "Manage projects.",
-	"repo":    "Manage repositories in a project.",
+	"repo":    "Manage repositories and their project links.",
 	"daemon":  "Run and control the background daemon.",
 }
 
@@ -96,7 +96,7 @@ func groupHelp(group string) string {
 			continue
 		}
 		usage := strings.TrimPrefix(spec.usage, "gilir "+group+" ")
-		fmt.Fprintf(&builder, "  %-26s  %s\n", usage, spec.summary)
+		fmt.Fprintf(&builder, "  %-32s  %s\n", usage, spec.summary)
 	}
 	builder.WriteString("\nGlobal options: --actor <actor>, --json, --help\n")
 	return builder.String()
