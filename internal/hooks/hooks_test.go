@@ -37,6 +37,10 @@ func TestLoad(t *testing.T) {
 		{"credentials", `[{"name":"a","url":"https://user:secret@example.test/"}]`, "credentials"},
 		{"scheme", `[{"name":"a","url":"file:///etc/passwd"}]`, "http or https"},
 		{"no host", `[{"name":"a","url":"http:///path"}]`, "host"},
+		{"port without host", `[{"name":"a","url":"http://:8080/path"}]`, "host"},
+		{"empty port", `[{"name":"a","url":"http://example.test:/path"}]`, "port must not be empty"},
+		{"malformed path", `[{"name":"a","url":"https://example.test/secret%zz"}]`, "not a valid URL"},
+		{"malformed port", `[{"name":"a","url":"https://example.test:secret/"}]`, "not a valid URL"},
 		{"empty event", `[{"name":"a","url":"http://x","events":[""]}]`, "empty event"},
 	}
 	for _, tc := range cases {
@@ -170,6 +174,9 @@ func (r *recorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	w.WriteHeader(status)
+	if status != http.StatusOK {
+		io.WriteString(w, "reflected secret")
+	}
 }
 
 func (r *recorder) seen() []request {
@@ -258,7 +265,7 @@ func TestWebhookDeliversPayloadSkippingSelfAndUnlistedEvents(t *testing.T) {
 }
 
 func TestFailedDeliveryRetriesBeforeLaterEventsAndHoldsCursor(t *testing.T) {
-	rec := &recorder{statuses: []int{http.StatusFound}}
+	rec := &recorder{statuses: []int{http.StatusFound, http.StatusInternalServerError}}
 	server := httptest.NewServer(rec)
 	defer server.Close()
 
@@ -272,16 +279,24 @@ func TestFailedDeliveryRetriesBeforeLaterEventsAndHoldsCursor(t *testing.T) {
 	for _, r := range rec.seen() {
 		ids = append(ids, r.eventID)
 	}
-	// The redirect is a failure, is not followed, and event 1 is redelivered
-	// before event 2; the cursor never moves past an undelivered event.
-	if want := []string{"1", "1", "2"}; !reflect.DeepEqual(ids, want) {
+	// The redirect and the 500 are failures, the redirect is not followed,
+	// and event 1 is redelivered before event 2; the cursor never moves past
+	// an undelivered event.
+	if want := []string{"1", "1", "1", "2"}; !reflect.DeepEqual(ids, want) {
 		t.Fatalf("delivered event IDs = %v; want %v", ids, want)
 	}
 	if got, want := source.cursorHistory(), []int64{1, 2}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("cursor history = %v; want %v", got, want)
 	}
-	if errs := log.all(); len(errs) != 1 || !strings.Contains(errs[0], "302") {
-		t.Fatalf("reported errors = %v; want one 302 failure", errs)
+	errs := log.all()
+	if len(errs) != 2 || !strings.Contains(errs[0], "status 302") || !strings.Contains(errs[1], "status 500") {
+		t.Fatalf("reported errors = %v; want a 302 then a 500 failure", errs)
+	}
+	// Response bodies may echo the URL's token, so they are never reported.
+	for _, err := range errs {
+		if strings.Contains(err, "secret") || strings.Contains(err, "elsewhere") {
+			t.Fatalf("error includes response body: %v", err)
+		}
 	}
 }
 
@@ -337,5 +352,29 @@ func TestCommandFailureIsReportedAndRetried(t *testing.T) {
 	eventually(t, "cursor to reach 1", func() bool { return source.cursor("local") == 1 })
 	if errs := log.all(); len(errs) != 1 || !strings.Contains(errs[0], "exit status 3") || !strings.Contains(errs[0], "boom") {
 		t.Fatalf("reported errors = %v; want one exit status 3 failure with output", errs)
+	}
+}
+
+func TestCappedBufferMarksTruncationOnlyPastLimit(t *testing.T) {
+	cases := []struct {
+		writes []string
+		want   string
+	}{
+		{[]string{"abcd"}, "abcd"},
+		{[]string{"ab", "cd"}, "abcd"},
+		{[]string{"abcde"}, "abcd...(truncated)"},
+		{[]string{"abcd", "e"}, "abcd...(truncated)"},
+		{[]string{"abc", "de", "f"}, "abcd...(truncated)"},
+	}
+	for _, tc := range cases {
+		b := &cappedBuffer{limit: 4}
+		for _, w := range tc.writes {
+			if n, err := b.Write([]byte(w)); n != len(w) || err != nil {
+				t.Fatalf("Write(%q) = %d, %v; want full write", w, n, err)
+			}
+		}
+		if got := b.String(); got != tc.want {
+			t.Errorf("writes %q: String() = %q; want %q", tc.writes, got, tc.want)
+		}
 	}
 }

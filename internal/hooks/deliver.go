@@ -30,8 +30,12 @@ var hiddenEnv = map[string]bool{
 }
 
 // runCommand executes the hook argv directly (no shell) with the payload on
-// stdin. Cancelling ctx kills the process; WaitDelay bounds how long Wait
-// blocks on descendants that still hold the output pipes.
+// stdin. On Unix the command runs in its own process group: cancelling ctx
+// kills the whole group, and any group members still alive when the command
+// finishes are killed too, so no hook process outlives its delivery (a hook
+// that must detach work should start a new session, e.g. with setsid).
+// WaitDelay bounds how long Wait blocks on descendants that still hold the
+// output pipes.
 func runCommand(ctx context.Context, config Config, event Event) error {
 	cmd := exec.CommandContext(ctx, config.Command[0], config.Command[1:]...)
 	cmd.Stdin = bytes.NewReader(event.Payload)
@@ -40,7 +44,15 @@ func runCommand(ctx context.Context, config Config, event Event) error {
 	cmd.Stderr = output
 	cmd.WaitDelay = waitDelay
 	cmd.Env = commandEnv(config.Name, event.ID)
-	if err := cmd.Run(); err != nil {
+	useProcessGroup(cmd)
+	err := cmd.Run()
+	killProcessGroup(cmd)
+	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState.Success() {
+		// The command itself succeeded; only a lingering descendant held the
+		// output open. Redelivering would duplicate the event.
+		err = nil
+	}
+	if err != nil {
 		if ctx.Err() != nil {
 			err = fmt.Errorf("%w: %w", ctx.Err(), err)
 		}
@@ -72,13 +84,13 @@ type cappedBuffer struct {
 }
 
 func (b *cappedBuffer) Write(p []byte) (int, error) {
-	if room := b.limit - b.buf.Len(); room > 0 {
-		b.buf.Write(p[:min(len(p), room)])
-	}
-	if b.buf.Len()+len(p) > b.limit {
+	n := len(p)
+	if room := b.limit - b.buf.Len(); n > room {
 		b.truncated = true
+		p = p[:max(room, 0)]
 	}
-	return len(p), nil
+	b.buf.Write(p)
+	return n, nil
 }
 
 func (b *cappedBuffer) String() string {
@@ -102,9 +114,11 @@ var webhookClient = &http.Client{
 }
 
 func postEvent(ctx context.Context, endpoint string, event Event) error {
+	// Errors here must not include the endpoint or anything the server echoes
+	// back (body or reason phrase): either may carry the URL's token.
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(event.Payload))
 	if err != nil {
-		return err
+		return errors.New("webhook url is not a valid URL")
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Gilir-Event-ID", strconv.FormatInt(event.ID, 10))
@@ -112,15 +126,15 @@ func postEvent(ctx context.Context, endpoint string, event Event) error {
 	if err != nil {
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) {
-			// Drop the URL from the message; it may carry a token in its query.
 			err = urlErr.Err
 		}
 		return fmt.Errorf("webhook request failed: %w", err)
 	}
 	defer response.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(response.Body, responseLimit))
+	// Drain a bounded amount so the connection can be reused.
+	io.Copy(io.Discard, io.LimitReader(response.Body, responseLimit))
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return fmt.Errorf("webhook returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+		return fmt.Errorf("webhook returned status %d %s", response.StatusCode, http.StatusText(response.StatusCode))
 	}
 	return nil
 }

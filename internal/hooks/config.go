@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strings"
 )
 
 // Config is one hook entry from the daemon's hooks file. Name is the stable
@@ -85,16 +86,20 @@ func validateOne(config Config) error {
 	return validateURL(config)
 }
 
+// validateURL never includes the configured URL or parser details in its
+// errors, since the URL may carry a token.
 func validateURL(config Config) error {
 	target, err := url.Parse(config.URL)
 	if err != nil {
-		return fmt.Errorf("hook %q: invalid url: %w", config.Name, err)
+		return fmt.Errorf("hook %q: url is not a valid URL", config.Name)
 	}
 	switch {
 	case target.Scheme != "http" && target.Scheme != "https":
 		return fmt.Errorf("hook %q: url scheme must be http or https", config.Name)
-	case target.Host == "":
+	case target.Hostname() == "":
 		return fmt.Errorf("hook %q: url must include a host", config.Name)
+	case strings.HasSuffix(target.Host, ":"):
+		return fmt.Errorf("hook %q: url port must not be empty", config.Name)
 	case target.User != nil:
 		return fmt.Errorf("hook %q: url must not contain credentials", config.Name)
 	}
