@@ -18,6 +18,7 @@ import {
   formatDateTime,
   formatFullDateTime,
   humanize,
+  repoLinkedTo,
   safeHttpUrl,
   timeAttribute,
 } from '../utils';
@@ -82,6 +83,20 @@ export default function TaskDrawer(props) {
   const [commentError, setCommentError] = createSignal(null);
 
   const task = () => props.detail?.task;
+  const scopedRepos = createMemo(() => {
+    const current = task();
+    if (!current) return asArray(props.repos);
+    return asArray(props.repos).filter((repo) => repoLinkedTo(repo, current.project_id));
+  });
+  const projectName = createMemo(() => {
+    const current = task();
+    if (!current) return '';
+    const found = asArray(props.projects).find(
+      (project) => String(project.id) === String(current.project_id),
+    );
+    return found ? found.name : `Project #${current.project_id}`;
+  });
+
   const markings = () => {
     const values = asArray(task()?.markings).map((marking) => asText(marking).trim());
     return [...new Set(values.filter(Boolean))];
@@ -202,9 +217,9 @@ export default function TaskDrawer(props) {
       titleInput?.focus();
       return;
     }
-    const repo = props.repos.find((item) => String(item.id) === String(form.repo_id));
+    const repo = scopedRepos().find((item) => String(item.id) === String(form.repo_id));
     if (!repo) {
-      setFormError('Choose a repository.');
+      setFormError('Choose a repository linked to this project.');
       return;
     }
     const taskId = current.id;
@@ -431,6 +446,9 @@ export default function TaskDrawer(props) {
               <div class="drawer-head-meta">
                 <StatusBadge value={current().status} />
                 <PriorityBadge value={current().priority} />
+                <Show when={projectName()}>
+                  <span class="drawer-project">{projectName()}</span>
+                </Show>
                 <span class="drawer-updated">
                   Updated{' '}
                   <time
@@ -573,10 +591,11 @@ export default function TaskDrawer(props) {
                         disabled={saveBusy()}
                         aria-required="true"
                       >
-                        <For each={props.repos}>
+                        <For each={scopedRepos()}>
                           {(repo) => <option value={String(repo.id)}>{repo.path}</option>}
                         </For>
                       </select>
+                      <p class="field-hint">Only repositories linked to this project are listed.</p>
                     </div>
 
                     {formError() && (

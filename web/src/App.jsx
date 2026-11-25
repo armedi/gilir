@@ -9,23 +9,24 @@ import {
 } from 'solid-js';
 import { command } from './api';
 import { POLL_INTERVAL } from './constants';
-import { storedProjectId, storeProjectId } from './drafts';
 import {
   asArray,
   errorText,
   isAbortError,
+  mergeTasks,
   normalizeDetail,
   normalizeTask,
+  repoLinkedTo,
+  reposForProject,
   sortTasks,
   uniqueMarkings,
 } from './utils';
-import DaemonCard from './components/DaemonCard';
+import AddRepoDialog from './components/AddRepoDialog';
 import Filters from './components/Filters';
 import Header from './components/Header';
 import NewProjectDialog from './components/NewProjectDialog';
 import NewTaskDialog from './components/NewTaskDialog';
-import ReposPanel from './components/ReposPanel';
-import SetupPanel from './components/SetupPanel';
+import ProjectsReposView from './components/ProjectsReposView';
 import TaskDrawer from './components/TaskDrawer';
 import TaskListPanel from './components/TaskListPanel';
 
@@ -36,23 +37,21 @@ function addMarkings(previous, additions) {
   return [...merged].sort((left, right) => left.localeCompare(right));
 }
 
-export default function App() {
-  const initialStoredProject = storedProjectId();
+const EMPTY_FILTERS = { project: '', repo: '', status: '', priority: '', marking: '' };
 
+export default function App() {
   const [projects, setProjects] = createSignal([]);
   const [projectsLoading, setProjectsLoading] = createSignal(true);
   const [projectsError, setProjectsError] = createSignal(null);
-  const [projectId, setProjectId] = createSignal(null);
 
   const [repos, setRepos] = createSignal([]);
-  const [reposLoading, setReposLoading] = createSignal(false);
+  const [reposLoading, setReposLoading] = createSignal(true);
   const [reposError, setReposError] = createSignal(null);
   const [repoReload, setRepoReload] = createSignal(0);
 
   const [tasks, setTasks] = createSignal([]);
-  const [tasksLoading, setTasksLoading] = createSignal(false);
+  const [tasksLoading, setTasksLoading] = createSignal(true);
   const [tasksError, setTasksError] = createSignal(null);
-  const [tasksInitialized, setTasksInitialized] = createSignal(false);
   const [taskReload, setTaskReload] = createSignal(0);
 
   const [daemon, setDaemon] = createSignal(null);
@@ -72,41 +71,35 @@ export default function App() {
   });
   const [blockerReload, setBlockerReload] = createSignal(0);
 
-  const [filters, setFilters] = createStore({
-    repo: '',
-    status: '',
-    priority: '',
-    marking: '',
-  });
+  const [filters, setFilters] = createStore({ ...EMPTY_FILTERS });
   const [markingInput, setMarkingInput] = createSignal('');
   const [knownMarkings, setKnownMarkings] = createSignal([]);
 
+  const [view, setView] = createSignal('tasks');
   const [newTaskOpen, setNewTaskOpen] = createSignal(false);
+  const [addRepoOpen, setAddRepoOpen] = createSignal(false);
   const [newProjectOpen, setNewProjectOpen] = createSignal(false);
+  const [approvingId, setApprovingId] = createSignal(null);
   const [notice, setNotice] = createSignal('');
 
   let noticeTimer;
-  let projectRequest = 0;
   let projectAbort = null;
+  let repoAbort = null;
   let lastTaskQuery = null;
   let lastDetailSelection = null;
 
-  const currentProject = createMemo(() =>
-    projects().find((project) => String(project.id) === String(projectId())),
-  );
+  const hasRepos = createMemo(() => repos().length > 0);
 
   const hasFilters = createMemo(() =>
-    Boolean(filters.repo || filters.status || filters.priority || filters.marking),
+    Boolean(filters.project || filters.repo || filters.status || filters.priority || filters.marking),
   );
 
-  const showSetup = createMemo(
-    () =>
-      Boolean(currentProject()) &&
-      tasksInitialized() &&
-      !tasksLoading() &&
-      !tasksError() &&
-      tasks().length === 0 &&
-      !hasFilters(),
+  const watcherWarning = createMemo(() =>
+    daemon()?.watcher_error
+      ? { title: 'OpenCode warning.', body: daemon()?.watcher_error }
+      : daemonError()
+        ? { title: 'Queue status unavailable.', body: daemonError() }
+        : null,
   );
 
   function notify(message) {
@@ -116,154 +109,98 @@ export default function App() {
     noticeTimer = setTimeout(() => setNotice(''), 4000);
   }
 
-  function changeProject(nextId) {
-    const current = projectId();
-    const same =
-      (current == null && nextId == null) ||
-      (current != null &&
-        nextId != null &&
-        String(current) === String(nextId));
-    if (same) return;
-    setProjectId(nextId);
-    setSelectedTaskId(null);
-    setDetail(null);
-    setDetailError(null);
-    setDetailLoading(false);
-    setRepos([]);
-    setReposError(null);
-    setTasks([]);
-    setTasksError(null);
-    setTasksInitialized(false);
-    setFilters((draft) => {
-      Object.assign(draft, { repo: '', status: '', priority: '', marking: '' });
-    });
-    setMarkingInput('');
-    setKnownMarkings([]);
-    setBlockerSource({ tasks: [], loading: false, error: null });
-    setNewTaskOpen(false);
-    storeProjectId(nextId);
-  }
-
-  async function loadProjects(options = {}) {
+  async function loadProjects() {
     projectAbort?.abort();
     const controller = new AbortController();
     projectAbort = controller;
-    const request = ++projectRequest;
     setProjectsLoading(true);
     try {
       const data = await command('project.list', {}, { signal: controller.signal });
-      if (request !== projectRequest || controller.signal.aborted) return;
-      const list = asArray(data).filter((project) => project && typeof project === 'object');
-      setProjects(list);
+      if (controller.signal.aborted) return;
+      setProjects(
+        asArray(data).filter((project) => project && typeof project === 'object'),
+      );
       setProjectsError(null);
-
-      let next = null;
-      if (options.selectName) {
-        for (let index = list.length - 1; index >= 0; index -= 1) {
-          if (list[index].name === options.selectName) {
-            next = list[index];
-            break;
-          }
-        }
-      }
-      if (!next) {
-        const current = projectId();
-        next = list.find((project) => String(project.id) === String(current)) || null;
-      }
-      if (!next) {
-        next =
-          list.find((project) => String(project.id) === String(initialStoredProject)) || null;
-      }
-      if (!next) next = list[0] || null;
-      changeProject(next ? next.id : null);
     } catch (error) {
-      if (request !== projectRequest || isAbortError(error)) return;
+      if (isAbortError(error)) return;
       setProjectsError(errorText(error));
     } finally {
-      if (request === projectRequest) {
+      if (projectAbort === controller) {
         setProjectsLoading(false);
-        if (projectAbort === controller) projectAbort = null;
+        projectAbort = null;
+      }
+    }
+  }
+
+  async function loadRepos() {
+    repoAbort?.abort();
+    const controller = new AbortController();
+    repoAbort = controller;
+    setReposLoading(true);
+    try {
+      const data = await command('repo.list', {}, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      setRepos(asArray(data).filter((repo) => repo && typeof repo === 'object'));
+      setReposError(null);
+    } catch (error) {
+      if (isAbortError(error)) return;
+      setReposError(errorText(error));
+    } finally {
+      if (repoAbort === controller) {
+        setReposLoading(false);
+        repoAbort = null;
       }
     }
   }
 
   onSettled(() => {
     loadProjects();
-    return () => projectAbort?.abort();
+    loadRepos();
+    return () => {
+      projectAbort?.abort();
+      repoAbort?.abort();
+    };
   });
 
   createEffect(
-    () => [projectId(), repoReload()],
-    ([project]) => {
-      if (project == null) {
-        setRepos([]);
-        setReposLoading(false);
-        setReposError(null);
-        return;
-      }
-      const controller = new AbortController();
-      let cancelled = false;
-      setReposLoading(true);
-      (async () => {
-        try {
-          const data = await command(
-            'repo.list',
-            { project_id: project },
-            { signal: controller.signal },
-          );
-          if (cancelled) return;
-          setRepos(asArray(data).filter((repo) => repo && typeof repo === 'object'));
-          setReposError(null);
-        } catch (error) {
-          if (cancelled || isAbortError(error)) return;
-          setReposError(errorText(error));
-        } finally {
-          if (!cancelled) setReposLoading(false);
-        }
-      })();
-      return () => {
-        cancelled = true;
-        controller.abort();
-      };
+    () => repoReload(),
+    () => {
+      loadRepos();
+    },
+  );
+
+  // A repo filter only survives while the selected project still links it.
+  createEffect(
+    () => ({ project: filters.project, repo: filters.repo, list: repos() }),
+    ({ project, repo, list }) => {
+      if (!project || !repo) return;
+      const found = list.find((item) => String(item.id) === String(repo));
+      if (found && repoLinkedTo(found, project)) return;
+      setFilters((draft) => {
+        draft.repo = '';
+      });
     },
   );
 
   createEffect(
     () => {
-      const project = projectId();
-      const repoFilter = filters.repo;
+      const project = filters.project;
+      const repo = filters.repo;
       const status = filters.status;
       const priority = filters.priority;
       const marking = filters.marking;
       taskReload();
-      const repo =
-        project != null && repoFilter
-          ? repos().find((item) => String(item.id) === String(repoFilter))
-          : null;
       return { project, repo, status, priority, marking };
     },
     ({ project, repo, status, priority, marking }) => {
-      if (project == null) {
-        setTasks([]);
-        setTasksInitialized(false);
-        setTasksLoading(false);
-        setTasksError(null);
-        return;
-      }
-
-      const args = { project_id: project };
-      if (repo) args.repo_id = repo.id;
+      const args = {};
+      if (project) args.project_id = Number(project);
+      if (repo) args.repo_id = Number(repo);
       if (status) args.status = status;
       if (priority) args.priority = priority;
       if (marking) args.marking = marking;
 
-      const query = JSON.stringify([
-        project,
-        repo ? repo.id : '',
-        status,
-        priority,
-        marking,
-      ]);
+      const query = JSON.stringify([project, repo, status, priority, marking]);
       if (query !== lastTaskQuery) {
         lastTaskQuery = query;
         setTasks([]);
@@ -278,15 +215,14 @@ export default function App() {
       const load = async () => {
         try {
           const data = await command('task.list', args, { signal: controller.signal });
-          if (cancelled || String(projectId() ?? '') !== String(project)) return;
+          if (cancelled) return;
           const list = sortTasks(
             asArray(data)
               .map((task) => normalizeTask(task))
               .filter(Boolean),
           );
-          setTasks(list);
+          setTasks((previous) => mergeTasks(previous, list));
           setTasksError(null);
-          setTasksInitialized(true);
           const discovered = uniqueMarkings(list);
           if (discovered.length > 0) {
             setKnownMarkings((previous) => addMarkings(previous, discovered));
@@ -294,7 +230,6 @@ export default function App() {
         } catch (error) {
           if (cancelled || isAbortError(error)) return;
           setTasksError(errorText(error));
-          setTasksInitialized(true);
         } finally {
           if (!cancelled) setTasksLoading(false);
         }
@@ -314,9 +249,9 @@ export default function App() {
     },
   );
 
-  createEffect(markingInput, (previous) => {
+  createEffect(markingInput, (value) => {
     const markingTimer = setTimeout(() => {
-      const next = previous.trim();
+      const next = value.trim();
       if (filters.marking !== next) {
         setFilters((draft) => {
           draft.marking = next;
@@ -324,10 +259,6 @@ export default function App() {
       }
     }, 300);
     return () => clearTimeout(markingTimer);
-  });
-
-  onCleanup(() => {
-    clearTimeout(noticeTimer);
   });
 
   createEffect(daemonReload, () => {
@@ -361,9 +292,9 @@ export default function App() {
   });
 
   createEffect(
-    () => [selectedTaskId(), projectId(), detailReload()],
-    ([taskId, project]) => {
-      if (taskId == null || project == null) {
+    () => [selectedTaskId(), detailReload()],
+    ([taskId]) => {
+      if (taskId == null) {
         lastDetailSelection = null;
         setDetail(null);
         setDetailError(null);
@@ -412,8 +343,9 @@ export default function App() {
     },
   );
 
+  // Blockers come from the task's own project, never the active filters.
   createEffect(
-    () => [selectedTaskId(), projectId(), blockerReload()],
+    () => [selectedTaskId(), detail()?.task?.project_id, blockerReload()],
     ([taskId, project]) => {
       if (taskId == null || project == null) {
         setBlockerSource({ tasks: [], loading: false, error: null });
@@ -453,19 +385,14 @@ export default function App() {
   );
 
   createEffect(
-    () => detail()?.task,
-    (current) => {
-      if (!current) return;
-      const discovered = uniqueMarkings([current]);
-      if (discovered.length > 0) {
-        setKnownMarkings((previous) => addMarkings(previous, discovered));
-      }
+    () => [detail()?.task, tasks()],
+    ([current, list]) => {
+      const discovered = new Set(uniqueMarkings(current ? [current] : []));
+      for (const marking of uniqueMarkings(list)) discovered.add(marking);
+      if (discovered.size === 0) return;
+      setKnownMarkings((previous) => addMarkings(previous, [...discovered]));
     },
   );
-
-  function refreshRepos() {
-    setRepoReload((value) => value + 1);
-  }
 
   function refreshDaemon() {
     setDaemonReload((value) => value + 1);
@@ -481,28 +408,9 @@ export default function App() {
     setBlockerReload((value) => value + 1);
   }
 
-  async function handleProjectCreated(name) {
-    setNewProjectOpen(false);
-    setSelectedTaskId(null);
-    setDetail(null);
-    await loadProjects({ selectName: name });
-    notify('Project created');
-  }
-
-  function handleRepoAdded() {
-    refreshRepos();
-    notify('Repository added');
-  }
-
-  function handleTaskCreated() {
-    setNewTaskOpen(false);
-    refreshTasks();
-    notify('Task created');
-  }
-
   function openNewTask() {
-    if (repos().length === 0) {
-      notify('Add a repository first.');
+    if (!hasRepos()) {
+      setAddRepoOpen(true);
       return;
     }
     setSelectedTaskId(null);
@@ -510,10 +418,35 @@ export default function App() {
     setNewTaskOpen(true);
   }
 
-  function openNewProject() {
-    setSelectedTaskId(null);
-    setDetail(null);
-    setNewProjectOpen(true);
+  function openAddRepo() {
+    setAddRepoOpen(true);
+  }
+
+  // One stable handler: the button label reacts to repo count, and so must the
+  // action. Passing `hasRepos() ? a : b` would snapshot the handler at mount.
+  function primaryAction() {
+    if (hasRepos()) openNewTask();
+    else openAddRepo();
+  }
+
+  function handleRepoAdded() {
+    setAddRepoOpen(false);
+    setReposLoading(true);
+    setRepoReload((value) => value + 1);
+    loadProjects();
+    notify('Repository added');
+  }
+
+  async function handleTaskCreated() {
+    setNewTaskOpen(false);
+    refreshTasks();
+    notify('Task created');
+  }
+
+  async function handleProjectCreated() {
+    setNewProjectOpen(false);
+    await loadProjects();
+    notify('Project created');
   }
 
   function openTask(id) {
@@ -527,36 +460,48 @@ export default function App() {
     setDetailLoading(false);
   }
 
-  function selectProject(value) {
-    const project = projects().find((item) => String(item.id) === String(value));
-    if (project) changeProject(project.id);
+  async function approveTask(task) {
+    if (approvingId() != null) return;
+    setApprovingId(task.id);
+    try {
+      await command('task.review', { id: task.id, approve: true });
+      notify(`Task #${task.id} approved`);
+      refreshAfterTaskChange();
+    } catch (error) {
+      notify(errorText(error));
+    } finally {
+      setApprovingId(null);
+    }
   }
 
   function updateFilter(name, value) {
     setFilters((draft) => {
       draft[name] = value;
+      if (name === 'project') draft.repo = '';
     });
   }
 
   function clearFilters() {
     setFilters((draft) => {
-      Object.assign(draft, { repo: '', status: '', priority: '', marking: '' });
+      Object.assign(draft, EMPTY_FILTERS);
     });
     setMarkingInput('');
   }
 
-  function newTaskDefaults() {
-    const repoFilter = filters.repo;
+  const newTaskDefaults = createMemo(() => {
+    const scoped = reposForProject(repos(), filters.project);
     const selectedRepo =
-      repos().find((repo) => String(repo.id) === String(repoFilter)) || repos()[0] || null;
+      scoped.find((repo) => String(repo.id) === String(filters.repo)) || scoped[0] || null;
     return {
       repo_id: selectedRepo ? String(selectedRepo.id) : '',
       status: filters.status || 'todo',
       priority: filters.priority || 'medium',
     };
-  }
+  });
 
-  const taskCanStart = () => repos().length > 0;
+  onCleanup(() => {
+    clearTimeout(noticeTimer);
+  });
 
   return (
     <div class="app">
@@ -564,180 +509,92 @@ export default function App() {
         Skip to content
       </a>
       <Header
-        projects={projects()}
-        projectId={projectId()}
-        onProjectChange={selectProject}
-        onNewProject={openNewProject}
+        view={view()}
+        onViewChange={setView}
+        daemon={daemon()}
+        daemonError={daemonError()}
+        hasRepos={hasRepos()}
+        onRefreshDaemon={refreshDaemon}
+        onPrimaryAction={primaryAction}
+        notify={notify}
       />
 
+      <Show when={watcherWarning()}>
+        {(warning) => (
+          <div class="watcher-banner" role="alert">
+            <span class="watcher-banner-dot" aria-hidden="true" />
+            <span class="watcher-banner-text">
+              <strong>{warning().title}</strong> {warning().body}
+            </span>
+            <button class="btn btn-ghost btn-sm" type="button" onClick={refreshDaemon}>
+              Retry
+            </button>
+          </div>
+        )}
+      </Show>
+
       <main id="main" class="app-main">
-        <Show when={projects().length > 0}>
-          <Show when={projectsError()}>
-            <div class="banner warning app-banner" role="alert">
-              <span>Project list refresh failed. {projectsError()}</span>
-              <button class="btn btn-ghost btn-sm" type="button" onClick={() => loadProjects()}>
-                Retry
-              </button>
-            </div>
-          </Show>
+        <Show when={projectsError()}>
+          <div class="banner warning app-banner" role="alert">
+            <span>Project list refresh failed. {projectsError()}</span>
+            <button class="btn btn-ghost btn-sm" type="button" onClick={loadProjects}>
+              Retry
+            </button>
+          </div>
         </Show>
 
-        <Show when={projects().length === 0}>
-          <Show
-            when={!projectsLoading()}
-            fallback={
-              <div class="setup-shell">
-                <section class="panel setup-panel" aria-busy="true" role="status">
-                  <div class="setup-header">
-                    <h2>Loading workspace</h2>
-                    <p>Connecting to the Gilir API.</p>
-                  </div>
-                </section>
-              </div>
-            }
-          >
-            <Show
-              when={projectsError()}
-              fallback={
-                <SetupPanel
-                  project={null}
-                  repos={[]}
-                  reposLoading={false}
-                  reposError={null}
-                  onProjectCreated={handleProjectCreated}
-                  onRepoAdded={handleRepoAdded}
-                  onRetryRepos={refreshRepos}
-                  onNewTask={openNewTask}
-                />
-              }
-            >
-              <div class="setup-shell">
-                <section class="panel setup-panel" role="alert">
-                  <div class="setup-header">
-                    <h2>Cannot load projects</h2>
-                    <p>{projectsError()}</p>
-                  </div>
-                  <div class="setup-actions">
-                    <button class="btn btn-primary" type="button" onClick={() => loadProjects()}>
-                      Retry
-                    </button>
-                  </div>
-                </section>
-              </div>
-            </Show>
-          </Show>
+        <Show when={reposError()}>
+          <div class="banner warning app-banner" role="alert">
+            <span>Repository list refresh failed. {reposError()}</span>
+            <button class="btn btn-ghost btn-sm" type="button" onClick={loadRepos}>
+              Retry
+            </button>
+          </div>
         </Show>
 
-        <Show when={projects().length > 0}>
-          <Show
-            when={currentProject()}
-            fallback={
-              <div class="setup-shell">
-                <section class="panel setup-panel" aria-busy="true" role="status">
-                  <div class="setup-header">
-                    <h2>Loading project</h2>
-                    <p>Selecting the active project.</p>
-                  </div>
-                </section>
-              </div>
-            }
-          >
-            {(project) => (
-              <>
-                <Show when={!tasksInitialized()}>
-                  <Show
-                    when={tasksError()}
-                    fallback={
-                      <div class="setup-shell">
-                        <section class="panel setup-panel" aria-busy="true" role="status">
-                          <div class="setup-header">
-                            <h2>Loading queue</h2>
-                            <p>Fetching tasks for {project().name}.</p>
-                          </div>
-                        </section>
-                      </div>
-                    }
-                  >
-                    <div class="setup-shell">
-                      <section class="panel setup-panel" role="alert">
-                        <div class="setup-header">
-                          <h2>Cannot load tasks</h2>
-                          <p>{tasksError()}</p>
-                        </div>
-                        <div class="setup-actions">
-                          <button class="btn btn-primary" type="button" onClick={refreshTasks}>
-                            Retry
-                          </button>
-                        </div>
-                      </section>
-                    </div>
-                  </Show>
-                </Show>
+        <Show
+          when={view() === 'tasks'}
+          fallback={
+            <ProjectsReposView
+              projects={projects()}
+              repos={repos()}
+              loading={projectsLoading() || reposLoading()}
+              error={reposError()}
+              onAddRepo={openAddRepo}
+              onNewProject={() => setNewProjectOpen(true)}
+              onRetry={loadRepos}
+            />
+          }
+        >
+          <Filters
+            projects={projects()}
+            repos={repos()}
+            filters={filters}
+            onChange={updateFilter}
+            markingInput={markingInput()}
+            onMarkingInput={setMarkingInput}
+            knownMarkings={knownMarkings()}
+            hasFilters={hasFilters()}
+            onReset={clearFilters}
+          />
 
-                <Show when={tasksInitialized()}>
-                  <Show
-                    when={!showSetup()}
-                    fallback={
-                      <SetupPanel
-                        project={project()}
-                        repos={repos()}
-                        reposLoading={reposLoading()}
-                        reposError={reposError()}
-                        onProjectCreated={handleProjectCreated}
-                        onRepoAdded={handleRepoAdded}
-                        onRetryRepos={refreshRepos}
-                        onNewTask={openNewTask}
-                      />
-                    }
-                  >
-                    <div class="workspace">
-                      <aside class="sidebar" aria-label="Queue controls">
-                        <DaemonCard
-                          status={daemon()}
-                          error={daemonError()}
-                          onRefresh={refreshDaemon}
-                          notify={notify}
-                        />
-                        <Filters
-                          repos={repos()}
-                          filters={filters}
-                          onChange={updateFilter}
-                          markingInput={markingInput()}
-                          onMarkingInput={setMarkingInput}
-                          knownMarkings={knownMarkings()}
-                          hasFilters={hasFilters()}
-                          onReset={clearFilters}
-                        />
-                        <ReposPanel
-                          repos={repos()}
-                          loading={reposLoading()}
-                          error={reposError()}
-                          projectId={projectId()}
-                          onAdded={handleRepoAdded}
-                          onRetry={refreshRepos}
-                        />
-                      </aside>
-                      <div class="main-panel">
-                        <TaskListPanel
-                          tasks={tasks()}
-                          loading={tasksLoading()}
-                          error={tasksError()}
-                          repos={repos()}
-                          hasFilters={hasFilters()}
-                          onOpen={openTask}
-                          onNewTask={openNewTask}
-                          onClearFilters={clearFilters}
-                          onRetry={refreshTasks}
-                          selectedTaskId={selectedTaskId()}
-                          canCreate={taskCanStart()}
-                        />
-                      </div>
-                    </div>
-                  </Show>
-                </Show>
-              </>
-            )}
-          </Show>
+          <TaskListPanel
+            tasks={tasks()}
+            loading={tasksLoading()}
+            error={tasksError()}
+            repos={repos()}
+            projects={projects()}
+            hasFilters={hasFilters()}
+            statusFilter={filters.status}
+            selectedTaskId={selectedTaskId()}
+            approvingId={approvingId()}
+            onOpen={openTask}
+            onApprove={approveTask}
+            onNewTask={openNewTask}
+            onAddRepo={openAddRepo}
+            onClearFilters={clearFilters}
+            onRetry={refreshTasks}
+          />
         </Show>
       </main>
 
@@ -747,37 +604,42 @@ export default function App() {
         </div>
       </Show>
 
-      <Show when={projects().length > 0}>
-        <NewProjectDialog
-          open={newProjectOpen()}
-          onClose={() => setNewProjectOpen(false)}
-          onCreated={handleProjectCreated}
-        />
-      </Show>
+      <AddRepoDialog
+        open={addRepoOpen()}
+        projects={projects()}
+        onClose={() => setAddRepoOpen(false)}
+        onAdded={handleRepoAdded}
+      />
 
-      <Show when={currentProject()}>
-        <NewTaskDialog
-          open={newTaskOpen()}
-          onClose={() => setNewTaskOpen(false)}
-          projectId={projectId()}
-          repos={repos()}
-          defaults={newTaskDefaults()}
-          onCreated={handleTaskCreated}
-        />
-        <TaskDrawer
-          open={selectedTaskId() != null}
-          taskId={selectedTaskId()}
-          detail={detail()}
-          loading={detailLoading()}
-          error={detailError()}
-          projectId={projectId()}
-          repos={repos()}
-          blockerSource={blockerSource()}
-          onClose={closeTask}
-          onRefresh={refreshAfterTaskChange}
-          notify={notify}
-        />
-      </Show>
+      <NewProjectDialog
+        open={newProjectOpen()}
+        onClose={() => setNewProjectOpen(false)}
+        onCreated={handleProjectCreated}
+      />
+
+      <NewTaskDialog
+        open={newTaskOpen()}
+        onClose={() => setNewTaskOpen(false)}
+        repos={repos()}
+        projects={projects()}
+        defaults={newTaskDefaults()}
+        defaultProjectId={filters.project}
+        onCreated={handleTaskCreated}
+      />
+
+      <TaskDrawer
+        open={selectedTaskId() != null}
+        taskId={selectedTaskId()}
+        detail={detail()}
+        loading={detailLoading()}
+        error={detailError()}
+        repos={repos()}
+        projects={projects()}
+        blockerSource={blockerSource()}
+        onClose={closeTask}
+        onRefresh={refreshAfterTaskChange}
+        notify={notify}
+      />
     </div>
   );
 }
