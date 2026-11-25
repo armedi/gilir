@@ -23,7 +23,7 @@ var (
 	ErrConflict = errors.New("store: conflict")
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 const databaseBusyTimeout = "5000"
 

@@ -12,11 +12,13 @@
 //	file:<absolute-path>?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate
 //
 // Projects, repositories, and tasks use AUTOINCREMENT integer primary keys, so
-// IDs are positive and allocated in insertion order. Tasks refer to exactly one
-// repository in their project through a composite foreign key, and task
-// dependencies use composite foreign keys to prove both ends belong to the same
-// project. Self-dependencies and dependency cycles are rejected inside the
-// writing transaction using a recursive CTE.
+// IDs are positive and allocated in insertion order. A repository is a
+// canonical Git root registered once globally and linked to one or more
+// projects through project_repos. Tasks target a linked (project, repository)
+// pair through a composite foreign key, so every task's repository belongs to
+// its project, while task dependencies use composite foreign keys to prove both
+// ends belong to the same project. Self-dependencies and dependency cycles are
+// rejected inside the writing transaction using a recursive CTE.
 //
 // All domain mutations execute in one transaction and append an immutable
 // activity row. Activity rows are ordered by their AUTOINCREMENT ID and can be
@@ -24,8 +26,11 @@
 // durable and monotonic. No API deletes activity, and database triggers reject
 // UPDATE and DELETE on the activity table.
 //
-// A project or repository with dependent work cannot be deleted, and task
-// deletion is intentionally unsupported. This keeps the audit trail complete.
+// Every repository stays linked to at least one project. A project with tasks,
+// or whose deletion would orphan a repository's last link, cannot be deleted; a
+// repository with tasks cannot be removed, and a repository link cannot be
+// removed while a task in that project targets it. Task deletion is
+// intentionally unsupported. This keeps the audit trail complete.
 // Queue dispatch reservations are persisted before any external effect so the
 // scheduler can recover after a restart. Attempt IDs are random 128-bit
 // identifiers that are unique across independent Gilir databases; session and

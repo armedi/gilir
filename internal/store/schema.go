@@ -3,16 +3,22 @@ package store
 var schemaStatements = []string{
 	`CREATE TABLE projects (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		name TEXT NOT NULL CHECK (length(trim(name)) > 0)
+		name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+		UNIQUE (name)
 	) STRICT`,
 
 	`CREATE TABLE repos (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		project_id INTEGER NOT NULL,
 		path TEXT NOT NULL CHECK (length(trim(path)) > 0),
-		UNIQUE (project_id, path),
-		UNIQUE (id, project_id),
-		FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE RESTRICT
+		UNIQUE (path)
+	) STRICT`,
+
+	`CREATE TABLE project_repos (
+		project_id INTEGER NOT NULL,
+		repo_id INTEGER NOT NULL,
+		PRIMARY KEY (project_id, repo_id),
+		FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE RESTRICT,
+		FOREIGN KEY (repo_id) REFERENCES repos(id) ON DELETE RESTRICT
 	) STRICT`,
 
 	`CREATE TABLE tasks (
@@ -28,8 +34,8 @@ var schemaStatements = []string{
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL,
 		UNIQUE (id, project_id),
-		FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE RESTRICT,
-		FOREIGN KEY (repo_id, project_id) REFERENCES repos(id, project_id) ON DELETE RESTRICT
+		FOREIGN KEY (project_id, repo_id)
+			REFERENCES project_repos(project_id, repo_id) ON DELETE RESTRICT
 	) STRICT`,
 
 	`CREATE TABLE task_markings (
@@ -101,7 +107,7 @@ var schemaStatements = []string{
 		updated_at TEXT NOT NULL
 	) STRICT`,
 
-	`CREATE INDEX idx_repos_project ON repos (project_id)`,
+	`CREATE INDEX idx_project_repos_repo ON project_repos (repo_id)`,
 	`CREATE INDEX idx_tasks_project ON tasks (project_id)`,
 	`CREATE INDEX idx_tasks_repo ON tasks (repo_id)`,
 	`CREATE INDEX idx_tasks_status ON tasks (status)`,
