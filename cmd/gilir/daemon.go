@@ -10,7 +10,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -28,12 +27,11 @@ import (
 )
 
 const (
-	defaultListen      = "127.0.0.1:4718"
-	defaultOpenCodeURL = "http://127.0.0.1:49374"
-	defaultWebDir      = "web/dist"
-	shutdownTimeout    = 10 * time.Second
-	statusTimeout      = 5 * time.Second
-	maxStatusBytes     = 1 << 20
+	defaultListen   = "127.0.0.1:4718"
+	defaultWebDir   = "web/dist"
+	shutdownTimeout = 10 * time.Second
+	statusTimeout   = 5 * time.Second
+	maxStatusBytes  = 1 << 20
 )
 
 // errLocked reports that another process holds the daemon lock.
@@ -41,6 +39,30 @@ var errLocked = errors.New("lock is held by another process")
 
 type stopped struct {
 	Stopped bool `json:"stopped"`
+}
+
+// opencodeEndpoint describes where the daemon will look for OpenCode, for the
+// startup line. It never contains the password.
+func opencodeEndpoint(overrides opencode.Overrides) string {
+	if overrides.URL != nil {
+		return *overrides.URL
+	}
+	return "auto-discovered from the managed opencode service"
+}
+
+// opencodeOverrides returns the explicitly configured OpenCode connection
+// values. An unset variable means "discover it from the managed service"; an
+// explicitly empty one keeps its current meaning (no password, or the default
+// URL).
+func opencodeOverrides() opencode.Overrides {
+	var overrides opencode.Overrides
+	if value, ok := os.LookupEnv("GILIR_OPENCODE_URL"); ok {
+		overrides.URL = &value
+	}
+	if value, ok := os.LookupEnv("OPENCODE_PASSWORD"); ok {
+		overrides.Password = &value
+	}
+	return overrides
 }
 
 // runDaemon serves until SIGINT/SIGTERM or a server failure, then stops the
@@ -51,14 +73,18 @@ func runDaemon(parent context.Context) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	ocURL := envOr("GILIR_OPENCODE_URL", defaultOpenCodeURL)
-	password := os.Getenv("OPENCODE_PASSWORD")
-	oc, err := opencode.New(ocURL, password)
+	overrides := opencodeOverrides()
+	conn, err := opencode.NewConnector(opencode.NewCLI(), overrides)
 	if err != nil {
 		return nil, fmt.Errorf("GILIR_OPENCODE_URL: %w", err)
 	}
-	parsed, _ := url.Parse(ocURL) // validated by opencode.New
-	serverURL := parsed.Scheme + "://" + parsed.Host
+	// Resolve once at startup so a stopped service is reported immediately and
+	// the first watcher tick reuses the cached client instead of running the
+	// discovery CLI again. Discovery failure never stops the daemon: the
+	// watcher keeps retrying with backoff once OpenCode is available.
+	if _, _, err := conn.Client(parent); err != nil {
+		fmt.Fprintf(os.Stderr, "gilir: warning: %s\n", conn.Redact(opencode.Describe(err)))
+	}
 
 	var hookConfigs []hooks.Config
 	if path := os.Getenv("GILIR_HOOKS"); path != "" {
@@ -102,10 +128,10 @@ func runDaemon(parent context.Context) (any, error) {
 	host, _, _ := net.SplitHostPort(listen)
 	port := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
 
-	w := watcher.New(st, oc, serverURL)
+	w := watcher.NewWithConnection(st, conn)
 	service := commands.New(st, func() commands.Snapshot {
 		snap := w.Snapshot()
-		return commands.Snapshot{ActiveParents: snap.ActiveParents, WatcherError: redact(snap.Error, password)}
+		return commands.Snapshot{ActiveParents: snap.ActiveParents, WatcherError: snap.Error}
 	})
 	server := &http.Server{
 		Handler:           localhttp.Handler(port, web, service.Execute, commands.Classify),
@@ -142,7 +168,7 @@ func runDaemon(parent context.Context) (any, error) {
 		webNote = "no web UI (" + webDir + "/index.html not found)"
 	}
 	fmt.Fprintf(os.Stderr, "gilir: daemon listening on http://%s (database %s, OpenCode %s, %s, %d hooks)\n",
-		net.JoinHostPort(host, port), dbPath, serverURL, webNote, len(hookConfigs))
+		net.JoinHostPort(host, port), dbPath, opencodeEndpoint(overrides), webNote, len(hookConfigs))
 
 	var runErr error
 	select {
@@ -300,13 +326,6 @@ func (s storeSource) SetCursor(ctx context.Context, name string, lastID int64) e
 
 func (s storeSource) Latest(ctx context.Context) (int64, error) {
 	return s.st.LatestActivityID(ctx)
-}
-
-func redact(text, secret string) string {
-	if secret == "" {
-		return text
-	}
-	return strings.ReplaceAll(text, secret, "[redacted]")
 }
 
 func envOr(name, fallback string) string {

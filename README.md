@@ -40,24 +40,25 @@ database: a second `daemon run` on the same database exits with an error.
 | `GILIR_DB` | `${XDG_DATA_HOME:-$HOME/.local/share}/gilir/gilir.sqlite` (Windows: `%LOCALAPPDATA%\gilir\gilir.sqlite`) | Database file. If missing, it is created with mode 0600 in a 0700 directory. An existing file keeps its mode. |
 | `GILIR_LISTEN` | `127.0.0.1:4718` | HTTP address. The host must be `127.0.0.1` or `[::1]`. |
 | `GILIR_WEB_DIR` | `web/dist` | Static web bundle. Gilir serves only the API if `index.html` is absent. |
-| `GILIR_OPENCODE_URL` | `http://127.0.0.1:49374` | OpenCode V2 server. It must be on loopback. |
-| `OPENCODE_PASSWORD` | unset | Sent as HTTP Basic auth (user `opencode`). |
+| `GILIR_OPENCODE_URL` | discovered from `opencode service status` | OpenCode V2 server. It must be on loopback. Set it to pin an explicit server. |
+| `OPENCODE_PASSWORD` | discovered from `opencode service get password` | Sent as HTTP Basic auth (user `opencode`). Set it to pin an explicit password. |
 | `GILIR_HOOKS` | unset | Path to a hook config file (see below). |
 | `GILIR_ACTOR` | `user` | Default actor recorded for CLI changes. `--actor` overrides it. |
 
 ### Connecting OpenCode
 
-Point Gilir at your running OpenCode V2 server. Set the password without
-printing it or saving it in your shell history. For the managed OpenCode
-service:
+By default Gilir discovers the local managed OpenCode service through the
+`opencode` CLI: `opencode service status` for the URL and `opencode service get
+password` for the Basic auth password. Nothing needs to be set. Gilir never
+starts OpenCode; when the service is not running the daemon stays up, dispatches
+nothing, and `gilir daemon status` reports `OpenCode is not running`. It
+connects on its own once OpenCode starts, and re-reads the password if the
+service restarts and rotates it.
 
-```sh
-export GILIR_OPENCODE_URL=http://127.0.0.1:49374
-export OPENCODE_PASSWORD="$(opencode service get password)"
-gilir daemon run
-```
-
-To paste the password yourself instead, use a silent Bash prompt:
+To pin an explicit server or password, set `GILIR_OPENCODE_URL` and/or
+`OPENCODE_PASSWORD`. Each unset variable is still discovered. This is useful
+for a remote or hand-started server, where you can read the password without
+printing it into your shell history:
 
 ```sh
 read -rsp 'OpenCode password: ' OPENCODE_PASSWORD && echo && export OPENCODE_PASSWORD

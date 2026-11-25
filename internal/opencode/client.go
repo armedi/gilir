@@ -73,6 +73,24 @@ func IsNotFound(err error) bool {
 	return errors.As(err, &se) && se.StatusCode == http.StatusNotFound
 }
 
+// IsUnauthorized reports whether err is a 401 response, which means the
+// password the client was built with is no longer accepted.
+func IsUnauthorized(err error) bool {
+	var se *StatusError
+	return errors.As(err, &se) && se.StatusCode == http.StatusUnauthorized
+}
+
+// IsUnreachable reports whether err means no HTTP response was received:
+// the server refused the connection, the name did not resolve, or the
+// request timed out. The keep-alive client can recover from these by itself.
+func IsUnreachable(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
+}
+
 // IsSessionNotFound reports whether err is OpenCode's tagged 404 for a
 // missing session.
 func IsSessionNotFound(err error) bool { return isTagged404(err, "SessionNotFoundError") }
@@ -181,6 +199,10 @@ func requireLoopbackDial(_, address string, _ syscall.RawConn) error {
 	}
 	return nil
 }
+
+// ServerURL returns the canonical origin this client talks to. It never
+// contains credentials.
+func (c *Client) ServerURL() string { return c.base.Scheme + "://" + c.base.Host }
 
 // Link returns the web UI URL for a session. It never contains credentials.
 func (c *Client) Link(sessionID string) string {
