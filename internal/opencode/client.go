@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -72,6 +73,19 @@ func IsNotFound(err error) bool {
 	return errors.As(err, &se) && se.StatusCode == http.StatusNotFound
 }
 
+// IsSessionNotFound reports whether err is OpenCode's tagged 404 for a
+// missing session.
+func IsSessionNotFound(err error) bool { return isTagged404(err, "SessionNotFoundError") }
+
+// IsMessageNotFound reports whether err is OpenCode's tagged 404 for a
+// missing (or not yet delivered) message.
+func IsMessageNotFound(err error) bool { return isTagged404(err, "MessageNotFoundError") }
+
+func isTagged404(err error, tag string) bool {
+	var se *StatusError
+	return errors.As(err, &se) && se.StatusCode == http.StatusNotFound && se.Tag == tag
+}
+
 // New returns a client for a loopback OpenCode server at rawURL. The URL must
 // be http or https, name localhost or a loopback IP, and carry no
 // credentials, path, query or fragment. A non-empty password is sent as HTTP
@@ -90,10 +104,11 @@ func New(rawURL, password string) (*Client, error) {
 	if u.Opaque != "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" {
 		return nil, errors.New("opencode: server URL must not contain a path, query or fragment")
 	}
-	if !isLoopbackHost(u.Hostname()) {
-		return nil, fmt.Errorf("opencode: server host %q is not loopback", u.Hostname())
+	host, err := canonicalHost(u)
+	if err != nil {
+		return nil, err
 	}
-	base := &url.URL{Scheme: u.Scheme, Host: u.Host}
+	base := &url.URL{Scheme: u.Scheme, Host: host}
 
 	dialer := &net.Dialer{Timeout: requestTimeout, Control: requireLoopbackDial}
 	transport := &http.Transport{
@@ -117,12 +132,41 @@ func New(rawURL, password string) (*Client, error) {
 	}, nil
 }
 
-func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
+// canonicalHost returns u's host in the form a browser serializes it in an
+// origin: lowercase localhost or a canonical loopback IP (IPv6 bracketed and
+// compressed), with the port omitted when it is the scheme default. Web UI
+// links depend on an exact origin match.
+func canonicalHost(u *url.URL) (string, error) {
+	name := strings.ToLower(u.Hostname())
+	if name != "localhost" {
+		ip := net.ParseIP(name)
+		if ip == nil || !ip.IsLoopback() {
+			return "", fmt.Errorf("opencode: server host %q is not loopback", u.Hostname())
+		}
+		if strings.Contains(name, ":") {
+			if ip.To4() != nil {
+				return "", fmt.Errorf("opencode: server host %q is an IPv4-mapped IPv6 address", u.Hostname())
+			}
+			name = "[" + ip.String() + "]"
+		} else {
+			name = ip.String()
+		}
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	if strings.HasSuffix(u.Host, ":") {
+		return "", errors.New("opencode: server URL has an empty port")
+	}
+	port := u.Port()
+	if port == "" {
+		return name, nil
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return "", fmt.Errorf("opencode: server URL port %q is out of range", port)
+	}
+	if (u.Scheme == "http" && n == 80) || (u.Scheme == "https" && n == 443) {
+		return name, nil
+	}
+	return name + ":" + strconv.Itoa(n), nil
 }
 
 // requireLoopbackDial rejects connections whose resolved address is not
@@ -224,6 +268,7 @@ func (c *Client) Create(ctx context.Context, id, title, directory string) (Sessi
 	if !filepath.IsAbs(directory) {
 		return Session{}, fmt.Errorf("opencode: session directory %q is not absolute", directory)
 	}
+	directory = filepath.Clean(directory)
 	req := struct {
 		ID       string      `json:"id"`
 		Title    string      `json:"title"`
@@ -244,7 +289,7 @@ func (c *Client) Create(ctx context.Context, id, title, directory string) (Sessi
 		return Session{}, fmt.Errorf("opencode: POST /api/session: returned session %q, want %q", s.ID, id)
 	case s.ParentID != "":
 		return Session{}, fmt.Errorf("opencode: POST /api/session: session %s is a child of %s", id, s.ParentID)
-	case s.Directory != directory:
+	case filepath.Clean(s.Directory) != directory:
 		return Session{}, fmt.Errorf("opencode: POST /api/session: session %s is in %q, want %q", id, s.Directory, directory)
 	}
 	return s, nil
