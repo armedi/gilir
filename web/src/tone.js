@@ -7,3 +7,9 @@ export function knownStatus(value) {
 export function knownPriority(value) {
   return KNOWN_PRIORITIES.has(value) ? value : 'neutral';
 }
+
+export function markingTone(value) {
+  if (value === 'error') return 'error';
+  if (value === 'changes-requested') return 'changes';
+  return 'custom';
+}

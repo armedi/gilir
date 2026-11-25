@@ -8,6 +8,15 @@ export const STATUS_LABELS = {
   done: 'Done',
 };
 
+// Queue groups render most urgent first.
+export const TASK_GROUPS = [
+  { status: 'in-review', label: 'In Review' },
+  { status: 'in-progress', label: 'In Progress' },
+  { status: 'todo', label: 'Todo' },
+  { status: 'backlog', label: 'Backlog' },
+  { status: 'done', label: 'Done' },
+];
+
 export const PRIORITIES = ['urgent', 'high', 'medium', 'low'];
 
 export const PRIORITY_LABELS = {

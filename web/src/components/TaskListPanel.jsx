@@ -1,41 +1,36 @@
-import { Show } from 'solid-js';
-import TaskTable from './TaskTable';
+import { Show, createMemo } from 'solid-js';
+import TaskList from './TaskList';
 
 export default function TaskListPanel(props) {
+  const hasRepos = createMemo(() => props.repos.length > 0);
+  const showList = createMemo(() => props.tasks.length > 0);
+
   return (
     <section
       id="tasks"
-      class="panel list-panel"
+      class="task-panel"
       aria-labelledby="tasks-title"
       aria-busy={props.loading ? 'true' : 'false'}
     >
-      <div class="list-toolbar">
-        <div class="list-title-row">
-          <h2 id="tasks-title" class="list-title">
+      <div class="task-panel-head">
+        <div class="task-panel-title-row">
+          <h2 id="tasks-title" class="task-panel-title">
             Tasks
           </h2>
-          <span class="task-count">
+          <span class="task-count" aria-live="polite">
             {props.tasks.length}
             <span class="sr-only"> tasks</span>
           </span>
         </div>
-        <button
-          class="btn btn-primary"
-          type="button"
-          onClick={props.onNewTask}
-          disabled={!props.canCreate}
-          title={props.canCreate ? undefined : 'Add a repository before creating a task.'}
-        >
-          New task
-        </button>
+        <Show when={props.loading && props.tasks.length > 0}>
+          <span class="task-refresh" role="status">
+            <span class="sr-only">Refreshing tasks</span>
+          </span>
+        </Show>
       </div>
 
-      <Show when={props.loading && props.tasks.length > 0}>
-        <div class="refresh-bar" aria-hidden="true" />
-      </Show>
-
       <Show when={props.error}>
-        <div class="banner warning" role="alert">
+        <div class="banner warning task-banner" role="alert">
           <span>
             {props.tasks.length > 0 ? 'Live updates paused. ' : 'Could not load tasks. '}
             {props.error}
@@ -46,47 +41,59 @@ export default function TaskListPanel(props) {
         </div>
       </Show>
 
-      <Show when={props.loading && props.tasks.length === 0}>
-        <div class="loading-state" role="status">
+      <Show when={props.loading && props.tasks.length === 0 && props.repos.length > 0}>
+        <div class="task-loading" role="status">
           Loading tasks…
         </div>
       </Show>
 
-      <Show when={!props.loading && props.tasks.length === 0}>
-        <div class="empty-state">
+      <Show when={showList()}>
+        <TaskList
+          tasks={props.tasks}
+          repos={props.repos}
+          projects={props.projects}
+          selectedTaskId={props.selectedTaskId}
+          approvingId={props.approvingId}
+          statusFilter={props.statusFilter}
+          onOpen={props.onOpen}
+          onApprove={props.onApprove}
+        />
+      </Show>
+
+      <Show when={!props.loading && !showList()}>
+        <div class="task-empty">
           <Show
-            when={props.hasFilters}
+            when={hasRepos()}
             fallback={
               <>
-                <h3>No tasks yet</h3>
-                <p>Add the first task to start the queue.</p>
-                <button
-                  class="btn btn-primary"
-                  type="button"
-                  onClick={props.onNewTask}
-                  disabled={!props.canCreate}
-                >
-                  New task
+                <h3>No repositories yet</h3>
+                <p>Add a Git repository to start queuing tasks.</p>
+                <button class="btn btn-primary" type="button" onClick={props.onAddRepo}>
+                  Add repository
                 </button>
               </>
             }
           >
-            <h3>No matching tasks</h3>
-            <p>No tasks match the current filters.</p>
-            <button class="btn btn-secondary" type="button" onClick={props.onClearFilters}>
-              Clear filters
-            </button>
+            <Show
+              when={props.hasFilters}
+              fallback={
+                <>
+                  <h3>No tasks yet</h3>
+                  <p>Create the first task in this queue.</p>
+                  <button class="btn btn-primary" type="button" onClick={props.onNewTask}>
+                    New task
+                  </button>
+                </>
+              }
+            >
+              <h3>No matching tasks</h3>
+              <p>No tasks match the current filters.</p>
+              <button class="btn btn-secondary" type="button" onClick={props.onClearFilters}>
+                Clear filters
+              </button>
+            </Show>
           </Show>
         </div>
-      </Show>
-
-      <Show when={props.tasks.length > 0}>
-        <TaskTable
-          tasks={props.tasks}
-          repos={props.repos}
-          selectedTaskId={props.selectedTaskId}
-          onOpen={props.onOpen}
-        />
       </Show>
     </section>
   );

@@ -14,18 +14,3 @@ export function PriorityBadge(props) {
     </span>
   );
 }
-
-export function QueueState(props) {
-  const state = () =>
-    props.paused == null ? 'unknown' : props.paused ? 'paused' : 'running';
-  return (
-    <span class={`queue-state ${state()}`}>
-      <span class="queue-dot" aria-hidden="true" />
-      {props.paused == null
-        ? 'Queue unknown'
-        : props.paused
-          ? 'Queue paused'
-          : 'Queue running'}
-    </span>
-  );
-}
