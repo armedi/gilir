@@ -77,7 +77,7 @@ export default function RepoForm(props) {
           placeholder="/home/you/code/project"
           autocomplete="off"
           autocapitalize="off"
-          spellcheck={false}
+          spellcheck="false"
           disabled={busy()}
         />
       </div>
