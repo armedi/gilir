@@ -73,9 +73,10 @@ func (s *Store) HookCursor(ctx context.Context, hook string) (lastID int64, init
 	return lastID, true, nil
 }
 
-// SaveHookCursor persists a hook cursor monotonically. A lower value than the
-// stored cursor is ignored; a negative value is rejected. Cursor state is
-// operational metadata and is not written to the activity stream.
+// SaveHookCursor persists a hook cursor monotonically. A cursor greater than
+// the latest activity ID is rejected, as is a negative value; zero is accepted.
+// A lower value than the stored cursor is ignored. Cursor state is operational
+// metadata and is not written to the activity stream.
 func (s *Store) SaveHookCursor(ctx context.Context, hook string, cursor int64) error {
 	hook = strings.TrimSpace(hook)
 	if hook == "" {
@@ -84,18 +85,29 @@ func (s *Store) SaveHookCursor(ctx context.Context, hook string, cursor int64) e
 	if cursor < 0 {
 		return fmt.Errorf("%w: hook cursor must not be negative", ErrInvalid)
 	}
-	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO hook_cursors (hook, last_id, updated_at)
-		VALUES (?, ?, ?)
-		ON CONFLICT(hook) DO UPDATE SET
-			last_id = excluded.last_id,
-			updated_at = excluded.updated_at
-		WHERE excluded.last_id > hook_cursors.last_id`,
-		hook, cursor, formatTime(nowUTC()),
-	); err != nil {
-		return fmt.Errorf("store: save hook cursor: %w", err)
-	}
-	return nil
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		var latest int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT coalesce(max(id), 0) FROM activity`,
+		).Scan(&latest); err != nil {
+			return fmt.Errorf("store: load latest activity ID: %w", err)
+		}
+		if cursor > latest {
+			return fmt.Errorf("%w: hook cursor %d exceeds latest activity ID %d", ErrInvalid, cursor, latest)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO hook_cursors (hook, last_id, updated_at)
+			VALUES (?, ?, ?)
+			ON CONFLICT(hook) DO UPDATE SET
+				last_id = excluded.last_id,
+				updated_at = excluded.updated_at
+			WHERE excluded.last_id > hook_cursors.last_id`,
+			hook, cursor, formatTime(nowUTC()),
+		); err != nil {
+			return fmt.Errorf("store: save hook cursor: %w", err)
+		}
+		return nil
+	})
 }
 
 // LatestActivityID returns the current maximum activity ID, or 0 when no

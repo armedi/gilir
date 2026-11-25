@@ -185,7 +185,6 @@ func (s *Store) CreateTask(ctx context.Context, actor string, in CreateTaskParam
 		return Task{}, fmt.Errorf("%w: unsupported task priority %q", ErrInvalid, priority)
 	}
 
-	now := nowUTC()
 	var created Task
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
 		var projectMarker int
@@ -207,6 +206,7 @@ func (s *Store) CreateTask(ctx context.Context, actor string, in CreateTaskParam
 			return fmt.Errorf("store: load repository %d: %w", in.RepoID, err)
 		}
 
+		now := nowUTC()
 		result, err := tx.ExecContext(ctx, `
 			INSERT INTO tasks (project_id, repo_id, title, description, status, priority, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,

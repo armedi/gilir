@@ -437,6 +437,14 @@ func TestReservePreventsSecondUnresolvedAttemptEvenWhenTodo(t *testing.T) {
 	})
 
 	first := mustReserve(t, s, "http://127.0.0.1:4096", 100)
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO dispatch_attempts
+			(id, task_id, repo_path, server_url, server_pid, state, detail, created_at)
+		VALUES ('manual-reserved', ?, ?, 'http://127.0.0.1:4096', 55, 'reserved', '', ?)`,
+		task.ID, repo.Path, formatTime(nowUTC()),
+	); err == nil {
+		t.Fatal("second reserved attempt insert succeeded; partial unique index missing")
+	}
 	todo := StatusTodo
 	if _, err := s.UpdateTask(ctx, "alice", task.ID, TaskPatch{Status: &todo}); err != nil {
 		t.Fatalf("manually return to todo: %v", err)

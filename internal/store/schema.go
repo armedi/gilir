@@ -109,6 +109,8 @@ var schemaStatements = []string{
 	`CREATE INDEX idx_task_markings_marking ON task_markings (marking, task_id)`,
 	`CREATE INDEX idx_dependencies_blocker ON task_dependencies (depends_on_id)`,
 	`CREATE INDEX idx_attempts_task ON dispatch_attempts (task_id, state)`,
+	`CREATE UNIQUE INDEX idx_attempts_one_reserved_per_task
+		ON dispatch_attempts (task_id) WHERE state = 'reserved'`,
 	`CREATE INDEX idx_sessions_attempt ON sessions (attempt_id)`,
 	`CREATE INDEX idx_activity_task ON activity (task_id, id)`,
 

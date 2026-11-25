@@ -21,6 +21,15 @@ func TestActivityAfterPaginationAndHookCursorInitialization(t *testing.T) {
 	if err != nil || initialized || cursor != 0 {
 		t.Fatalf("missing HookCursor = (%d, %v, %v), want (0,false,nil)", cursor, initialized, err)
 	}
+	if err := s.SaveHookCursor(ctx, "empty-hook", 0); err != nil {
+		t.Fatalf("SaveHookCursor zero on empty store: %v", err)
+	}
+	if cursor, initialized, err = s.HookCursor(ctx, "empty-hook"); err != nil || !initialized || cursor != 0 {
+		t.Fatalf("zero cursor = (%d, %v, %v), want (0,true,nil)", cursor, initialized, err)
+	}
+	if err := s.SaveHookCursor(ctx, "empty-hook", 1); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("cursor beyond empty activity error = %v, want ErrInvalid", err)
+	}
 	if err := s.SaveHookCursor(ctx, "  ", 1); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("blank hook error = %v, want ErrInvalid", err)
 	}
@@ -39,6 +48,12 @@ func TestActivityAfterPaginationAndHookCursorInitialization(t *testing.T) {
 		t.Fatalf("latest activity = %d", latest)
 	}
 	beforeCursorSave := latest
+	if err := s.SaveHookCursor(ctx, "deploy", latest+1); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("future cursor error = %v, want ErrInvalid", err)
+	}
+	if cursor, initialized, err = s.HookCursor(ctx, "deploy"); err != nil || initialized || cursor != 0 {
+		t.Fatalf("rejected future cursor created state: (%d,%v,%v)", cursor, initialized, err)
+	}
 
 	if err := s.SaveHookCursor(ctx, "deploy", second.ID); err != nil {
 		t.Fatalf("SaveHookCursor: %v", err)
