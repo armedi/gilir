@@ -276,6 +276,35 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		}
 		return s.store.Comment(ctx, actor, in.ID, in.Body)
 
+	case "task.comment.edit":
+		var in taskCommentEditArgs
+		if err := decodeArgs(args, &in); err != nil {
+			return nil, err
+		}
+		if err := requireID("id", in.ID); err != nil {
+			return nil, err
+		}
+		if err := requireID("comment_id", in.CommentID); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(in.Body) == "" {
+			return nil, fmt.Errorf("%w: body is required", store.ErrInvalid)
+		}
+		return s.store.EditComment(ctx, actor, in.ID, in.CommentID, in.Body)
+
+	case "task.comment.remove":
+		var in taskCommentRemoveArgs
+		if err := decodeArgs(args, &in); err != nil {
+			return nil, err
+		}
+		if err := requireID("id", in.ID); err != nil {
+			return nil, err
+		}
+		if err := requireID("comment_id", in.CommentID); err != nil {
+			return nil, err
+		}
+		return s.store.RemoveComment(ctx, actor, in.ID, in.CommentID)
+
 	case "task.review":
 		var in taskReviewArgs
 		if err := decodeArgs(args, &in); err != nil {
@@ -498,6 +527,17 @@ type taskDependArgs struct {
 type taskCommentArgs struct {
 	ID   int64  `json:"id"`
 	Body string `json:"body"`
+}
+
+type taskCommentEditArgs struct {
+	ID        int64  `json:"id"`
+	CommentID int64  `json:"comment_id"`
+	Body      string `json:"body"`
+}
+
+type taskCommentRemoveArgs struct {
+	ID        int64 `json:"id"`
+	CommentID int64 `json:"comment_id"`
 }
 
 type taskReviewArgs struct {

@@ -120,16 +120,18 @@ const (
 	ActivityRepoRemoved    = "repo.removed"
 	ActivityQueueUpdated   = "queue.updated"
 
-	ActivityTaskCreated       = "task.created"
-	ActivityTaskUpdated       = "task.updated"
-	ActivityTaskStatusChanged = "task.status_changed"
-	ActivityTaskMarking       = "task.marking_changed"
-	ActivityTaskCommented     = "task.commented"
-	ActivityTaskClaimed       = "task.claimed"
-	ActivityDependencyAdded   = "dependency.added"
-	ActivityDependencyRemoved = "dependency.removed"
-	ActivitySessionLinked     = "session.linked"
-	ActivitySessionOutcome    = "session.outcome"
+	ActivityTaskCreated        = "task.created"
+	ActivityTaskUpdated        = "task.updated"
+	ActivityTaskStatusChanged  = "task.status_changed"
+	ActivityTaskMarking        = "task.marking_changed"
+	ActivityTaskCommented      = "task.commented"
+	ActivityTaskCommentEdited  = "task.comment_edited"
+	ActivityTaskCommentRemoved = "task.comment_removed"
+	ActivityTaskClaimed        = "task.claimed"
+	ActivityDependencyAdded    = "dependency.added"
+	ActivityDependencyRemoved  = "dependency.removed"
+	ActivitySessionLinked      = "session.linked"
+	ActivitySessionOutcome     = "session.outcome"
 )
 
 // CreateTaskParams describes a new task. RepoID is required. A zero ProjectID

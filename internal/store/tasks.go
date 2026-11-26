@@ -617,6 +617,237 @@ func (s *Store) Comment(ctx context.Context, actor string, taskID int64, body st
 	return comment, nil
 }
 
+// EditComment appends an edit event for an existing comment. The comment must
+// be a task.commented event on taskID owned by actor. Removed comments cannot
+// be edited.
+func (s *Store) EditComment(ctx context.Context, actor string, taskID, commentID int64, body string) (Activity, error) {
+	actor, err := normalizeActor(actor)
+	if err != nil {
+		return Activity{}, err
+	}
+	if err := validateID("task", taskID); err != nil {
+		return Activity{}, err
+	}
+	if err := validateID("comment", commentID); err != nil {
+		return Activity{}, err
+	}
+	if strings.TrimSpace(body) == "" {
+		return Activity{}, fmt.Errorf("%w: comment body is required", ErrInvalid)
+	}
+
+	var edit Activity
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		projectID, err := requireTask(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		if err := requireCommentOwner(ctx, tx, actor, taskID, commentID); err != nil {
+			return err
+		}
+		edit, err = appendActivity(ctx, tx, activityInput{
+			Type:      ActivityTaskCommentEdited,
+			Actor:     actor,
+			TaskID:    int64Pointer(taskID),
+			ProjectID: int64Pointer(projectID),
+			Data:      map[string]any{"comment_id": commentID, "body": body},
+		})
+		return err
+	})
+	if err != nil {
+		return Activity{}, err
+	}
+	return edit, nil
+}
+
+// RemoveComment appends a removal event for an existing comment. The comment
+// must be a task.commented event on taskID owned by actor. Removing an already
+// removed comment is a conflict.
+func (s *Store) RemoveComment(ctx context.Context, actor string, taskID, commentID int64) (Activity, error) {
+	actor, err := normalizeActor(actor)
+	if err != nil {
+		return Activity{}, err
+	}
+	if err := validateID("task", taskID); err != nil {
+		return Activity{}, err
+	}
+	if err := validateID("comment", commentID); err != nil {
+		return Activity{}, err
+	}
+
+	var removal Activity
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		projectID, err := requireTask(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		if err := requireCommentOwner(ctx, tx, actor, taskID, commentID); err != nil {
+			return err
+		}
+		removal, err = appendActivity(ctx, tx, activityInput{
+			Type:      ActivityTaskCommentRemoved,
+			Actor:     actor,
+			TaskID:    int64Pointer(taskID),
+			ProjectID: int64Pointer(projectID),
+			Data:      map[string]any{"comment_id": commentID},
+		})
+		return err
+	})
+	if err != nil {
+		return Activity{}, err
+	}
+	return removal, nil
+}
+
+// requireCommentOwner verifies that commentID is a task.commented event on
+// taskID owned by actor and has not already been removed.
+func requireCommentOwner(ctx context.Context, tx *sql.Tx, actor string, taskID, commentID int64) error {
+	comment, err := activityByID(ctx, tx, commentID)
+	if err != nil {
+		return err
+	}
+	if comment.Type != ActivityTaskCommented || comment.TaskID == nil ||
+		*comment.TaskID != taskID || comment.Actor != actor {
+		return fmt.Errorf("%w: comment %d", ErrNotFound, commentID)
+	}
+	removed, err := commentRemoved(ctx, tx, taskID, commentID)
+	if err != nil {
+		return err
+	}
+	if removed {
+		return fmt.Errorf("%w: comment %d has been removed", ErrConflict, commentID)
+	}
+	return nil
+}
+
+func activityByID(ctx context.Context, tx *sql.Tx, id int64) (Activity, error) {
+	activity, err := scanActivity(tx.QueryRowContext(ctx, `
+		SELECT id, type, actor, task_id, project_id, timestamp, data
+		FROM activity
+		WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Activity{}, fmt.Errorf("%w: activity %d", ErrNotFound, id)
+	}
+	if err != nil {
+		return Activity{}, fmt.Errorf("store: load activity %d: %w", id, err)
+	}
+	return activity, nil
+}
+
+func commentRemoved(ctx context.Context, tx *sql.Tx, taskID, commentID int64) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, type, actor, task_id, project_id, timestamp, data
+		FROM activity
+		WHERE task_id = ? AND type = ?
+		ORDER BY id`, taskID, ActivityTaskCommentRemoved,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: list comment removals: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		activity, err := scanActivity(rows)
+		if err != nil {
+			return false, fmt.Errorf("store: scan comment removal: %w", err)
+		}
+		if id, ok := activityCommentID(activity.Data); ok && id == commentID {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("store: list comment removals: %w", err)
+	}
+	return false, nil
+}
+
+func activityCommentID(data map[string]any) (int64, bool) {
+	switch value := data["comment_id"].(type) {
+	case float64:
+		id := int64(value)
+		if id <= 0 || float64(id) != value {
+			return 0, false
+		}
+		return id, true
+	case int64:
+		if value <= 0 {
+			return 0, false
+		}
+		return value, true
+	default:
+		return 0, false
+	}
+}
+
+// projectTaskActivity hides comment mutation events and folds the latest edit
+// for each comment into its original task.commented event. Removal hides the
+// original comment. Raw transaction history remains available through
+// ActivityAfter.
+func projectTaskActivity(activities []Activity) []Activity {
+	type commentState struct {
+		edited   bool
+		editedAt time.Time
+		body     string
+		removed  bool
+	}
+	states := map[int64]*commentState{}
+	for _, activity := range activities {
+		switch activity.Type {
+		case ActivityTaskCommentEdited:
+			id, ok := activityCommentID(activity.Data)
+			if !ok {
+				continue
+			}
+			body, ok := activity.Data["body"].(string)
+			if !ok {
+				continue
+			}
+			state := states[id]
+			if state == nil {
+				state = &commentState{}
+				states[id] = state
+			}
+			state.edited = true
+			state.editedAt = activity.Timestamp
+			state.body = body
+		case ActivityTaskCommentRemoved:
+			id, ok := activityCommentID(activity.Data)
+			if !ok {
+				continue
+			}
+			state := states[id]
+			if state == nil {
+				state = &commentState{}
+				states[id] = state
+			}
+			state.removed = true
+		}
+	}
+
+	projected := make([]Activity, 0, len(activities))
+	for _, activity := range activities {
+		switch activity.Type {
+		case ActivityTaskCommentEdited, ActivityTaskCommentRemoved:
+			continue
+		case ActivityTaskCommented:
+			state := states[activity.ID]
+			if state != nil && state.removed {
+				continue
+			}
+			if state != nil && state.edited {
+				data := make(map[string]any, len(activity.Data)+2)
+				for key, value := range activity.Data {
+					data[key] = value
+				}
+				data["body"] = state.body
+				data["edited_at"] = formatTime(state.editedAt)
+				activity.Data = data
+			}
+		}
+		projected = append(projected, activity)
+	}
+	return projected
+}
+
 // Review records a review decision. Only tasks currently in review may be
 // reviewed. Approval moves the task to done; requesting changes moves it to
 // todo and applies the changes-requested marking.
@@ -865,6 +1096,7 @@ func (s *Store) Show(ctx context.Context, taskID int64) (TaskDetail, error) {
 			return fmt.Errorf("store: list task activity: %w", err)
 		}
 		activityRows.Close()
+		detail.Activity = projectTaskActivity(detail.Activity)
 		return nil
 	})
 	if err != nil {

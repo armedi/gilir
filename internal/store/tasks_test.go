@@ -584,6 +584,8 @@ func TestBlankActorsRejectedEverywhere(t *testing.T) {
 		{"SetMarking", func() error { _, err := s.SetMarking(ctx, " ", task.ID, "x", true); return err }},
 		{"SetDependency", func() error { return s.SetDependency(ctx, " ", task.ID, task.ID+1, true) }},
 		{"Comment", func() error { _, err := s.Comment(ctx, " ", task.ID, "x"); return err }},
+		{"EditComment", func() error { _, err := s.EditComment(ctx, " ", task.ID, 1, "x"); return err }},
+		{"RemoveComment", func() error { _, err := s.RemoveComment(ctx, " ", task.ID, 1); return err }},
 		{"Review", func() error { _, err := s.Review(ctx, " ", task.ID, ReviewApprove, ""); return err }},
 		{"UpdateQueueSettings", func() error {
 			_, err := s.UpdateQueueSettings(ctx, " ", QueueSettingsPatch{Paused: &paused})
