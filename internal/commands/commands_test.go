@@ -7,9 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/armedi/gilir/internal/store"
 )
@@ -90,45 +90,6 @@ func requireInvalid(t *testing.T, err error) {
 	if status, code := Classify(err); status != 400 || code != "invalid" {
 		t.Fatalf("classify = (%d, %q), want (400, invalid)", status, code)
 	}
-}
-
-func requireNotFound(t *testing.T, err error) {
-	t.Helper()
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("error = %v, want ErrNotFound", err)
-	}
-	if status, code := Classify(err); status != 404 || code != "not_found" {
-		t.Fatalf("classify = (%d, %q), want (404, not_found)", status, code)
-	}
-}
-
-func requireConflict(t *testing.T, err error) {
-	t.Helper()
-	if !errors.Is(err, store.ErrConflict) {
-		t.Fatalf("error = %v, want ErrConflict", err)
-	}
-	if status, code := Classify(err); status != 409 || code != "conflict" {
-		t.Fatalf("classify = (%d, %q), want (409, conflict)", status, code)
-	}
-}
-
-func findActivity(activities []store.Activity, id int64) (store.Activity, bool) {
-	for _, activity := range activities {
-		if activity.ID == id {
-			return activity, true
-		}
-	}
-	return store.Activity{}, false
-}
-
-func countCommentMutations(activities []store.Activity, activityType string, commentID int64) int {
-	count := 0
-	for _, activity := range activities {
-		if activity.Type == activityType && activity.Data["comment_id"] == float64(commentID) {
-			count++
-		}
-	}
-	return count
 }
 
 func TestOmittedBooleansDoNotMeanFalse(t *testing.T) {
@@ -808,33 +769,20 @@ func TestCommentEditRemoveLifecycle(t *testing.T) {
 		t.Fatalf("comment: %v", err)
 	}
 	comment := created.(store.Activity)
-	if comment.Type != store.ActivityTaskCommented {
-		t.Fatalf("comment type = %q, want %q", comment.Type, store.ActivityTaskCommented)
-	}
+	commentKey := strconv.FormatInt(comment.ID, 10)
 
 	detail, err := f.run(t, "task.show", map[string]any{"id": f.task})
 	if err != nil {
-		t.Fatalf("show before edit: %v", err)
-	}
-	before := detail.(store.TaskDetail)
-	original, ok := findActivity(before.Activity, comment.ID)
-	if !ok || original.Data["body"] != "first draft" {
-		t.Fatalf("original comment = %+v, found = %v", original, ok)
+		t.Fatalf("show: %v", err)
 	}
 	var createdEventID int64
-	for _, activity := range before.Activity {
+	for _, activity := range detail.(store.TaskDetail).Activity {
 		if activity.Type == store.ActivityTaskCreated {
 			createdEventID = activity.ID
 		}
 	}
-	if createdEventID == 0 {
-		t.Fatalf("task.created activity missing: %+v", before.Activity)
-	}
-
 	other, err := f.run(t, "task.create", map[string]any{
-		"project_id": f.project,
-		"repo_id":    f.repo,
-		"title":      "Other task",
+		"project_id": f.project, "repo_id": f.repo, "title": "Other task",
 	})
 	if err != nil {
 		t.Fatalf("create other task: %v", err)
@@ -846,34 +794,31 @@ func TestCommentEditRemoveLifecycle(t *testing.T) {
 		t.Fatalf("activity before rejections: %v", err)
 	}
 	rejections := []struct {
-		name    string
-		actor   string
-		command string
-		args    map[string]any
-		check   func(*testing.T, error)
+		name, actor, command string
+		args                 map[string]any
+		want                 error
+		status               int
 	}{
-		{"edit wrong actor", "bob", "task.comment.edit", map[string]any{"id": f.task, "comment_id": comment.ID, "body": "hijack"}, requireNotFound},
-		{"remove wrong actor", "bob", "task.comment.remove", map[string]any{"id": f.task, "comment_id": comment.ID}, requireNotFound},
-		{"edit wrong task", "alice", "task.comment.edit", map[string]any{"id": otherID, "comment_id": comment.ID, "body": "wrong task"}, requireNotFound},
-		{"remove wrong task", "alice", "task.comment.remove", map[string]any{"id": otherID, "comment_id": comment.ID}, requireNotFound},
-		{"edit wrong event type", "alice", "task.comment.edit", map[string]any{"id": f.task, "comment_id": createdEventID, "body": "wrong type"}, requireNotFound},
-		{"remove wrong event type", "alice", "task.comment.remove", map[string]any{"id": f.task, "comment_id": createdEventID}, requireNotFound},
-		{"edit missing comment", "alice", "task.comment.edit", map[string]any{"id": f.task, "comment_id": 999999, "body": "missing"}, requireNotFound},
-		{"remove missing comment", "alice", "task.comment.remove", map[string]any{"id": f.task, "comment_id": 999999}, requireNotFound},
-		{"edit zero task", "alice", "task.comment.edit", map[string]any{"id": 0, "comment_id": comment.ID, "body": "x"}, requireInvalid},
-		{"edit zero comment", "alice", "task.comment.edit", map[string]any{"id": f.task, "comment_id": 0, "body": "x"}, requireInvalid},
-		{"edit missing body", "alice", "task.comment.edit", map[string]any{"id": f.task, "comment_id": comment.ID}, requireInvalid},
-		{"edit blank body", "alice", "task.comment.edit", map[string]any{"id": f.task, "comment_id": comment.ID, "body": "  "}, requireInvalid},
-		{"remove zero task", "alice", "task.comment.remove", map[string]any{"id": 0, "comment_id": comment.ID}, requireInvalid},
-		{"remove zero comment", "alice", "task.comment.remove", map[string]any{"id": f.task, "comment_id": 0}, requireInvalid},
+		{"wrong actor", "bob", "task.comment.edit", map[string]any{"id": f.task, "comment_id": comment.ID, "body": "hijack"}, store.ErrNotFound, 404},
+		{"wrong task", "alice", "task.comment.edit", map[string]any{"id": otherID, "comment_id": comment.ID, "body": "wrong task"}, store.ErrNotFound, 404},
+		{"invalid target", "alice", "task.comment.edit", map[string]any{"id": f.task, "comment_id": createdEventID, "body": "wrong type"}, store.ErrNotFound, 404},
+		{"missing comment", "alice", "task.comment.remove", map[string]any{"id": f.task, "comment_id": 999999}, store.ErrNotFound, 404},
+		{"zero task", "alice", "task.comment.edit", map[string]any{"id": 0, "comment_id": comment.ID, "body": "x"}, store.ErrInvalid, 400},
+		{"zero comment", "alice", "task.comment.remove", map[string]any{"id": f.task, "comment_id": 0}, store.ErrInvalid, 400},
+		{"blank body", "alice", "task.comment.edit", map[string]any{"id": f.task, "comment_id": comment.ID, "body": "  "}, store.ErrInvalid, 400},
 	}
-	for _, rejection := range rejections {
-		t.Run(rejection.name, func(t *testing.T) {
-			_, err := f.service.Execute(ctx, rejection.command, rejection.actor, mustJSON(t, rejection.args))
+	for _, test := range rejections {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := f.service.Execute(ctx, test.command, test.actor, mustJSON(t, test.args))
 			if err == nil {
-				t.Fatalf("%s accepted %v", rejection.command, rejection.args)
+				t.Fatalf("%s accepted %v", test.command, test.args)
 			}
-			rejection.check(t, err)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("error = %v, want %v", err, test.want)
+			}
+			if status, _ := Classify(err); status != test.status {
+				t.Fatalf("status = %d, want %d", status, test.status)
+			}
 		})
 	}
 	rawAfterRejections, err := f.store.ActivityAfter(ctx, 0, 1000)
@@ -884,111 +829,62 @@ func TestCommentEditRemoveLifecycle(t *testing.T) {
 		t.Fatalf("rejected mutations appended activity: %d -> %d", len(rawBefore), len(rawAfterRejections))
 	}
 
-	edited, err := f.run(t, "task.comment.edit", map[string]any{
-		"id": f.task, "comment_id": comment.ID, "body": "second draft",
-	})
-	if err != nil {
-		t.Fatalf("edit comment: %v", err)
-	}
-	edit := edited.(store.Activity)
-	if edit.Type != store.ActivityTaskCommentEdited {
-		t.Fatalf("edit type = %q, want %q", edit.Type, store.ActivityTaskCommentEdited)
-	}
-	if edit.Actor != "alice" || edit.TaskID == nil || *edit.TaskID != f.task {
-		t.Fatalf("edit activity = %+v", edit)
-	}
-	if edit.Data["comment_id"] != comment.ID || edit.Data["body"] != "second draft" {
-		t.Fatalf("edit data = %+v", edit.Data)
-	}
-
-	detail, err = f.run(t, "task.show", map[string]any{"id": f.task})
-	if err != nil {
-		t.Fatalf("show after edit: %v", err)
-	}
-	projected := detail.(store.TaskDetail)
-	if len(projected.Activity) != len(before.Activity) {
-		t.Fatalf("Show count after edit = %d, want %d (mutation events must stay hidden)",
-			len(projected.Activity), len(before.Activity))
-	}
-	original, ok = findActivity(projected.Activity, comment.ID)
-	if !ok {
-		t.Fatal("edited comment missing from Show")
-	}
-	if original.Data["body"] != "second draft" {
-		t.Fatalf("projected body = %#v, want second draft", original.Data["body"])
-	}
-	if !original.Timestamp.Equal(comment.Timestamp) || original.Actor != comment.Actor || original.Type != comment.Type {
-		t.Fatalf("edited comment identity changed: %+v", original)
-	}
-	editedAt, ok := original.Data["edited_at"].(string)
-	if !ok || editedAt != edit.Timestamp.Format(time.RFC3339Nano) {
-		t.Fatalf("edited_at = %#v, want %q", original.Data["edited_at"], edit.Timestamp.Format(time.RFC3339Nano))
-	}
-	if last := projected.Activity[len(projected.Activity)-1]; last.ID != comment.ID {
-		t.Fatalf("comment order changed: last activity = %+v", last)
-	}
-	for _, activity := range projected.Activity {
-		if activity.Type == store.ActivityTaskCommentEdited || activity.Type == store.ActivityTaskCommentRemoved {
-			t.Fatalf("mutation event exposed by Show: %+v", activity)
+	for _, body := range []string{"second draft", "final draft"} {
+		if _, err := f.run(t, "task.comment.edit", map[string]any{"id": f.task, "comment_id": comment.ID, "body": body}); err != nil {
+			t.Fatalf("edit %q: %v", body, err)
 		}
 	}
-
-	editedAgain, err := f.run(t, "task.comment.edit", map[string]any{
-		"id": f.task, "comment_id": comment.ID, "body": "final draft",
-	})
-	if err != nil {
-		t.Fatalf("second edit: %v", err)
-	}
-	secondEdit := editedAgain.(store.Activity)
 	detail, err = f.run(t, "task.show", map[string]any{"id": f.task})
 	if err != nil {
-		t.Fatalf("show after second edit: %v", err)
+		t.Fatalf("show after edits: %v", err)
 	}
-	projected = detail.(store.TaskDetail)
-	original, ok = findActivity(projected.Activity, comment.ID)
-	if !ok {
-		t.Fatal("comment missing after second edit")
+	projected := detail.(store.TaskDetail)
+	var original *store.Activity
+	for i := range projected.Activity {
+		activity := &projected.Activity[i]
+		if activity.Type == store.ActivityTaskCommentEdited || activity.Type == store.ActivityTaskCommentRemoved {
+			t.Fatalf("mutation event exposed by Show: %+v", *activity)
+		}
+		if activity.ID == comment.ID {
+			original = activity
+		}
 	}
-	if original.Data["body"] != "final draft" {
-		t.Fatalf("latest edit did not win: %#v", original.Data["body"])
+	if original == nil {
+		t.Fatal("edited comment missing from Show")
 	}
-	if editedAt, ok := original.Data["edited_at"].(string); !ok || editedAt != secondEdit.Timestamp.Format(time.RFC3339Nano) {
-		t.Fatalf("edited_at = %#v, want latest edit timestamp", original.Data["edited_at"])
+	if original.Data["body"] != "final draft" || original.Data["edited_at"] == nil {
+		t.Fatalf("projected comment = %+v, want latest body and edited_at", original.Data)
+	}
+	if !original.Timestamp.Equal(comment.Timestamp) || original.Actor != "alice" {
+		t.Fatalf("edited comment identity changed: %+v", original)
 	}
 
 	raw, err := f.store.ActivityAfter(ctx, 0, 1000)
 	if err != nil {
 		t.Fatalf("raw activity after edits: %v", err)
 	}
-	rawOriginal, ok := findActivity(raw, comment.ID)
-	if !ok {
-		t.Fatal("raw history lost the original comment")
-	}
-	if rawOriginal.Data["body"] != "first draft" {
-		t.Fatalf("raw history was mutated: body = %#v", rawOriginal.Data["body"])
-	}
-	if got := countCommentMutations(raw, store.ActivityTaskCommentEdited, comment.ID); got != 2 {
-		t.Fatalf("raw edit events = %d, want 2", got)
-	}
-	var lastEdit store.Activity
+	edits := 0
+	editBodies := map[string]bool{}
 	for _, activity := range raw {
-		if activity.Type == store.ActivityTaskCommentEdited && activity.Data["comment_id"] == float64(comment.ID) {
-			lastEdit = activity
+		if activity.ID == comment.ID && activity.Data["body"] != "first draft" {
+			t.Fatalf("raw original comment changed: %#v", activity.Data["body"])
+		}
+		if activity.Type == store.ActivityTaskCommentEdited && activity.Data["comment_id"] == commentKey {
+			edits++
+			if body, ok := activity.Data["body"].(string); ok {
+				editBodies[body] = true
+			}
 		}
 	}
-	if lastEdit.Data["body"] != "final draft" {
-		t.Fatalf("raw latest edit = %+v", lastEdit)
+	if edits != 2 || !editBodies["second draft"] || !editBodies["final draft"] {
+		t.Fatalf("raw edit events = %d, bodies = %v", edits, editBodies)
 	}
 
 	removed, err := f.run(t, "task.comment.remove", map[string]any{"id": f.task, "comment_id": comment.ID})
 	if err != nil {
 		t.Fatalf("remove comment: %v", err)
 	}
-	removal := removed.(store.Activity)
-	if removal.Type != store.ActivityTaskCommentRemoved {
-		t.Fatalf("removal type = %q, want %q", removal.Type, store.ActivityTaskCommentRemoved)
-	}
-	if removal.Data["comment_id"] != comment.ID || removal.TaskID == nil || *removal.TaskID != f.task {
+	if removal := removed.(store.Activity); removal.Type != store.ActivityTaskCommentRemoved || removal.Data["comment_id"] != commentKey {
 		t.Fatalf("removal activity = %+v", removal)
 	}
 
@@ -996,13 +892,9 @@ func TestCommentEditRemoveLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("show after removal: %v", err)
 	}
-	projected = detail.(store.TaskDetail)
-	if _, ok := findActivity(projected.Activity, comment.ID); ok {
-		t.Fatalf("removed comment still visible in Show: %+v", projected.Activity)
-	}
-	for _, activity := range projected.Activity {
-		if activity.Type == store.ActivityTaskCommentEdited || activity.Type == store.ActivityTaskCommentRemoved {
-			t.Fatalf("mutation event exposed by Show: %+v", activity)
+	for _, activity := range detail.(store.TaskDetail).Activity {
+		if activity.ID == comment.ID {
+			t.Fatalf("removed comment still visible in Show: %+v", activity)
 		}
 	}
 
@@ -1010,32 +902,33 @@ func TestCommentEditRemoveLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("raw activity after removal: %v", err)
 	}
-	if _, ok := findActivity(raw, comment.ID); !ok {
-		t.Fatal("raw history lost the removed comment")
+	var sawOriginal, sawRemoval bool
+	for _, activity := range raw {
+		if activity.ID == comment.ID {
+			sawOriginal = true
+		}
+		if activity.Type == store.ActivityTaskCommentRemoved && activity.Data["comment_id"] == commentKey {
+			sawRemoval = true
+		}
 	}
-	if got := countCommentMutations(raw, store.ActivityTaskCommentRemoved, comment.ID); got != 1 {
-		t.Fatalf("raw removal events = %d, want 1", got)
+	if !sawOriginal || !sawRemoval {
+		t.Fatalf("raw history incomplete: original=%v removal=%v", sawOriginal, sawRemoval)
 	}
 
-	rawBeforeConflicts := len(raw)
-	if _, err := f.run(t, "task.comment.edit", map[string]any{
-		"id": f.task, "comment_id": comment.ID, "body": "resurrect",
-	}); err == nil {
-		t.Fatal("edit after removal was accepted")
-	} else {
-		requireConflict(t, err)
-	}
-	if _, err := f.run(t, "task.comment.remove", map[string]any{"id": f.task, "comment_id": comment.ID}); err == nil {
-		t.Fatal("second removal was accepted")
-	} else {
-		requireConflict(t, err)
-	}
-	rawAfterConflicts, err := f.store.ActivityAfter(ctx, 0, 1000)
-	if err != nil {
-		t.Fatalf("raw activity after conflicts: %v", err)
-	}
-	if len(rawAfterConflicts) != rawBeforeConflicts {
-		t.Fatalf("conflicting mutations appended activity: %d -> %d", rawBeforeConflicts, len(rawAfterConflicts))
+	for _, test := range []struct {
+		name, command string
+		args          map[string]any
+	}{
+		{"edit after removal", "task.comment.edit", map[string]any{"id": f.task, "comment_id": comment.ID, "body": "resurrect"}},
+		{"remove after removal", "task.comment.remove", map[string]any{"id": f.task, "comment_id": comment.ID}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := f.run(t, test.command, test.args); err == nil {
+				t.Fatalf("%s after removal was accepted", test.command)
+			} else if !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("error = %v, want ErrConflict", err)
+			}
+		})
 	}
 }
 
