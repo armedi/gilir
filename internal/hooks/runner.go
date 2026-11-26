@@ -43,6 +43,7 @@ const (
 var defaultEvents = []string{
 	"task.created",
 	"task.updated",
+	"task.deleted",
 	"task.status_changed",
 	"task.marking_changed",
 	"task.commented",

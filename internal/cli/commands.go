@@ -213,6 +213,20 @@ var commandSpecs = []command{
 		},
 	},
 	{
+		path:        "delete",
+		wire:        "task.delete",
+		usage:       "gilir delete <id>",
+		summary:     "Delete a task and its terminal dispatch history.",
+		positionals: []string{"<id>"},
+		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
+			id, err := parseID("task id", positionals[0])
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"id": id}, nil
+		},
+	},
+	{
 		path:        "update",
 		wire:        "task.update",
 		usage:       "gilir update <id> [--title <title>] [--description <markdown>] [--repo <id>] [--status <status>] [--priority <priority>] [--message <markdown>]",

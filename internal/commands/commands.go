@@ -205,6 +205,19 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		}
 		return s.store.Show(ctx, in.ID)
 
+	case "task.delete":
+		var in taskDeleteArgs
+		if err := decodeArgs(args, &in); err != nil {
+			return nil, err
+		}
+		if err := requireID("id", in.ID); err != nil {
+			return nil, err
+		}
+		if err := s.store.DeleteTask(ctx, actor, in.ID); err != nil {
+			return nil, err
+		}
+		return okResult{OK: true}, nil
+
 	case "task.update":
 		var in taskUpdateArgs
 		if err := decodeArgs(args, &in); err != nil {
@@ -503,6 +516,10 @@ type taskCreateArgs struct {
 }
 
 type taskShowArgs struct {
+	ID int64 `json:"id"`
+}
+
+type taskDeleteArgs struct {
 	ID int64 `json:"id"`
 }
 

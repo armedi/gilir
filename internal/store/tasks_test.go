@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -181,6 +182,211 @@ func TestListTasksFilters(t *testing.T) {
 			t.Fatalf("ListTasks(%+v) error = %v, want ErrInvalid", filter, err)
 		}
 	}
+}
+
+func TestDeleteTaskPreservesAuditAndRemovesTerminalHistory(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := context.Background()
+	project, repo := seedProjectRepo(t, s)
+	task := mustCreateTask(t, s, CreateTaskParams{
+		ProjectID: project.ID, RepoID: repo.ID, Title: "delete me", Status: StatusTodo,
+	})
+	blocker := mustCreateTask(t, s, CreateTaskParams{
+		ProjectID: project.ID, RepoID: repo.ID, Title: "blocker", Status: StatusInReview,
+	})
+	if err := s.SetDependency(ctx, "alice", task.ID, blocker.ID, true); err != nil {
+		t.Fatalf("SetDependency: %v", err)
+	}
+	if _, err := s.SetMarking(ctx, "alice", task.ID, "docs", true); err != nil {
+		t.Fatalf("SetMarking: %v", err)
+	}
+	if _, err := s.Comment(ctx, "alice", task.ID, "prior audit"); err != nil {
+		t.Fatalf("Comment: %v", err)
+	}
+
+	attempt := mustReserve(t, s, "http://127.0.0.1:4096", 4242)
+	sessionOne := "ses_gilir_" + attempt.ID
+	sessionTwo := "ses_gilir_alt_" + attempt.ID
+	if err := s.LinkSession(ctx, attempt.ID, sessionOne, "http://127.0.0.1:4096/session/one"); err != nil {
+		t.Fatalf("LinkSession one: %v", err)
+	}
+	if err := s.LinkSession(ctx, attempt.ID, sessionTwo, "http://127.0.0.1:4096/session/two"); err != nil {
+		t.Fatalf("LinkSession two: %v", err)
+	}
+	if err := s.FinishAttempt(ctx, attempt.ID, OutcomeSuccess, "complete"); err != nil {
+		t.Fatalf("FinishAttempt: %v", err)
+	}
+
+	before, err := s.ActivityAfter(ctx, 0, 1000)
+	if err != nil {
+		t.Fatalf("ActivityAfter before delete: %v", err)
+	}
+
+	if err := s.DeleteTask(ctx, "deleter", task.ID); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+	if _, err := s.Show(ctx, task.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Show deleted task error = %v, want ErrNotFound", err)
+	}
+	if _, err := s.Show(ctx, blocker.ID); err != nil {
+		t.Fatalf("Show blocker after delete: %v", err)
+	}
+
+	var attempts, sessions, markings, dependencies int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM dispatch_attempts WHERE task_id = ?`, task.ID,
+	).Scan(&attempts); err != nil {
+		t.Fatalf("count task attempts: %v", err)
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM sessions WHERE id IN (?, ?)`, sessionOne, sessionTwo,
+	).Scan(&sessions); err != nil {
+		t.Fatalf("count task sessions: %v", err)
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM task_markings WHERE task_id = ?`, task.ID,
+	).Scan(&markings); err != nil {
+		t.Fatalf("count task markings: %v", err)
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM task_dependencies WHERE task_id = ?`, task.ID,
+	).Scan(&dependencies); err != nil {
+		t.Fatalf("count task dependencies: %v", err)
+	}
+	if attempts != 0 || sessions != 0 || markings != 0 || dependencies != 0 {
+		t.Fatalf("delete left attempts=%d sessions=%d markings=%d dependencies=%d, want all zero",
+			attempts, sessions, markings, dependencies)
+	}
+
+	after, err := s.ActivityAfter(ctx, 0, 1000)
+	if err != nil {
+		t.Fatalf("ActivityAfter after delete: %v", err)
+	}
+	if len(after) != len(before)+1 {
+		t.Fatalf("activity length = %d, want %d after one task.deleted event", len(after), len(before)+1)
+	}
+	for i := range before {
+		if after[i].ID != before[i].ID || after[i].Type != before[i].Type {
+			t.Fatalf("history changed at %d: %+v -> %+v", i, before[i], after[i])
+		}
+	}
+	deleted := after[len(after)-1]
+	if deleted.Type != ActivityTaskDeleted || deleted.Actor != "deleter" ||
+		deleted.TaskID == nil || *deleted.TaskID != task.ID ||
+		deleted.ProjectID == nil || *deleted.ProjectID != project.ID {
+		t.Fatalf("task.deleted event = %+v", deleted)
+	}
+	sawPriorComment := false
+	for _, activity := range after {
+		if activity.Type == ActivityTaskCommented && activity.Data["body"] == "prior audit" {
+			sawPriorComment = true
+		}
+	}
+	if !sawPriorComment {
+		t.Fatalf("prior audit missing after delete: %v", activityTypes(after))
+	}
+
+	if err := s.DeleteTask(ctx, "again", task.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second DeleteTask error = %v, want ErrNotFound", err)
+	}
+	if err := s.DeleteTask(ctx, "again", 0); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("zero task DeleteTask error = %v, want ErrInvalid", err)
+	}
+	repeated, err := s.ActivityAfter(ctx, 0, 1000)
+	if err != nil {
+		t.Fatalf("ActivityAfter after repeat: %v", err)
+	}
+	if len(repeated) != len(after) || countActivityType(repeated, ActivityTaskDeleted) != 1 {
+		t.Fatalf("repeat delete wrote activity: before=%d after=%d types=%v",
+			len(after), len(repeated), activityTypes(repeated))
+	}
+}
+
+func TestDeleteTaskConflictsPreserveData(t *testing.T) {
+	t.Run("reserved attempt", func(t *testing.T) {
+		s, _ := openTestStore(t)
+		ctx := context.Background()
+		project, repo := seedProjectRepo(t, s)
+		task := mustCreateTask(t, s, CreateTaskParams{
+			ProjectID: project.ID, RepoID: repo.ID, Title: "running", Status: StatusTodo,
+		})
+		attempt := mustReserve(t, s, "http://127.0.0.1:4096", 4242)
+		sessionID := "ses_gilir_" + attempt.ID
+		if err := s.LinkSession(ctx, attempt.ID, sessionID, "http://127.0.0.1:4096/session/running"); err != nil {
+			t.Fatalf("LinkSession: %v", err)
+		}
+		before, err := s.ActivityAfter(ctx, 0, 1000)
+		if err != nil {
+			t.Fatalf("ActivityAfter before delete: %v", err)
+		}
+
+		err = s.DeleteTask(ctx, "deleter", task.ID)
+		if !errors.Is(err, ErrConflict) {
+			t.Fatalf("DeleteTask with reserved attempt error = %v, want ErrConflict", err)
+		}
+		if !strings.Contains(err.Error(), attempt.ID) || !strings.Contains(err.Error(), "reserved") {
+			t.Fatalf("reserved conflict error = %v, want the attempt ID and reserved state", err)
+		}
+
+		detail := mustShow(t, s, task.ID)
+		if len(detail.Sessions) != 1 || detail.Sessions[0].ID != sessionID {
+			t.Fatalf("sessions after refused delete = %+v", detail.Sessions)
+		}
+		if open := mustListOpen(t, s); len(open) != 1 || open[0].ID != attempt.ID {
+			t.Fatalf("open attempts after refused delete = %+v", open)
+		}
+		after, err := s.ActivityAfter(ctx, 0, 1000)
+		if err != nil {
+			t.Fatalf("ActivityAfter after refused delete: %v", err)
+		}
+		if len(after) != len(before) || countActivityType(after, ActivityTaskDeleted) != 0 {
+			t.Fatalf("refused delete wrote activity: before=%d after=%d types=%v",
+				len(before), len(after), activityTypes(after))
+		}
+	})
+
+	t.Run("incoming dependency", func(t *testing.T) {
+		s, _ := openTestStore(t)
+		ctx := context.Background()
+		project, repo := seedProjectRepo(t, s)
+		blocker := mustCreateTask(t, s, CreateTaskParams{
+			ProjectID: project.ID, RepoID: repo.ID, Title: "blocker",
+		})
+		dependent := mustCreateTask(t, s, CreateTaskParams{
+			ProjectID: project.ID, RepoID: repo.ID, Title: "dependent",
+		})
+		if err := s.SetDependency(ctx, "alice", dependent.ID, blocker.ID, true); err != nil {
+			t.Fatalf("SetDependency: %v", err)
+		}
+		before, err := s.ActivityAfter(ctx, 0, 1000)
+		if err != nil {
+			t.Fatalf("ActivityAfter before delete: %v", err)
+		}
+
+		err = s.DeleteTask(ctx, "deleter", blocker.ID)
+		if !errors.Is(err, ErrConflict) {
+			t.Fatalf("DeleteTask with incoming dependency error = %v, want ErrConflict", err)
+		}
+		if !strings.Contains(err.Error(), "incoming dependencies") ||
+			!strings.Contains(err.Error(), strconv.FormatInt(dependent.ID, 10)) {
+			t.Fatalf("incoming conflict error = %v, want the dependent task ID", err)
+		}
+
+		mustShow(t, s, blocker.ID)
+		dependentDetail := mustShow(t, s, dependent.ID)
+		if len(dependentDetail.Blockers) != 1 || dependentDetail.Blockers[0] != blocker.ID {
+			t.Fatalf("blockers after refused delete = %+v, want [%d]",
+				dependentDetail.Blockers, blocker.ID)
+		}
+		after, err := s.ActivityAfter(ctx, 0, 1000)
+		if err != nil {
+			t.Fatalf("ActivityAfter after refused delete: %v", err)
+		}
+		if len(after) != len(before) || countActivityType(after, ActivityTaskDeleted) != 0 {
+			t.Fatalf("refused delete wrote activity: before=%d after=%d types=%v",
+				len(before), len(after), activityTypes(after))
+		}
+	})
 }
 
 func TestUpdateTaskPatchNoOpAndAudit(t *testing.T) {
@@ -602,6 +808,7 @@ func TestBlankActorsRejectedEverywhere(t *testing.T) {
 			_, err := s.UpdateTask(ctx, " ", task.ID, TaskPatch{Title: &title})
 			return err
 		}},
+		{"DeleteTask", func() error { return s.DeleteTask(ctx, " ", task.ID) }},
 		{"SetMarking", func() error { _, err := s.SetMarking(ctx, " ", task.ID, "x", true); return err }},
 		{"SetDependency", func() error { return s.SetDependency(ctx, " ", task.ID, task.ID+1, true) }},
 		{"Comment", func() error { _, err := s.Comment(ctx, " ", task.ID, "x"); return err }},

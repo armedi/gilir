@@ -310,7 +310,8 @@ func TestNewHookStartsAtLatestEvent(t *testing.T) {
 	start(t, []Config{{Name: "fresh", URL: server.URL}}, source, &log)
 
 	eventually(t, "cursor initialization", func() bool { return len(source.cursorHistory()) > 0 })
-	source.append(event(3, "task.created", "user"))
+	// task.deleted is in the default event set, so an unfiltered hook gets it.
+	source.append(event(3, "task.deleted", "user"))
 	eventually(t, "cursor to reach 3", func() bool { return source.cursor("fresh") == 3 })
 	if got := rec.seen(); len(got) != 1 || got[0].eventID != "3" {
 		t.Fatalf("requests = %#v; want only event 3", got)

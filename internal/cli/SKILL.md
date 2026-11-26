@@ -33,6 +33,18 @@ Every write must carry your own actor; the actor recorded with each mutation is 
 gilir update "$task_id" --status in-review --actor "agent:$session_id"
 ```
 
+# Removing tasks
+
+Delete a task only when its work is obsolete:
+
+```sh
+gilir delete "$task_id" --actor "agent:$session_id"
+```
+
+Deletion removes the task, its terminal dispatch attempts and sessions, and its
+outgoing dependencies, while the audit history is preserved. It is refused while
+a dispatch attempt is reserved or another task still depends on the task.
+
 # Repositories and projects
 
 Repositories are registered globally and can be linked to several projects. A repo always belongs to at least one project. When you add a repository without `--project`, Gilir creates a project from the repository basename and links the two:

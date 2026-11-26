@@ -97,9 +97,15 @@ gilir daemon status
 gilir daemon pause
 gilir daemon resume
 gilir daemon concurrency 2
+gilir delete 1                                   # keep the audit history
 gilir --help
 gilir skill                                      # agent workflow instructions
 ```
+
+`gilir delete <id>` removes the task, its terminal dispatch attempts and local
+sessions, and its outgoing dependencies. The append-only activity history is
+preserved. Deletion is refused while a dispatch attempt is reserved or another
+task still depends on the task.
 
 ## Queue semantics
 

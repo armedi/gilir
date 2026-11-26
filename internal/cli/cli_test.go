@@ -104,6 +104,13 @@ func TestRunFlagPlacementAndActorPrecedence(t *testing.T) {
 			wantArgs:    map[string]any{"id": int64(7), "comment_id": int64(9)},
 		},
 		{
+			name:        "delete task",
+			argv:        []string{"delete", "7"},
+			wantActor:   "user",
+			wantCommand: "task.delete",
+			wantArgs:    map[string]any{"id": int64(7)},
+		},
+		{
 			name:        "approve without message",
 			argv:        []string{"approve", "7"},
 			wantActor:   "user",
@@ -351,7 +358,8 @@ func TestRunRejectsRequiredAndInvalidArguments(t *testing.T) {
 		want string
 	}{
 		{name: "missing required flag", argv: []string{"create", "Title", "--project", "1"}, want: "missing required flag --repo"},
-		{name: "invalid task id", argv: []string{"show", "nope"}, want: "invalid task id"},
+		{name: "show invalid task id", argv: []string{"show", "nope"}, want: "invalid task id"},
+		{name: "delete invalid task id", argv: []string{"delete", "nope"}, want: "invalid task id"},
 		{name: "invalid optional repo id", argv: []string{"list", "--project", "1", "--repo", "nope"}, want: "invalid repo id"},
 		{name: "invalid concurrency", argv: []string{"daemon", "concurrency", "0"}, want: "invalid concurrency"},
 		{name: "invalid port", argv: []string{"daemon", "run", "--port", "0"}, want: "invalid port"},
@@ -525,6 +533,7 @@ func TestRunHelpReflectsRepoFirstCommands(t *testing.T) {
 				"repo unlink <repo-id> <project-id>",
 				"list [--project <id>] [--repo <id>]",
 				"create <title> --repo <id> [--project <id>]",
+				"delete <id>",
 			},
 		},
 		{

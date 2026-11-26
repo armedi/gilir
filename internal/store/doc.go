@@ -29,8 +29,11 @@
 // Every repository stays linked to at least one project. A project with tasks,
 // or whose deletion would orphan a repository's last link, cannot be deleted; a
 // repository with tasks cannot be removed, and a repository link cannot be
-// removed while a task in that project targets it. Task deletion is
-// intentionally unsupported. This keeps the audit trail complete.
+// removed while a task in that project targets it. A task with a reserved
+// dispatch attempt or an incoming dependency cannot be deleted. Deleting a task
+// removes its outgoing dependencies, terminal dispatch attempts and their local
+// sessions, and markings, while the append-only activity history records the
+// deletion and is never discarded. This keeps the audit trail complete.
 // Queue dispatch reservations are persisted before any external effect so the
 // scheduler can recover after a restart. Attempt IDs are random 128-bit
 // identifiers that are unique across independent Gilir databases; session and

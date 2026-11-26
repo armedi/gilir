@@ -479,6 +479,30 @@ func TestVoidMutationsReturnOK(t *testing.T) {
 	if string(encoded) != `{"ok":true}` {
 		t.Fatalf("project.remove result JSON = %s, want {\"ok\":true}", encoded)
 	}
+
+	disposable, err := f.run(t, "task.create", map[string]any{
+		"project_id": f.project,
+		"repo_id":    f.repo,
+		"title":      "Disposable",
+	})
+	if err != nil {
+		t.Fatalf("create disposable task: %v", err)
+	}
+	disposableID := disposable.(store.Task).ID
+	result, err = f.run(t, "task.delete", map[string]any{"id": disposableID})
+	if err != nil {
+		t.Fatalf("task.delete: %v", err)
+	}
+	encoded, err = json.Marshal(result)
+	if err != nil {
+		t.Fatalf("encode result: %v", err)
+	}
+	if string(encoded) != `{"ok":true}` {
+		t.Fatalf("task.delete result JSON = %s, want {\"ok\":true}", encoded)
+	}
+	if _, err := f.run(t, "task.show", map[string]any{"id": disposableID}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("show deleted task error = %v, want ErrNotFound", err)
+	}
 }
 
 func TestUnknownCommandAndMissingRecordClassification(t *testing.T) {
@@ -488,6 +512,12 @@ func TestUnknownCommandAndMissingRecordClassification(t *testing.T) {
 		t.Fatal("missing task was accepted")
 	} else if status, code := Classify(err); status != 404 || code != "not_found" {
 		t.Fatalf("classify = (%d, %q), want (404, not_found)", status, code)
+	}
+
+	if _, err := f.run(t, "task.delete", map[string]any{"id": 0}); err == nil {
+		t.Fatal("zero task.delete id was accepted")
+	} else {
+		requireInvalid(t, err)
 	}
 
 	if _, err := f.run(t, "task.create", map[string]any{

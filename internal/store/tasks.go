@@ -267,6 +267,102 @@ func (s *Store) CreateTask(ctx context.Context, actor string, in CreateTaskParam
 	return created, nil
 }
 
+// DeleteTask removes a task and its local dispatch history. A task with a
+// reserved dispatch attempt or an incoming dependency cannot be deleted.
+// Outgoing dependencies, terminal attempts and their sessions, and markings are
+// removed in the same transaction that appends the task.deleted audit event;
+// the append-only activity history is never discarded.
+func (s *Store) DeleteTask(ctx context.Context, actor string, taskID int64) error {
+	actor, err := normalizeActor(actor)
+	if err != nil {
+		return err
+	}
+	if err := validateID("task", taskID); err != nil {
+		return err
+	}
+
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		task, err := taskByID(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+
+		var reservedAttempt string
+		err = tx.QueryRowContext(ctx, `
+			SELECT id
+			FROM dispatch_attempts
+			WHERE task_id = ? AND state = 'reserved'
+			ORDER BY seq
+			LIMIT 1`, taskID,
+		).Scan(&reservedAttempt)
+		if err == nil {
+			return fmt.Errorf("%w: task %d has reserved dispatch attempt %s; wait for it to finish before deleting the task",
+				ErrConflict, taskID, reservedAttempt)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("store: load reserved task attempt: %w", err)
+		}
+
+		rows, err := tx.QueryContext(ctx,
+			`SELECT task_id FROM task_dependencies WHERE depends_on_id = ? ORDER BY task_id`, taskID,
+		)
+		if err != nil {
+			return fmt.Errorf("store: list task dependents: %w", err)
+		}
+		dependentIDs := []int64{}
+		for rows.Next() {
+			var dependentID int64
+			if err := rows.Scan(&dependentID); err != nil {
+				rows.Close()
+				return fmt.Errorf("store: scan task dependent: %w", err)
+			}
+			dependentIDs = append(dependentIDs, dependentID)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("store: list task dependents: %w", err)
+		}
+		rows.Close()
+		if len(dependentIDs) > 0 {
+			return fmt.Errorf("%w: task %d still has incoming dependencies from tasks %v; remove those dependencies before deleting the task",
+				ErrConflict, taskID, dependentIDs)
+		}
+
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM task_dependencies WHERE task_id = ?`, taskID,
+		); err != nil {
+			return fmt.Errorf("store: delete task %d dependencies: %w", taskID, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM sessions
+			WHERE attempt_id IN (
+				SELECT id FROM dispatch_attempts
+				WHERE task_id = ? AND state <> 'reserved'
+			)`, taskID,
+		); err != nil {
+			return fmt.Errorf("store: delete task %d sessions: %w", taskID, err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM dispatch_attempts WHERE task_id = ? AND state <> 'reserved'`, taskID,
+		); err != nil {
+			return fmt.Errorf("store: delete task %d dispatch attempts: %w", taskID, err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM tasks WHERE id = ?`, taskID,
+		); err != nil {
+			return fmt.Errorf("store: delete task %d: %w", taskID, err)
+		}
+
+		_, err = appendActivity(ctx, tx, activityInput{
+			Type:      ActivityTaskDeleted,
+			Actor:     actor,
+			TaskID:    int64Pointer(taskID),
+			ProjectID: int64Pointer(task.ProjectID),
+		})
+		return err
+	})
+}
+
 // UpdateTask applies a partial edit. Nil patch fields are unchanged. A no-op
 // patch writes no audit event. Moving a task from in-review back to todo adds
 // the changes-requested marking in the same transaction.

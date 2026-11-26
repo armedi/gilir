@@ -122,6 +122,7 @@ const (
 
 	ActivityTaskCreated        = "task.created"
 	ActivityTaskUpdated        = "task.updated"
+	ActivityTaskDeleted        = "task.deleted"
 	ActivityTaskStatusChanged  = "task.status_changed"
 	ActivityTaskMarking        = "task.marking_changed"
 	ActivityTaskCommented      = "task.commented"
