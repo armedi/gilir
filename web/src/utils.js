@@ -55,7 +55,7 @@ export function parseTime(value) {
 
 export function formatDateTime(value) {
   const time = parseTime(value);
-  return Number.isNaN(time) ? '—' : dateFormatter.format(time);
+  return Number.isNaN(time) ? '-' : dateFormatter.format(time);
 }
 
 export function formatFullDateTime(value) {
@@ -65,7 +65,7 @@ export function formatFullDateTime(value) {
 
 export function formatRelativeTime(value, now = Date.now()) {
   const time = parseTime(value);
-  if (Number.isNaN(time)) return '—';
+  if (Number.isNaN(time)) return '-';
   const delta = now - time;
   if (delta < 45000) return 'just now';
   for (const [unit, size] of RELATIVE_UNITS) {

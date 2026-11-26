@@ -6,31 +6,14 @@ export default function TaskListPanel(props) {
   const showList = createMemo(() => props.tasks.length > 0);
 
   return (
-    <section
+    <div
       id="tasks"
-      class="task-panel"
+      class="queue-scroll"
       aria-labelledby="tasks-title"
       aria-busy={props.loading ? 'true' : 'false'}
     >
-      <div class="task-panel-head">
-        <div class="task-panel-title-row">
-          <h2 id="tasks-title" class="task-panel-title">
-            Tasks
-          </h2>
-          <span class="task-count" aria-live="polite">
-            {props.tasks.length}
-            <span class="sr-only"> tasks</span>
-          </span>
-        </div>
-        <Show when={props.loading && props.tasks.length > 0}>
-          <span class="task-refresh" role="status">
-            <span class="sr-only">Refreshing tasks</span>
-          </span>
-        </Show>
-      </div>
-
       <Show when={props.error}>
-        <div class="banner warning task-banner" role="alert">
+        <div class="banner warning" role="alert">
           <span>
             {props.tasks.length > 0 ? 'Live updates paused. ' : 'Could not load tasks. '}
             {props.error}
@@ -42,7 +25,7 @@ export default function TaskListPanel(props) {
       </Show>
 
       <Show when={props.loading && props.tasks.length === 0 && props.repos.length > 0}>
-        <div class="task-loading" role="status">
+        <div class="queue-loading" role="status">
           Loading tasks…
         </div>
       </Show>
@@ -53,22 +36,20 @@ export default function TaskListPanel(props) {
           repos={props.repos}
           projects={props.projects}
           selectedTaskId={props.selectedTaskId}
-          approvingId={props.approvingId}
           statusFilter={props.statusFilter}
           onOpen={props.onOpen}
-          onApprove={props.onApprove}
         />
       </Show>
 
       <Show when={!props.loading && !showList()}>
-        <div class="task-empty">
+        <div class="queue-empty">
           <Show
             when={hasRepos()}
             fallback={
               <>
-                <h3>No repositories yet</h3>
-                <p>Add a Git repository to start queuing tasks.</p>
-                <button class="btn btn-primary" type="button" onClick={props.onAddRepo}>
+                <h3>No repositories connected</h3>
+                <p>Connect a local Git repository to start queuing work.</p>
+                <button class="btn btn-primary btn-sm" type="button" onClick={props.onAddRepo}>
                   Add repository
                 </button>
               </>
@@ -78,23 +59,23 @@ export default function TaskListPanel(props) {
               when={props.hasFilters}
               fallback={
                 <>
-                  <h3>No tasks yet</h3>
-                  <p>Create the first task in this queue.</p>
-                  <button class="btn btn-primary" type="button" onClick={props.onNewTask}>
+                  <h3>Queue is clear</h3>
+                  <p>Create a task to place work in the local dispatch queue.</p>
+                  <button class="btn btn-primary btn-sm" type="button" onClick={props.onNewTask}>
                     New task
                   </button>
                 </>
               }
             >
               <h3>No matching tasks</h3>
-              <p>No tasks match the current filters.</p>
-              <button class="btn btn-secondary" type="button" onClick={props.onClearFilters}>
+              <p>Widen your active filters to see other tasks in the queue.</p>
+              <button class="btn btn-secondary btn-sm" type="button" onClick={props.onClearFilters}>
                 Clear filters
               </button>
             </Show>
           </Show>
         </div>
       </Show>
-    </section>
+    </div>
   );
 }

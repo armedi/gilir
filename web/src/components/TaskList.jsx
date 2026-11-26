@@ -17,7 +17,7 @@ function PriorityMark(props) {
   return (
     <span
       class={`priority-mark priority-${knownPriority(props.value)}`}
-      title={priorityLabel(props.value)}
+      title={`Priority: ${priorityLabel(props.value)}`}
     >
       <For each={[0, 1, 2, 3]}>
         {(index) => (
@@ -37,9 +37,11 @@ function TaskRow(props) {
     asArray(props.projects).find((item) => String(item.id) === String(task().project_id));
   const selected = () =>
     props.selectedTaskId != null && String(props.selectedTaskId) === String(task().id);
-  const approving = () =>
-    props.approvingId != null && String(props.approvingId) === String(task().id);
   const markings = () => asArray(task().markings);
+  const repoName = () => {
+    const found = repo();
+    return found ? basename(found.path) || found.path : `Repo #${task().repo_id ?? '-'}`;
+  };
 
   return (
     <li class={['task-row', { selected: selected() }]}>
@@ -49,55 +51,45 @@ function TaskRow(props) {
         onClick={() => props.onOpen(task().id)}
         aria-current={selected() ? 'true' : undefined}
       >
-        <PriorityMark value={task().priority} />
-        <span class="task-id">#{task().id}</span>
-        <span class="task-main">
+        <span class="task-row-top">
+          <PriorityMark value={task().priority} />
+          <span class="task-id">#{task().id}</span>
           <span class="task-title">{task().title || 'Untitled task'}</span>
-          <Show when={markings().length > 0}>
-            <span class="task-markings">
+        </span>
+
+        <span class="task-row-meta">
+          <span class="task-row-sub">
+            <Show when={project()}>
+              {(found) => <span>{found().name}</span>}
+            </Show>
+            <Show when={project() && repoName() && project().name !== repoName()}>
+              <span aria-hidden="true">/</span>
+              <span class="task-repo-mono" title={repo()?.path}>
+                {repoName()}
+              </span>
+            </Show>
+            <Show when={!project()}>
+              <span class="task-repo-mono" title={repo()?.path}>
+                {repoName()}
+              </span>
+            </Show>
+            <Show when={markings().length > 0}>
               <For each={markings()}>
                 {(marking) => (
-                  <span class={`marking-chip tone-${markingTone(marking)}`}>{marking}</span>
+                  <span class={`marking-inline tone-${markingTone(marking)}`}>{marking}</span>
                 )}
               </For>
-            </span>
-          </Show>
-        </span>
-        <Show when={project()}>
-          {(found) => <span class="task-project">{found().name}</span>}
-        </Show>
-        <Show
-          when={repo()}
-          fallback={<span class="task-repo muted">Repo #{task().repo_id ?? '—'}</span>}
-        >
-          {(found) => (
-            <span class="task-repo" title={found().path}>
-              {basename(found().path) || found().path}
-            </span>
-          )}
-        </Show>
-        <time
-          class="task-time"
-          datetime={timeAttribute(task().updated_at)}
-          title={formatFullDateTime(task().updated_at)}
-        >
-          {formatRelativeTime(task().updated_at)}
-        </time>
-      </button>
-
-      <Show when={task().status === 'in-review'}>
-        <div class="task-row-actions">
-          <button
-            type="button"
-            class="btn btn-approve btn-sm"
-            onClick={() => props.onApprove(task())}
-            disabled={approving()}
-            aria-label={`Approve task #${task().id} ${task().title || ''}`.trim()}
+            </Show>
+          </span>
+          <time
+            class="task-time"
+            datetime={timeAttribute(task().updated_at)}
+            title={formatFullDateTime(task().updated_at)}
           >
-            {approving() ? 'Approving…' : 'Approve'}
-          </button>
-        </div>
-      </Show>
+            {formatRelativeTime(task().updated_at)}
+          </time>
+        </span>
+      </button>
     </li>
   );
 }
@@ -121,13 +113,23 @@ function GroupSection(props) {
           <span
             class={['task-group-chevron', { collapsed: collapsed() }]}
             aria-hidden="true"
-          />
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <path
+                d="M4.25 2.75L7.75 6L4.25 9.25"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </span>
           <span class={`task-group-dot status-${props.group.status}`} aria-hidden="true" />
           <span class="task-group-label">{props.group.label}</span>
           <span class="task-group-count">{props.group.tasks.length}</span>
         </button>
       </h3>
-      <div id={panelId} class="task-group-body" hidden={collapsed()}>
+      <div id={panelId} hidden={collapsed()}>
         <ul class="task-rows">
           <For each={props.group.tasks}>
             {(task) => (
@@ -136,9 +138,7 @@ function GroupSection(props) {
                 repos={props.repos}
                 projects={props.projects}
                 selectedTaskId={props.selectedTaskId}
-                approvingId={props.approvingId}
                 onOpen={props.onOpen}
-                onApprove={props.onApprove}
               />
             )}
           </For>
@@ -185,11 +185,9 @@ export default function TaskList(props) {
             repos={props.repos}
             projects={props.projects}
             selectedTaskId={props.selectedTaskId}
-            approvingId={props.approvingId}
             isCollapsed={isCollapsed}
             onToggle={toggle}
             onOpen={props.onOpen}
-            onApprove={props.onApprove}
           />
         )}
       </For>

@@ -10,8 +10,8 @@ export const STATUS_LABELS = {
 
 // Queue groups render most urgent first.
 export const TASK_GROUPS = [
-  { status: 'in-review', label: 'In Review' },
-  { status: 'in-progress', label: 'In Progress' },
+  { status: 'in-review', label: 'In review' },
+  { status: 'in-progress', label: 'In progress' },
   { status: 'todo', label: 'Todo' },
   { status: 'backlog', label: 'Backlog' },
   { status: 'done', label: 'Done' },

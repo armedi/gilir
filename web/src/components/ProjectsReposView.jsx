@@ -7,6 +7,21 @@ import {
   createUniqueId,
 } from 'solid-js';
 import { asArray, basename, errorText, repoProjectIds } from '../utils';
+import AddRepoForm from './AddRepoForm';
+import ProjectForm from './ProjectForm';
+
+function SmallCloseIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <path
+        d="M3 3L9 9M9 3L3 9"
+        stroke="currentColor"
+        stroke-width="1.5"
+        stroke-linecap="round"
+      />
+    </svg>
+  );
+}
 
 function focusSoon(element) {
   requestAnimationFrame(() => element?.focus());
@@ -49,8 +64,6 @@ function RepoRow(props) {
     { defer: true },
   );
 
-  // A selected project can disappear from the picker (deleted elsewhere);
-  // drop the stale choice so the form cannot submit an unknown project.
   createEffect(
     () => ({ choice: linkChoice(), available: availableProjects() }),
     ({ choice, available }) => {
@@ -117,11 +130,11 @@ function RepoRow(props) {
           <ul class="repo-chips" aria-label={`Projects linked to ${name()}`}>
             <For each={projectIds()}>
               {(projectId) => (
-                <li class="chip manage-chip" title={unlinkHint()}>
-                  <span class="manage-chip-name">{projectName(projectId)}</span>
+                <li class="token" title={unlinkHint()}>
+                  <span class="token-name">{projectName(projectId)}</span>
                   <button
                     type="button"
-                    class="chip-remove"
+                    class="token-remove"
                     aria-label={
                       soleProject()
                         ? `${projectName(projectId)} is the only project for ${name()}; a repository must stay linked to at least one project`
@@ -131,7 +144,7 @@ function RepoRow(props) {
                     disabled={soleProject() || busy() !== null}
                     onClick={() => unlink(projectId)}
                   >
-                    ×
+                    <SmallCloseIcon />
                   </button>
                 </li>
               )}
@@ -141,8 +154,8 @@ function RepoRow(props) {
           <Show when={soleProject()}>
             <span class="manage-hint">
               {availableProjects().length > 0
-                ? 'Only project link — link another before unlinking.'
-                : 'Only project — a repository must stay linked to at least one.'}
+                ? 'Only project link. Link another before unlinking.'
+                : 'Must stay linked to at least one project.'}
             </span>
           </Show>
 
@@ -150,7 +163,7 @@ function RepoRow(props) {
             when={availableProjects().length > 0}
             fallback={
               <Show when={!soleProject()}>
-                <span class="manage-hint">Linked to every project</span>
+                <span class="manage-hint">Linked to all projects</span>
               </Show>
             }
           >
@@ -253,8 +266,6 @@ function ProjectRow(props) {
   const hasTasks = () => props.taskCount > 0;
   const jumpable = () => props.repoCount > 0 || props.taskCount > 0;
 
-  // Focus moves once per mode transition: into the input or confirm button when
-  // opening, and back to the trigger button only when returning to idle.
   createEffect(
     () => ({ editing: editing(), confirming: confirming() }),
     (state, previous) => {
@@ -386,7 +397,7 @@ function ProjectRow(props) {
 
         <button
           type="button"
-          class="project-repos"
+          class="project-metrics"
           onClick={() => props.onViewTasks(props.getProject().id)}
           disabled={!jumpable()}
           aria-label={`View tasks in project ${name()}: ${props.repoCount} ${
@@ -398,15 +409,15 @@ function ProjectRow(props) {
               : 'No repositories or tasks in this project yet'
           }
         >
-          <span class="project-repos-metric">
+          <span class="project-metric">
             {props.repoCount}
-            <span class="project-repos-label">
+            <span class="project-metric-label">
               {props.repoCount === 1 ? 'repo' : 'repos'}
             </span>
           </span>
-          <span class={['project-repos-metric', { 'is-empty': !hasTasks() }]}>
+          <span class={['project-metric', { 'is-empty': !hasTasks() }]}>
             {props.taskCount}
-            <span class="project-repos-label">
+            <span class="project-metric-label">
               {props.taskCount === 1 ? 'task' : 'tasks'}
             </span>
           </span>
@@ -484,6 +495,7 @@ function ProjectRow(props) {
 export default function ProjectsReposView(props) {
   const reposTitleId = createUniqueId();
   const projectsTitleId = createUniqueId();
+  const [addingProject, setAddingProject] = createSignal(false);
 
   const projectMap = createMemo(() => {
     const map = new Map();
@@ -499,119 +511,211 @@ export default function ProjectsReposView(props) {
     return counts;
   });
 
+  const repoCountLabel = createMemo(() => {
+    const count = asArray(props.repos).length;
+    return `${count} ${count === 1 ? 'repository' : 'repositories'}`;
+  });
+
+  const projectCountLabel = createMemo(() => {
+    const count = asArray(props.projects).length;
+    return `${count} ${count === 1 ? 'project' : 'projects'}`;
+  });
+
+  async function handleProjectCreated(name) {
+    setAddingProject(false);
+    await props.onProjectCreated(name);
+  }
+
   return (
-    <div class="manage-view">
-      <section class="panel-surface manage-section" aria-labelledby={reposTitleId}>
-        <header class="manage-head">
-          <div class="manage-head-main">
-            <div class="manage-title-row">
-              <h2 id={reposTitleId} class="manage-title">
-                Repositories
-              </h2>
-              <span class="task-count" aria-live="polite">
-                {asArray(props.repos).length}
-                <span class="sr-only"> repositories</span>
-              </span>
+    <section class="center-panel" aria-label="Projects and repositories">
+      <div class="mobile-back-bar">
+        <button class="btn btn-ghost btn-sm" type="button" onClick={props.onBack}>
+          ← Back to queue
+        </button>
+      </div>
+
+      <header class="center-header">
+        <div class="center-header-inner">
+          <div class="center-head-main">
+            <h2 class="center-title">Projects & Repos</h2>
+            <div class="center-meta">
+              <span>{repoCountLabel()}</span>
+              <span>{projectCountLabel()}</span>
             </div>
-            <p class="manage-sub">
-              Git repositories on this machine, linked to the projects whose tasks run in them.
-            </p>
           </div>
-          <button class="btn btn-secondary btn-sm" type="button" onClick={props.onAddRepo}>
-            + Add repository
-          </button>
-        </header>
+        </div>
+      </header>
 
-        <Show when={props.reposLoading && asArray(props.repos).length === 0}>
-          <p class="manage-status" role="status">
-            Loading repositories…
-          </p>
-        </Show>
+      <div class="center-scroll">
+        <div class="manage-view">
+          <section class="manage-section" aria-labelledby={reposTitleId}>
+            <header class="manage-head">
+              <div class="manage-head-main">
+                <div class="manage-title-row">
+                  <h2 id={reposTitleId} class="manage-title">
+                    Repositories
+                  </h2>
+                  <span class="manage-count" aria-live="polite">
+                    {repoCountLabel()}
+                  </span>
+                </div>
+                <p class="manage-sub">
+                  Local Git repositories linked to the projects whose tasks run inside them.
+                </p>
+              </div>
+              <button
+                class="btn btn-secondary btn-sm"
+                type="button"
+                aria-expanded={props.addingRepo ? 'true' : 'false'}
+                onClick={() => props.onToggleAddRepo(!props.addingRepo)}
+              >
+                {props.addingRepo ? 'Close form' : 'Add repository'}
+              </button>
+            </header>
 
-        <Show when={!props.reposLoading && !props.reposError && asArray(props.repos).length === 0}>
-          <div class="manage-empty">
-            <p>
-              <strong>No repositories yet.</strong> Add a Git repository to start queuing work.
-            </p>
-            <button class="btn btn-primary btn-sm" type="button" onClick={props.onAddRepo}>
-              Add repository
-            </button>
-          </div>
-        </Show>
+            <Show when={props.addingRepo}>
+              <div class="inline-composer">
+                <div class="inline-composer-inner">
+                  <AddRepoForm
+                    autofocus
+                    projects={props.projects}
+                    onAdded={props.onRepoAdded}
+                    onCancel={() => props.onToggleAddRepo(false)}
+                  />
+                </div>
+              </div>
+            </Show>
 
-        <Show when={asArray(props.repos).length > 0}>
-          <ul class="manage-rows">
-            <For each={props.repos} keyed={(repo) => String(repo.id)}>
-              {(repo) => (
-                <RepoRow
-                  getRepo={repo}
-                  projects={props.projects}
-                  projectMap={projectMap()}
-                  onLink={props.onLinkRepo}
-                  onUnlink={props.onUnlinkRepo}
-                  onRemove={props.onRemoveRepo}
-                />
-              )}
-            </For>
-          </ul>
-        </Show>
-      </section>
+            <Show when={props.reposLoading && asArray(props.repos).length === 0}>
+              <p class="manage-status" role="status">
+                Loading repositories…
+              </p>
+            </Show>
 
-      <section class="panel-surface manage-section" aria-labelledby={projectsTitleId}>
-        <header class="manage-head">
-          <div class="manage-head-main">
-            <div class="manage-title-row">
-              <h2 id={projectsTitleId} class="manage-title">
-                Projects
-              </h2>
-              <span class="task-count" aria-live="polite">
-                {asArray(props.projects).length}
-                <span class="sr-only"> projects</span>
-              </span>
-            </div>
-            <p class="manage-sub">Projects group tasks and share repositories many-to-many.</p>
-          </div>
-          <button class="btn btn-secondary btn-sm" type="button" onClick={props.onNewProject}>
-            + New project
-          </button>
-        </header>
+            <Show
+              when={
+                !props.reposLoading &&
+                !props.reposError &&
+                asArray(props.repos).length === 0 &&
+                !props.addingRepo
+              }
+            >
+              <div class="manage-empty">
+                <p>
+                  <strong>No repositories yet.</strong> Add a Git repository to start queuing work.
+                </p>
+                <button
+                  class="btn btn-primary btn-sm"
+                  type="button"
+                  onClick={() => props.onToggleAddRepo(true)}
+                >
+                  Add repository
+                </button>
+              </div>
+            </Show>
 
-        <Show when={props.projectsLoading && asArray(props.projects).length === 0}>
-          <p class="manage-status" role="status">
-            Loading projects…
-          </p>
-        </Show>
+            <Show when={asArray(props.repos).length > 0}>
+              <ul class="manage-rows">
+                <For each={props.repos} keyed={(repo) => String(repo.id)}>
+                  {(repo) => (
+                    <RepoRow
+                      getRepo={repo}
+                      projects={props.projects}
+                      projectMap={projectMap()}
+                      onLink={props.onLinkRepo}
+                      onUnlink={props.onUnlinkRepo}
+                      onRemove={props.onRemoveRepo}
+                    />
+                  )}
+                </For>
+              </ul>
+            </Show>
+          </section>
 
-        <Show
-          when={!props.projectsLoading && !props.projectsError && asArray(props.projects).length === 0}
-        >
-          <div class="manage-empty">
-            <p>
-              <strong>No projects yet.</strong> Create one by name or add a repository.
-            </p>
-            <button class="btn btn-primary btn-sm" type="button" onClick={props.onNewProject}>
-              New project
-            </button>
-          </div>
-        </Show>
+          <section class="manage-section" aria-labelledby={projectsTitleId}>
+            <header class="manage-head">
+              <div class="manage-head-main">
+                <div class="manage-title-row">
+                  <h2 id={projectsTitleId} class="manage-title">
+                    Projects
+                  </h2>
+                  <span class="manage-count" aria-live="polite">
+                    {projectCountLabel()}
+                  </span>
+                </div>
+                <p class="manage-sub">
+                  Projects organize tasks and can share repositories many-to-many.
+                </p>
+              </div>
+              <button
+                class="btn btn-secondary btn-sm"
+                type="button"
+                aria-expanded={addingProject() ? 'true' : 'false'}
+                onClick={() => setAddingProject((open) => !open)}
+              >
+                {addingProject() ? 'Close form' : 'New project'}
+              </button>
+            </header>
 
-        <Show when={asArray(props.projects).length > 0}>
-          <ul class="manage-rows">
-            <For each={props.projects} keyed={(project) => String(project.id)}>
-              {(project) => (
-                <ProjectRow
-                  getProject={project}
-                  repoCount={reposPerProject().get(String(project().id)) || 0}
-                  taskCount={taskCountFor(props.projectTaskCounts, project().id)}
-                  onRename={props.onRenameProject}
-                  onRemove={props.onRemoveProject}
-                  onViewTasks={props.onViewProjectTasks}
-                />
-              )}
-            </For>
-          </ul>
-        </Show>
-      </section>
-    </div>
+            <Show when={addingProject()}>
+              <div class="inline-composer">
+                <div class="inline-composer-inner">
+                  <ProjectForm
+                    autofocus
+                    onCreated={handleProjectCreated}
+                    onCancel={() => setAddingProject(false)}
+                  />
+                </div>
+              </div>
+            </Show>
+
+            <Show when={props.projectsLoading && asArray(props.projects).length === 0}>
+              <p class="manage-status" role="status">
+                Loading projects…
+              </p>
+            </Show>
+
+            <Show
+              when={
+                !props.projectsLoading &&
+                !props.projectsError &&
+                asArray(props.projects).length === 0 &&
+                !addingProject()
+              }
+            >
+              <div class="manage-empty">
+                <p>
+                  <strong>No projects yet.</strong> Create one by name or add a repository.
+                </p>
+                <button
+                  class="btn btn-primary btn-sm"
+                  type="button"
+                  onClick={() => setAddingProject(true)}
+                >
+                  New project
+                </button>
+              </div>
+            </Show>
+
+            <Show when={asArray(props.projects).length > 0}>
+              <ul class="manage-rows">
+                <For each={props.projects} keyed={(project) => String(project.id)}>
+                  {(project) => (
+                    <ProjectRow
+                      getProject={project}
+                      repoCount={reposPerProject().get(String(project().id)) || 0}
+                      taskCount={taskCountFor(props.projectTaskCounts, project().id)}
+                      onRename={props.onRenameProject}
+                      onRemove={props.onRemoveProject}
+                      onViewTasks={props.onViewProjectTasks}
+                    />
+                  )}
+                </For>
+              </ul>
+            </Show>
+          </section>
+        </div>
+      </div>
+    </section>
   );
 }

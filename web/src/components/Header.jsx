@@ -1,17 +1,41 @@
-import { For, Show, createEffect, createSignal, createUniqueId } from 'solid-js';
+import { For, Show, createMemo, createSignal } from 'solid-js';
 import { command } from '../api';
-import { clearDraft, draftKey, loadDraft, saveDraft } from '../drafts';
 import { errorText } from '../utils';
 
-const concurrencyDraftKey = draftKey('concurrency');
+function LeftPanelIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect
+        x="1.75"
+        y="2.25"
+        width="12.5"
+        height="11.5"
+        rx="2"
+        stroke="currentColor"
+        stroke-width="1.35"
+      />
+      <path d="M5.75 2.5V13.5" stroke="currentColor" stroke-width="1.35" />
+    </svg>
+  );
+}
 
-const VIEWS = [
-  { id: 'tasks', label: 'Tasks' },
-  { id: 'projects', label: 'Projects & Repos' },
-];
+function RightPanelIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect
+        x="1.75"
+        y="2.25"
+        width="12.5"
+        height="11.5"
+        rx="2"
+        stroke="currentColor"
+        stroke-width="1.35"
+      />
+      <path d="M10.25 2.5V13.5" stroke="currentColor" stroke-width="1.35" />
+    </svg>
+  );
+}
 
-// A watcher failure is an OpenCode problem; a failed daemon.status poll just
-// means the queue state is unknown right now.
 function stateOf(status) {
   if (!status) return 'unknown';
   if (status.watcher_error) return 'warning';
@@ -19,258 +43,200 @@ function stateOf(status) {
 }
 
 function stateLabel(state) {
-  if (state === 'warning') return 'OpenCode warning';
+  if (state === 'warning') return 'Warning';
   if (state === 'paused') return 'Paused';
   if (state === 'running') return 'Running';
   return 'Unknown';
 }
 
 export default function Header(props) {
-  const maxInputId = createUniqueId();
-  const panelId = createUniqueId();
-  let pillButton;
-  let popover;
-
-  const storedDraft = loadDraft(concurrencyDraftKey);
-  const hasStoredDraft = typeof storedDraft === 'string' && storedDraft !== '';
-  const [open, setOpen] = createSignal(false);
-  const [concurrency, setConcurrency] = createSignal(hasStoredDraft ? storedDraft : '');
-  const [dirty, setDirty] = createSignal(hasStoredDraft);
   const [pauseBusy, setPauseBusy] = createSignal(false);
-  const [saveBusy, setSaveBusy] = createSignal(false);
-  const [actionError, setActionError] = createSignal(null);
+  const [concurrencyBusy, setConcurrencyBusy] = createSignal(false);
 
   const status = () => props.daemon;
   const state = () => stateOf(status());
-  const activeCount = () => (status()?.active_parents == null ? '–' : String(status().active_parents));
-  const maxCount = () =>
-    status()?.max_concurrency == null ? '–' : String(status().max_concurrency);
-  const warningText = () => props.daemonError || status()?.watcher_error || '';
+  const activeNum = () =>
+    typeof status()?.active_parents === 'number' ? status().active_parents : null;
+  const maxNum = () =>
+    typeof status()?.max_concurrency === 'number' ? status().max_concurrency : null;
+  const activeCount = () => (activeNum() == null ? '-' : String(activeNum()));
+  const maxCount = () => (maxNum() == null ? '-' : String(maxNum()));
 
-  createEffect(
-    () => {
-      const current = status();
-      if (!current || dirty()) return;
-      return current;
-    },
-    (current) => {
-      if (!current) return;
-      setConcurrency(current.max_concurrency == null ? '' : String(current.max_concurrency));
-    },
-  );
-
-  createEffect(
-    () => open(),
-    (isOpen) => {
-      if (isOpen) return;
-      setActionError(null);
-    },
-  );
-
-  createEffect(
-    () => open(),
-    (isOpen) => {
-      if (!isOpen) return;
-      const onPointerDown = (event) => {
-        if (popover?.contains(event.target) || pillButton?.contains(event.target)) return;
-        setOpen(false);
-      };
-      const onKeyDown = (event) => {
-        if (event.key !== 'Escape') return;
-        setOpen(false);
-        pillButton?.focus();
-      };
-      document.addEventListener('pointerdown', onPointerDown);
-      document.addEventListener('keydown', onKeyDown);
-      return () => {
-        document.removeEventListener('pointerdown', onPointerDown);
-        document.removeEventListener('keydown', onKeyDown);
-      };
-    },
-  );
-
-  function updateConcurrency(value) {
-    setConcurrency(value);
-    setDirty(true);
-    setActionError(null);
-    if (value) {
-      saveDraft(concurrencyDraftKey, value);
-    } else {
-      clearDraft(concurrencyDraftKey);
-    }
-  }
+  const slotIndicators = createMemo(() => {
+    const max = maxNum();
+    const active = activeNum();
+    if (max == null || max < 1 || max > 8) return [];
+    const filled = active == null ? 0 : Math.min(active, max);
+    return Array.from({ length: max }, (_, index) => index < filled);
+  });
 
   async function togglePause() {
     const current = status();
     if (!current || pauseBusy()) return;
     const wasPaused = Boolean(current.paused);
     setPauseBusy(true);
-    setActionError(null);
     try {
       await command('daemon.update', { paused: !wasPaused });
       await props.onRefreshDaemon();
       props.notify(wasPaused ? 'Queue resumed' : 'Queue paused');
     } catch (requestError) {
-      setActionError(errorText(requestError));
+      props.notify(errorText(requestError));
     } finally {
       setPauseBusy(false);
     }
   }
 
-  async function saveConcurrency(event) {
-    event.preventDefault();
-    if (saveBusy()) return;
-    const value = Number(concurrency());
-    if (!Number.isInteger(value) || value < 1) {
-      setActionError('Max concurrency must be a whole number of at least 1.');
-      return;
-    }
-    setSaveBusy(true);
-    setActionError(null);
+  async function stepConcurrency(delta) {
+    const current = maxNum();
+    if (current == null || concurrencyBusy()) return;
+    const next = current + delta;
+    if (!Number.isInteger(next) || next < 1) return;
+    setConcurrencyBusy(true);
     try {
-      await command('daemon.update', { max_concurrency: value });
-      clearDraft(concurrencyDraftKey);
-      setDirty(false);
+      await command('daemon.update', { max_concurrency: next });
       await props.onRefreshDaemon();
-      props.notify('Concurrency updated');
+      props.notify(`Max concurrency set to ${next}`);
     } catch (requestError) {
-      setActionError(errorText(requestError));
+      props.notify(errorText(requestError));
     } finally {
-      setSaveBusy(false);
+      setConcurrencyBusy(false);
     }
   }
 
   return (
     <header class="app-header">
       <div class="header-inner">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true">
-            G
-          </span>
-          <h1 class="brand-name">Gilir</h1>
+        <div class="header-left">
+          <button
+            type="button"
+            class={['panel-icon-btn desktop-panel-toggle', { active: props.leftOpen }]}
+            aria-label={props.leftOpen ? 'Hide queue panel' : 'Show queue panel'}
+            aria-pressed={props.leftOpen ? 'true' : 'false'}
+            title={props.leftOpen ? 'Hide queue panel' : 'Show queue panel'}
+            onClick={props.onToggleLeft}
+          >
+            <LeftPanelIcon />
+          </button>
+
+          <span class="header-divider" aria-hidden="true" />
+
+          <div class="brand">
+            <span class="brand-mark" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <path
+                  d="M2.5 5.25H11.5L9 2.75M13.5 10.75H4.5L7 13.25"
+                  stroke="currentColor"
+                  stroke-width="1.7"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </span>
+            <h1 class="brand-name">Gilir</h1>
+          </div>
         </div>
 
-        <nav class="view-tabs" aria-label="Views">
-          <For each={VIEWS}>
-            {(view) => (
-              <button
-                type="button"
-                class={['view-tab', { active: props.view === view.id }]}
-                aria-current={props.view === view.id ? 'page' : undefined}
-                onClick={() => props.onViewChange(view.id)}
-              >
-                {view.label}
-              </button>
-            )}
-          </For>
-        </nav>
-
         <div class="header-actions">
-          <div class="queue-pill-wrap">
-            <button
-              ref={pillButton}
-              type="button"
-              class={['queue-pill', state()]}
-              aria-expanded={open()}
-              aria-controls={panelId}
-              aria-haspopup="dialog"
-              title="Queue status"
-              onClick={() => setOpen((value) => !value)}
+          <Show when={props.notice}>
+            <div class="header-notice" role="status" aria-live="polite">
+              <span class="header-notice-dot" aria-hidden="true" />
+              <span>{props.notice}</span>
+            </div>
+          </Show>
+
+          <div
+            class={['daemon-strip', state()]}
+            role="group"
+            aria-label="Dispatch daemon controls"
+          >
+            <span class="daemon-segment daemon-state">
+              <span class="daemon-dot" aria-hidden="true" />
+              <span>{stateLabel(state())}</span>
+            </span>
+
+            <span
+              class="daemon-segment daemon-meter"
+              title="Active OpenCode parent runs / max concurrency"
             >
-              <span class="queue-dot" aria-hidden="true" />
-              <span class="queue-pill-state">{stateLabel(state())}</span>
-              <span class="queue-pill-count" aria-hidden="true">
-                {activeCount()}<span class="queue-pill-sep">/</span>{maxCount()}
+              <Show when={slotIndicators().length > 0}>
+                <span class="daemon-slots" aria-hidden="true">
+                  <For each={slotIndicators()}>
+                    {(busy) => <span class={['daemon-slot', { busy }]} />}
+                  </For>
+                </span>
+              </Show>
+              <span>
+                {activeCount()}/{maxCount()}
               </span>
               <span class="sr-only">
                 {`${activeCount()} of ${maxCount()} OpenCode parent runs active`}
               </span>
-            </button>
+            </span>
 
-            <Show when={open()}>
-              <div
-                ref={popover}
-                id={panelId}
-                class="queue-popover"
-                role="dialog"
-                aria-label="Queue controls"
+            <div class="stepper-group" role="group" aria-label="Max concurrency">
+              <button
+                type="button"
+                class="stepper-btn"
+                aria-label="Decrease max concurrency"
+                title="Decrease max concurrency"
+                onClick={() => stepConcurrency(-1)}
+                disabled={maxNum() == null || maxNum() <= 1 || concurrencyBusy()}
               >
-                <div class="queue-popover-head">
-                  <span class="queue-popover-title">Queue</span>
-                  <span class={['queue-state', state()]}>
-                    <span class="queue-dot" aria-hidden="true" />
-                    {stateLabel(state())}
-                  </span>
-                </div>
+                <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                  <path
+                    d="M2.5 6H9.5"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="stepper-btn"
+                aria-label="Increase max concurrency"
+                title="Increase max concurrency"
+                onClick={() => stepConcurrency(1)}
+                disabled={maxNum() == null || concurrencyBusy()}
+              >
+                <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                  <path
+                    d="M6 2.5V9.5M2.5 6H9.5"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </button>
+            </div>
 
-                <div class="queue-popover-metric">
-                  <span class="queue-popover-metric-label">Active parent runs</span>
-                  <span class="queue-popover-metric-value">
-                    {activeCount()} <span>/ {maxCount()}</span>
-                  </span>
-                </div>
-
-                <Show when={warningText()}>
-                  <p class="queue-popover-warning">{warningText()}</p>
-                </Show>
-
-                <Show when={props.daemonError}>
-                  <button class="btn btn-ghost btn-sm" type="button" onClick={props.onRefreshDaemon}>
-                    Retry
-                  </button>
-                </Show>
-
-                <button
-                  class="btn btn-secondary btn-block"
-                  type="button"
-                  onClick={togglePause}
-                  disabled={!status() || pauseBusy()}
-                >
-                  {pauseBusy()
-                    ? 'Updating…'
-                    : status()?.paused
-                      ? 'Resume queue'
-                      : 'Pause queue'}
-                </button>
-
-                <form class="queue-popover-form" onSubmit={saveConcurrency}>
-                  <div class="field">
-                    <label class="field-label" for={maxInputId}>
-                      Max concurrency
-                    </label>
-                    <input
-                      id={maxInputId}
-                      class="input"
-                      type="number"
-                      min="1"
-                      step="1"
-                      inputmode="numeric"
-                      value={concurrency()}
-                      onInput={(event) => updateConcurrency(event.currentTarget.value)}
-                      disabled={saveBusy()}
-                    />
-                  </div>
-                  <button
-                    class="btn btn-secondary"
-                    type="submit"
-                    disabled={saveBusy() || !dirty()}
-                  >
-                    {saveBusy() ? 'Saving…' : 'Save'}
-                  </button>
-                </form>
-
-                <Show when={actionError()}>
-                  <p class="field-error" role="alert">
-                    {actionError()}
-                  </p>
-                </Show>
-              </div>
-            </Show>
+            <button
+              type="button"
+              class="daemon-toggle-btn"
+              onClick={togglePause}
+              disabled={!status() || pauseBusy()}
+            >
+              {pauseBusy() ? '…' : status()?.paused ? 'Resume' : 'Pause'}
+            </button>
           </div>
 
           <button class="btn btn-primary header-cta" type="button" onClick={props.onPrimaryAction}>
-            {props.hasRepos ? '+ New task' : '+ Add repository'}
+            {props.hasRepos ? 'New task' : 'Add repository'}
           </button>
+
+          <Show when={props.canShowRight}>
+            <span class="header-divider" aria-hidden="true" />
+            <button
+              type="button"
+              class={['panel-icon-btn desktop-panel-toggle', { active: props.rightOpen }]}
+              aria-label={props.rightOpen ? 'Hide inspector panel' : 'Show inspector panel'}
+              aria-pressed={props.rightOpen ? 'true' : 'false'}
+              title={props.rightOpen ? 'Hide inspector panel' : 'Show inspector panel'}
+              onClick={props.onToggleRight}
+            >
+              <RightPanelIcon />
+            </button>
+          </Show>
         </div>
       </div>
     </header>

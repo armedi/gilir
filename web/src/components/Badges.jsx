@@ -3,13 +3,16 @@ import { priorityLabel, statusLabel } from '../utils';
 
 export function StatusBadge(props) {
   return (
-    <span class={`badge status-${knownStatus(props.value)}`}>{statusLabel(props.value)}</span>
+    <span class={`semantic-tag semantic-status-${knownStatus(props.value)}`}>
+      <span class="semantic-dot" aria-hidden="true" />
+      {statusLabel(props.value)}
+    </span>
   );
 }
 
 export function PriorityBadge(props) {
   return (
-    <span class={`badge priority-${knownPriority(props.value)}`}>
+    <span class={`semantic-tag semantic-priority-${knownPriority(props.value)}`}>
       {priorityLabel(props.value)}
     </span>
   );

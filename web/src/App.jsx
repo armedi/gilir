@@ -1,4 +1,5 @@
 import {
+  For,
   Show,
   createEffect,
   createMemo,
@@ -12,6 +13,7 @@ import { POLL_INTERVAL } from './constants';
 import {
   asArray,
   errorText,
+  formatRelativeTime,
   isAbortError,
   mergeTasks,
   normalizeDetail,
@@ -21,13 +23,13 @@ import {
   sortTasks,
   uniqueMarkings,
 } from './utils';
-import AddRepoDialog from './components/AddRepoDialog';
+import AddRepoForm from './components/AddRepoForm';
 import Filters from './components/Filters';
 import Header from './components/Header';
-import NewProjectDialog from './components/NewProjectDialog';
-import NewTaskDialog from './components/NewTaskDialog';
+import NewTaskPane from './components/NewTaskPane';
 import ProjectsReposView from './components/ProjectsReposView';
-import TaskDrawer from './components/TaskDrawer';
+import TaskDetailPane from './components/TaskDetailPane';
+import TaskInspectorPanel from './components/TaskInspectorPanel';
 import TaskListPanel from './components/TaskListPanel';
 
 function addMarkings(previous, additions) {
@@ -37,7 +39,29 @@ function addMarkings(previous, additions) {
   return [...merged].sort((left, right) => left.localeCompare(right));
 }
 
+function readStoredNumber(key, fallback, min, max) {
+  try {
+    const raw = Number(window.localStorage.getItem(key));
+    if (Number.isFinite(raw) && raw >= min && raw <= max) return raw;
+  } catch {
+    return fallback;
+  }
+  return fallback;
+}
+
+function writeStoredValue(key, value) {
+  try {
+    window.localStorage.setItem(key, String(value));
+  } catch {
+    return;
+  }
+}
+
 const EMPTY_FILTERS = { project: '', repo: '', status: '', priority: '', marking: '' };
+const LEFT_MIN = 250;
+const LEFT_MAX = 460;
+const RIGHT_MIN = 250;
+const RIGHT_MAX = 420;
 
 export default function App() {
   const [projects, setProjects] = createSignal([]);
@@ -75,11 +99,21 @@ export default function App() {
   const [markingInput, setMarkingInput] = createSignal('');
   const [knownMarkings, setKnownMarkings] = createSignal([]);
 
-  const [view, setView] = createSignal('tasks');
-  const [newTaskOpen, setNewTaskOpen] = createSignal(false);
-  const [addRepoOpen, setAddRepoOpen] = createSignal(false);
-  const [newProjectOpen, setNewProjectOpen] = createSignal(false);
-  const [approvingId, setApprovingId] = createSignal(null);
+  // Center panel modes: 'task' | 'new-task' | 'projects'
+  const [centerMode, setCenterMode] = createSignal('task');
+  const [leftOpen, setLeftOpen] = createSignal(true);
+  const [rightOpen, setRightOpen] = createSignal(true);
+  const [leftWidth, setLeftWidth] = createSignal(
+    readStoredNumber('gilir:panel:left', 312, LEFT_MIN, LEFT_MAX),
+  );
+  const [rightWidth, setRightWidth] = createSignal(
+    readStoredNumber('gilir:panel:right', 300, RIGHT_MIN, RIGHT_MAX),
+  );
+  const [draggingSide, setDraggingSide] = createSignal(null);
+
+  // Mobile navigation layer: 'queue' | 'center' | 'inspector'
+  const [mobileLayer, setMobileLayer] = createSignal('queue');
+  const [addingRepo, setAddingRepo] = createSignal(false);
   const [notice, setNotice] = createSignal('');
 
   let noticeTimer;
@@ -89,9 +123,14 @@ export default function App() {
   let lastDetailSelection = null;
 
   const hasRepos = createMemo(() => repos().length > 0);
-
   const hasFilters = createMemo(() =>
-    Boolean(filters.project || filters.repo || filters.status || filters.priority || filters.marking),
+    Boolean(
+      filters.project || filters.repo || filters.status || filters.priority || filters.marking,
+    ),
+  );
+
+  const showInspector = createMemo(
+    () => centerMode() === 'task' && selectedTaskId() != null,
   );
 
   const watcherWarning = createMemo(() =>
@@ -101,6 +140,39 @@ export default function App() {
         ? { title: 'Queue status unavailable.', body: daemonError() }
         : null,
   );
+
+  const reviewTasks = createMemo(() =>
+    tasks().filter((item) => item.status === 'in-review'),
+  );
+
+  function startResize(side, event) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = side === 'left' ? leftWidth() : rightWidth();
+    setDraggingSide(side);
+
+    const onMove = (moveEvent) => {
+      const delta = moveEvent.clientX - startX;
+      if (side === 'left') {
+        const next = Math.max(LEFT_MIN, Math.min(LEFT_MAX, startWidth + delta));
+        setLeftWidth(next);
+      } else {
+        const next = Math.max(RIGHT_MIN, Math.min(RIGHT_MAX, startWidth - delta));
+        setRightWidth(next);
+      }
+    };
+
+    const onUp = () => {
+      setDraggingSide(null);
+      if (side === 'left') writeStoredValue('gilir:panel:left', leftWidth());
+      else writeStoredValue('gilir:panel:right', rightWidth());
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }
 
   function notify(message) {
     if (!message) return;
@@ -117,9 +189,7 @@ export default function App() {
     try {
       const data = await command('project.list', {}, { signal: controller.signal });
       if (controller.signal.aborted) return;
-      setProjects(
-        asArray(data).filter((project) => project && typeof project === 'object'),
-      );
+      setProjects(asArray(data).filter((project) => project && typeof project === 'object'));
       setProjectsError(null);
     } catch (error) {
       if (isAbortError(error)) return;
@@ -162,11 +232,9 @@ export default function App() {
     };
   });
 
-  // Unfiltered task counts for the Projects & Repos view. They are fetched
-  // only while that view is on screen, so the Tasks tab keeps its single
-  // filtered poll, and they re-fetch whenever a mutation bumps taskReload.
+  // Unfiltered task counts while the Projects & Repos panel is open.
   createEffect(
-    () => ({ active: view() === 'projects', reload: taskReload() }),
+    () => ({ active: centerMode() === 'projects', reload: taskReload() }),
     ({ active }) => {
       if (!active) {
         setProjectTaskCounts({});
@@ -198,7 +266,6 @@ export default function App() {
     },
   );
 
-  // A repo filter only survives while the selected project still links it.
   createEffect(
     () => ({ project: filters.project, repo: filters.repo, list: repos() }),
     ({ project, repo, list }) => {
@@ -211,7 +278,6 @@ export default function App() {
     },
   );
 
-  // A deleted project or repository cannot stay selected in the task filters.
   createEffect(
     () => ({
       project: filters.project,
@@ -394,7 +460,6 @@ export default function App() {
     },
   );
 
-  // Blockers come from the task's own project, never the active filters.
   createEffect(
     () => [selectedTaskId(), detail()?.task?.project_id, blockerReload()],
     ([taskId, project]) => {
@@ -461,40 +526,53 @@ export default function App() {
 
   function openNewTask() {
     if (!hasRepos()) {
-      setAddRepoOpen(true);
+      openAddRepo();
       return;
     }
-    setSelectedTaskId(null);
-    setDetail(null);
-    setNewTaskOpen(true);
+    setCenterMode('new-task');
+    setMobileLayer('center');
   }
 
   function openAddRepo() {
-    setAddRepoOpen(true);
+    setCenterMode('projects');
+    setAddingRepo(true);
+    setMobileLayer('center');
   }
 
-  // One stable handler: the button label reacts to repo count, and so must the
-  // action. Passing `hasRepos() ? a : b` would snapshot the handler at mount.
+  function openProjectsPanel() {
+    if (centerMode() === 'projects') {
+      setCenterMode('task');
+      setAddingRepo(false);
+    } else {
+      setCenterMode('projects');
+      setMobileLayer('center');
+    }
+  }
+
   function primaryAction() {
     if (hasRepos()) openNewTask();
     else openAddRepo();
   }
 
   async function handleRepoAdded() {
-    setAddRepoOpen(false);
+    setAddingRepo(false);
     refreshTasks();
     notify('Repository added');
     await Promise.all([loadRepos(), loadProjects()]);
   }
 
-  async function handleTaskCreated() {
-    setNewTaskOpen(false);
+  async function handleTaskCreated(created) {
+    setCenterMode('task');
+    if (created?.id != null) {
+      setSelectedTaskId(created.id);
+    } else {
+      setMobileLayer('queue');
+    }
     refreshTasks();
     notify('Task created');
   }
 
   async function handleProjectCreated() {
-    setNewProjectOpen(false);
     await loadProjects();
     notify('Project created');
   }
@@ -539,11 +617,14 @@ export default function App() {
       draft.project = String(projectId);
       draft.repo = '';
     });
-    setView('tasks');
+    setCenterMode('task');
+    setMobileLayer('queue');
   }
 
   function openTask(id) {
+    setCenterMode('task');
     setSelectedTaskId(id);
+    setMobileLayer('center');
   }
 
   function closeTask() {
@@ -551,20 +632,7 @@ export default function App() {
     setDetail(null);
     setDetailError(null);
     setDetailLoading(false);
-  }
-
-  async function approveTask(task) {
-    if (approvingId() != null) return;
-    setApprovingId(task.id);
-    try {
-      await command('task.review', { id: task.id, approve: true });
-      notify(`Task #${task.id} approved`);
-      refreshAfterTaskChange();
-    } catch (error) {
-      notify(errorText(error));
-    } finally {
-      setApprovingId(null);
-    }
+    setMobileLayer('queue');
   }
 
   function updateFilter(name, value) {
@@ -601,12 +669,16 @@ export default function App() {
       <a class="skip-link" href="#main">
         Skip to content
       </a>
+
       <Header
-        view={view()}
-        onViewChange={setView}
         daemon={daemon()}
-        daemonError={daemonError()}
         hasRepos={hasRepos()}
+        notice={notice()}
+        leftOpen={leftOpen()}
+        rightOpen={rightOpen()}
+        canShowRight={showInspector()}
+        onToggleLeft={() => setLeftOpen((open) => !open)}
+        onToggleRight={() => setRightOpen((open) => !open)}
         onRefreshDaemon={refreshDaemon}
         onPrimaryAction={primaryAction}
         notify={notify}
@@ -626,121 +698,279 @@ export default function App() {
         )}
       </Show>
 
-      <main id="main" class="app-main">
-        <Show when={projectsError()}>
-          <div class="banner warning app-banner" role="alert">
-            <span>Project list refresh failed. {projectsError()}</span>
-            <button class="btn btn-ghost btn-sm" type="button" onClick={loadProjects}>
-              Retry
-            </button>
-          </div>
-        </Show>
-
-        <Show when={reposError()}>
-          <div class="banner warning app-banner" role="alert">
-            <span>Repository list refresh failed. {reposError()}</span>
-            <button class="btn btn-ghost btn-sm" type="button" onClick={loadRepos}>
-              Retry
-            </button>
-          </div>
-        </Show>
-
-        <Show
-          when={view() === 'tasks'}
-          fallback={
-            <ProjectsReposView
-              projects={projects()}
-              repos={repos()}
-              projectTaskCounts={projectTaskCounts()}
-              projectsLoading={projectsLoading()}
-              reposLoading={reposLoading()}
-              projectsError={projectsError()}
-              reposError={reposError()}
-              onAddRepo={openAddRepo}
-              onNewProject={() => setNewProjectOpen(true)}
-              onLinkRepo={handleLinkRepo}
-              onUnlinkRepo={handleUnlinkRepo}
-              onRemoveRepo={handleRemoveRepo}
-              onRenameProject={handleRenameProject}
-              onRemoveProject={handleRemoveProject}
-              onViewProjectTasks={viewProjectTasks}
-            />
-          }
-        >
-          <Filters
-            projects={projects()}
-            repos={repos()}
-            filters={filters}
-            onChange={updateFilter}
-            markingInput={markingInput()}
-            onMarkingInput={setMarkingInput}
-            knownMarkings={knownMarkings()}
-            hasFilters={hasFilters()}
-            onReset={clearFilters}
-          />
-
-          <TaskListPanel
-            tasks={tasks()}
-            loading={tasksLoading()}
-            error={tasksError()}
-            repos={repos()}
-            projects={projects()}
-            hasFilters={hasFilters()}
-            statusFilter={filters.status}
-            selectedTaskId={selectedTaskId()}
-            approvingId={approvingId()}
-            onOpen={openTask}
-            onApprove={approveTask}
-            onNewTask={openNewTask}
-            onAddRepo={openAddRepo}
-            onClearFilters={clearFilters}
-            onRetry={refreshTasks}
-          />
-        </Show>
-      </main>
-
-      <Show when={notice()}>
-        <div class="toast" role="status" aria-live="polite">
-          {notice()}
+      <Show when={projectsError()}>
+        <div class="banner warning" role="alert">
+          <span>Project list refresh failed. {projectsError()}</span>
+          <button class="btn btn-ghost btn-sm" type="button" onClick={loadProjects}>
+            Retry
+          </button>
         </div>
       </Show>
 
-      <AddRepoDialog
-        open={addRepoOpen()}
-        projects={projects()}
-        onClose={() => setAddRepoOpen(false)}
-        onAdded={handleRepoAdded}
-      />
+      <Show when={reposError()}>
+        <div class="banner warning" role="alert">
+          <span>Repository list refresh failed. {reposError()}</span>
+          <button class="btn btn-ghost btn-sm" type="button" onClick={loadRepos}>
+            Retry
+          </button>
+        </div>
+      </Show>
 
-      <NewProjectDialog
-        open={newProjectOpen()}
-        onClose={() => setNewProjectOpen(false)}
-        onCreated={handleProjectCreated}
-      />
+      <main
+        id="main"
+        class={[
+          'workbench',
+          {
+            'mobile-center-open': mobileLayer() === 'center',
+            'mobile-inspector-open': mobileLayer() === 'inspector',
+          },
+        ]}
+      >
+        <Show when={leftOpen()}>
+          <aside
+            class="queue-panel"
+            style={{ width: `${leftWidth()}px` }}
+            aria-label="Queue sidebar"
+          >
+            <Filters
+              projects={projects()}
+              repos={repos()}
+              filters={filters}
+              taskCount={tasks().length}
+              loading={tasksLoading()}
+              onChange={updateFilter}
+              markingInput={markingInput()}
+              onMarkingInput={setMarkingInput}
+              knownMarkings={knownMarkings()}
+              hasFilters={hasFilters()}
+              onReset={clearFilters}
+            />
 
-      <NewTaskDialog
-        open={newTaskOpen()}
-        onClose={() => setNewTaskOpen(false)}
-        repos={repos()}
-        projects={projects()}
-        defaults={newTaskDefaults()}
-        defaultProjectId={filters.project}
-        onCreated={handleTaskCreated}
-      />
+            <TaskListPanel
+              tasks={tasks()}
+              loading={tasksLoading()}
+              error={tasksError()}
+              repos={repos()}
+              projects={projects()}
+              hasFilters={hasFilters()}
+              statusFilter={filters.status}
+              selectedTaskId={centerMode() === 'task' ? selectedTaskId() : null}
+              onOpen={openTask}
+              onNewTask={openNewTask}
+              onAddRepo={openAddRepo}
+              onClearFilters={clearFilters}
+              onRetry={refreshTasks}
+            />
 
-      <TaskDrawer
-        open={selectedTaskId() != null}
-        taskId={selectedTaskId()}
-        detail={detail()}
-        loading={detailLoading()}
-        error={detailError()}
-        repos={repos()}
-        projects={projects()}
-        blockerSource={blockerSource()}
-        onClose={closeTask}
-        onRefresh={refreshAfterTaskChange}
-        notify={notify}
-      />
+            <footer class="queue-panel-foot">
+              <button
+                type="button"
+                class={['panel-foot-link', { active: centerMode() === 'projects' }]}
+                onClick={openProjectsPanel}
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path
+                    d="M2.25 4.25C2.25 3.42 2.92 2.75 3.75 2.75H6.4L7.9 4.5H12.25C13.08 4.5 13.75 5.17 13.75 6V11.75C13.75 12.58 13.08 13.25 12.25 13.25H3.75C2.92 13.25 2.25 12.58 2.25 11.75V4.25Z"
+                    stroke="currentColor"
+                    stroke-width="1.35"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+                <span>Projects & Repos</span>
+                <span class="panel-foot-meta">
+                  {repos().length} · {projects().length}
+                </span>
+              </button>
+            </footer>
+          </aside>
+
+          <div
+            class={['panel-resizer', { dragging: draggingSide() === 'left' }]}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize queue panel"
+            onPointerDown={(event) => startResize('left', event)}
+          />
+        </Show>
+
+        <Show when={centerMode() === 'projects'}>
+          <ProjectsReposView
+            projects={projects()}
+            repos={repos()}
+            projectTaskCounts={projectTaskCounts()}
+            projectsLoading={projectsLoading()}
+            reposLoading={reposLoading()}
+            projectsError={projectsError()}
+            reposError={reposError()}
+            addingRepo={addingRepo()}
+            onBack={() => {
+              setCenterMode('task');
+              setMobileLayer('queue');
+            }}
+            onToggleAddRepo={setAddingRepo}
+            onRepoAdded={handleRepoAdded}
+            onProjectCreated={handleProjectCreated}
+            onLinkRepo={handleLinkRepo}
+            onUnlinkRepo={handleUnlinkRepo}
+            onRemoveRepo={handleRemoveRepo}
+            onRenameProject={handleRenameProject}
+            onRemoveProject={handleRemoveProject}
+            onViewProjectTasks={viewProjectTasks}
+          />
+        </Show>
+
+        <Show when={centerMode() === 'new-task'}>
+          <NewTaskPane
+            repos={repos()}
+            projects={projects()}
+            defaults={newTaskDefaults()}
+            defaultProjectId={filters.project}
+            onCancel={() => {
+              setCenterMode('task');
+              setMobileLayer('queue');
+            }}
+            onCreated={handleTaskCreated}
+          />
+        </Show>
+
+        <Show when={centerMode() === 'task'}>
+          <Show
+            when={selectedTaskId() != null}
+            fallback={
+              <section class="center-panel" aria-label="Workspace overview">
+                <Show
+                  when={hasRepos() || reposLoading()}
+                  fallback={
+                    <>
+                      <header class="center-header">
+                        <div class="center-header-inner">
+                          <div class="center-head-main">
+                            <h2 class="center-title">Connect your first repository</h2>
+                            <div class="center-meta">
+                              <span>
+                                Add a local Git repository so Gilir can dispatch ready tasks to
+                                OpenCode.
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </header>
+                      <div class="center-scroll">
+                        <div class="stream-column">
+                          <AddRepoForm
+                            autofocus
+                            projects={projects()}
+                            onAdded={handleRepoAdded}
+                          />
+                        </div>
+                      </div>
+                    </>
+                  }
+                >
+                  <div class="center-scroll">
+                    <div class="overview-shell">
+                      <div class="overview-head">
+                        <h2>
+                          {hasFilters() && tasks().length === 0
+                            ? 'No matching tasks'
+                            : 'Dispatch queue'}
+                        </h2>
+                        <p>
+                          {hasFilters() && tasks().length === 0
+                            ? 'Adjust or reset your filters in the queue panel to inspect other tasks.'
+                            : 'Select a task from the queue panel to inspect its description, OpenCode sessions, and activity, or queue new work.'}
+                        </p>
+                        <div class="overview-actions">
+                          <Show
+                            when={hasFilters() && tasks().length === 0}
+                            fallback={
+                              <button class="btn btn-primary" type="button" onClick={openNewTask}>
+                                New task
+                              </button>
+                            }
+                          >
+                            <button class="btn btn-secondary" type="button" onClick={clearFilters}>
+                              Clear filters
+                            </button>
+                          </Show>
+                        </div>
+                      </div>
+
+                      <Show when={reviewTasks().length > 0}>
+                        <div class="overview-block">
+                          <div class="overview-block-head">
+                            <h3>Ready for review</h3>
+                            <span class="muted-small">{reviewTasks().length}</span>
+                          </div>
+                          <ul class="overview-list">
+                            <For each={reviewTasks()}>
+                              {(item) => (
+                                <li class="overview-row">
+                                  <button
+                                    type="button"
+                                    class="overview-row-btn"
+                                    onClick={() => openTask(item.id)}
+                                  >
+                                    <span class="task-group-dot status-in-review" aria-hidden="true" />
+                                    <span class="task-id">#{item.id}</span>
+                                    <span class="overview-row-title">
+                                      {item.title || 'Untitled task'}
+                                    </span>
+                                    <span class="overview-row-meta">
+                                      {formatRelativeTime(item.updated_at)}
+                                    </span>
+                                  </button>
+                                </li>
+                              )}
+                            </For>
+                          </ul>
+                        </div>
+                      </Show>
+                    </div>
+                  </div>
+                </Show>
+              </section>
+            }
+          >
+            <TaskDetailPane
+              taskId={selectedTaskId()}
+              detail={detail()}
+              loading={detailLoading()}
+              error={detailError()}
+              projects={projects()}
+              onBack={() => setMobileLayer('queue')}
+              onClose={closeTask}
+              onOpenMobileInspector={() => setMobileLayer('inspector')}
+              onRefresh={refreshAfterTaskChange}
+              notify={notify}
+            />
+          </Show>
+        </Show>
+
+        <Show when={showInspector() && rightOpen()}>
+          <div
+            class={[
+              'panel-resizer inspector-resizer',
+              { dragging: draggingSide() === 'right' },
+            ]}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize inspector panel"
+            onPointerDown={(event) => startResize('right', event)}
+          />
+
+          <TaskInspectorPanel
+            width={rightWidth()}
+            taskId={selectedTaskId()}
+            detail={detail()}
+            repos={repos()}
+            blockerSource={blockerSource()}
+            onCloseMobileInspector={() => setMobileLayer('center')}
+            onRefresh={refreshAfterTaskChange}
+            notify={notify}
+          />
+        </Show>
+      </main>
     </div>
   );
 }
