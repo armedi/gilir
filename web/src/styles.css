@@ -1393,44 +1393,16 @@ p {
   min-width: 0;
 }
 
-.inline-title-trigger {
-  display: inline-block;
-  max-width: 100%;
-  margin: -4px -8px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  padding: 4px 8px;
-  text-align: left;
-  transition: background-color 140ms var(--ease-out);
-}
-
-.inline-title-trigger:hover {
-  background: var(--surface-muted);
-}
-
-.inline-title-edit {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
+.inline-title-trigger,
 .inline-title-textbox {
+  display: block;
   width: 100%;
-  min-height: calc(1.3 * var(--text-heading) + 8px);
-  margin: -4px -8px;
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  padding: 3px 7px;
-  color: var(--ink);
-  font-size: var(--text-heading);
-  font-weight: 650;
-  letter-spacing: -0.025em;
-  line-height: 1.3;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
   white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  box-shadow: 0 0 0 3px rgba(15, 107, 78, 0.14);
+  cursor: text;
 }
 
 .inline-title-textbox:focus {
@@ -1495,72 +1467,29 @@ p {
 }
 
 .description-display {
-  margin: -8px -10px;
-  border-radius: var(--radius-sm);
-  padding: 8px 10px;
-  cursor: text;
-  transition: background-color 140ms var(--ease-out);
-}
-
-.description-display:hover {
-  background: var(--surface-muted);
-}
-
-.description-empty {
-  margin: 0;
-  color: var(--muted);
-  font-size: var(--text-body);
-}
-
-.description-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.description-editor-box {
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--accent);
-  border-radius: var(--radius);
-  background: var(--surface);
-  box-shadow: 0 0 0 3px rgba(15, 107, 78, 0.12);
-  overflow: hidden;
-}
-
-.description-editor-top {
-  display: flex;
-  justify-content: flex-end;
-  padding: 8px 12px 0;
-}
-
-.description-textbox {
-  width: 100%;
-  min-height: 112px;
-  border: 0;
-  background: transparent;
-  padding: 10px 14px 12px;
+  min-height: 1.55em;
   color: var(--ink);
   font-size: var(--text-body);
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  cursor: text;
 }
 
 .description-textbox:focus {
   outline: none;
 }
 
+.description-empty,
+.description-textbox.is-empty::before {
+  color: var(--muted);
+}
+
+.inline-title-textbox:empty::before,
 .description-textbox.is-empty::before {
   content: attr(data-placeholder);
   position: absolute;
-  color: var(--muted);
   pointer-events: none;
-}
-
-.description-preview-area {
-  min-height: 112px;
-  padding: 10px 14px 14px;
 }
 
 .stream-section {

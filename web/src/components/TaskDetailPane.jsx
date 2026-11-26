@@ -17,7 +17,6 @@ import {
 } from '../utils';
 import { PriorityBadge, StatusBadge } from './Badges';
 import ActivityFeed from './ActivityFeed';
-import Markdown from './Markdown';
 
 function focusEditor(editor, selectAll = false) {
   requestAnimationFrame(() => {
@@ -71,7 +70,6 @@ export default function TaskDetailPane(props) {
   const [titleError, setTitleError] = createSignal(null);
 
   const [editingDesc, setEditingDesc] = createSignal(false);
-  const [descMode, setDescMode] = createSignal('write');
   const [descDraft, setDescDraft] = createSignal('');
   const [descBusy, setDescBusy] = createSignal(false);
   const [descError, setDescError] = createSignal(null);
@@ -83,11 +81,6 @@ export default function TaskDetailPane(props) {
   const task = () => props.detail?.task;
   const inReview = () => task()?.status === 'in-review';
   const hasComment = () => comment().trim().length > 0;
-  const descDirty = () => {
-    const current = task();
-    if (!current) return false;
-    return descDraft() !== asText(current.description);
-  };
 
   const projectName = createMemo(() => {
     const current = task();
@@ -112,7 +105,6 @@ export default function TaskDetailPane(props) {
     const hasDescDraft = typeof storedDesc === 'string' && storedDesc !== baseDesc;
     setDescDraft(hasDescDraft ? storedDesc : baseDesc);
     setEditingDesc(hasDescDraft);
-    setDescMode('write');
     setDescBusy(false);
     setDescError(null);
 
@@ -203,13 +195,11 @@ export default function TaskDetailPane(props) {
     const current = task();
     if (!current || descBusy()) return;
     setDescDraft(asText(current.description));
-    setDescMode('write');
     setDescError(null);
     setEditingDesc(true);
   }
 
-  function handleDescriptionClick(event) {
-    if (event.target.closest('a')) return;
+  function handleDescriptionClick() {
     if (window.getSelection && window.getSelection().toString()) return;
     startDescEdit();
   }
@@ -240,11 +230,10 @@ export default function TaskDetailPane(props) {
   }
 
   async function saveDesc(event) {
-    event?.preventDefault();
-    if (descBusy()) return;
+    if (descBusy() || !editingDesc()) return;
     const current = task();
-    if (!current) return;
-    const next = descDraft();
+    if (!current || loadedTaskId() !== String(current.id)) return;
+    const next = readDescription(event.currentTarget);
     if (next === asText(current.description)) {
       cancelDescEdit();
       return;
@@ -275,7 +264,7 @@ export default function TaskDetailPane(props) {
     if (descBusy() || event.isComposing || event.keyCode === 229) return;
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault();
-      saveDesc();
+      saveDesc(event);
     } else if (event.key === 'Escape') {
       event.preventDefault();
       cancelDescEdit();
@@ -393,11 +382,11 @@ export default function TaskDetailPane(props) {
                   {(current) => (
                     <button
                       type="button"
-                      class="inline-title-trigger"
+                      class="center-title inline-title-trigger"
                       title="Click to edit title"
                       onClick={startTitleEdit}
                     >
-                      <h2 class="center-title">{current().title || 'Untitled task'}</h2>
+                      {current().title || 'Untitled task'}
                     </button>
                   )}
                 </Show>
@@ -409,9 +398,11 @@ export default function TaskDetailPane(props) {
                     editor.textContent = asText(task()?.title).replace(/[\r\n]+/g, ' ');
                     focusEditor(editor, true);
                   }}
-                  class="inline-title-textbox"
+                  class="center-title inline-title-textbox"
+                  data-placeholder="Untitled task"
                   role="textbox"
                   aria-label="Task title"
+                  aria-multiline="false"
                   contenteditable={titleBusy() ? 'false' : 'plaintext-only'}
                   aria-readonly={titleBusy()}
                   onInput={() => setTitleError(null)}
@@ -518,104 +509,36 @@ export default function TaskDetailPane(props) {
                         onClick={handleDescriptionClick}
                         onKeyDown={handleDescriptionKeyDown}
                       >
-                        <Show
-                          when={current().description.trim()}
-                          fallback={<p class="description-empty">Add a description…</p>}
-                        >
-                          <Markdown source={current().description} />
-                        </Show>
+                        <span class={{ 'description-empty': !current().description }}>
+                          {current().description || 'Add a description…'}
+                        </span>
                       </div>
                     }
                   >
-                    <form class="description-editor" onSubmit={saveDesc}>
-                      <div class="description-editor-box">
-                        <div class="description-editor-top">
-                          <div
-                            class="segmented segmented-compact"
-                            role="tablist"
-                            aria-label="Description mode"
-                          >
-                            <button
-                              type="button"
-                              role="tab"
-                              aria-selected={descMode() === 'write' ? 'true' : 'false'}
-                              class={['segmented-item', { active: descMode() === 'write' }]}
-                              onClick={() => setDescMode('write')}
-                            >
-                              Write
-                            </button>
-                            <button
-                              type="button"
-                              role="tab"
-                              aria-selected={descMode() === 'preview' ? 'true' : 'false'}
-                              class={['segmented-item', { active: descMode() === 'preview' }]}
-                              onClick={() => setDescMode('preview')}
-                            >
-                              Preview
-                            </button>
-                          </div>
-                        </div>
-
-                        <Show
-                          when={descMode() === 'write'}
-                          fallback={
-                            <div class="description-preview-area">
-                              <Show
-                                when={descDraft().trim()}
-                                fallback={<p class="muted-small">Nothing to preview.</p>}
-                              >
-                                <Markdown source={descDraft()} />
-                              </Show>
-                            </div>
-                          }
-                        >
-                          <div
-                            ref={(editor) => {
-                              const value = descDraft();
-                              editor.textContent = value;
-                              if (value.endsWith('\n')) editor.append(document.createElement('br'));
-                              focusEditor(editor);
-                            }}
-                            class={['description-textbox', { 'is-empty': descDraft() === '' }]}
-                            role="textbox"
-                            aria-label="Task description"
-                            aria-multiline="true"
-                            aria-readonly={descBusy()}
-                            aria-describedby={descError() ? descErrorId : undefined}
-                            contenteditable={descBusy() ? 'false' : 'plaintext-only'}
-                            data-placeholder="Write a Markdown description…"
-                            onInput={(event) => updateDesc(readDescription(event.currentTarget))}
-                            onKeyDown={handleDescEditorKeyDown}
-                          />
-                        </Show>
-
-                        <div class="composer-toolbar">
-                          <span class="composer-hint">Markdown supported · ⌘↵ to save</span>
-                          <div class="action-group">
-                            <button
-                              class="btn btn-ghost btn-sm"
-                              type="button"
-                              onClick={cancelDescEdit}
-                              disabled={descBusy()}
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              class="btn btn-primary btn-sm"
-                              type="submit"
-                              disabled={!descDirty() || descBusy()}
-                            >
-                              {descBusy() ? 'Saving…' : 'Save'}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                      <Show when={descError()}>
-                        <p id={descErrorId} class="field-error" role="alert">
-                          {descError()}
-                        </p>
-                      </Show>
-                    </form>
+                    <div
+                      ref={(editor) => {
+                        const value = descDraft();
+                        editor.textContent = value;
+                        if (value.endsWith('\n')) editor.append(document.createElement('br'));
+                        focusEditor(editor);
+                      }}
+                      class={['description-display description-textbox', { 'is-empty': descDraft() === '' }]}
+                      role="textbox"
+                      aria-label="Task description"
+                      aria-multiline="true"
+                      aria-readonly={descBusy()}
+                      aria-describedby={descError() ? descErrorId : undefined}
+                      contenteditable={descBusy() ? 'false' : 'plaintext-only'}
+                      data-placeholder="Add a description…"
+                      onInput={(event) => updateDesc(readDescription(event.currentTarget))}
+                      onKeyDown={handleDescEditorKeyDown}
+                      onBlur={saveDesc}
+                    />
+                    <Show when={descError()}>
+                      <p id={descErrorId} class="field-error" role="alert">
+                        {descError()}
+                      </p>
+                    </Show>
                   </Show>
                 </section>
 
