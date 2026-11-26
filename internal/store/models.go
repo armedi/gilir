@@ -149,12 +149,15 @@ type CreateTaskParams struct {
 
 // TaskPatch is a partial task edit. Nil pointer fields are left unchanged;
 // non-nil pointers distinguish an explicit empty value from an unset field.
+// Message is required when Status moves a task from in-review back to todo and
+// is recorded as a review comment.
 type TaskPatch struct {
 	Title       *string
 	Description *string
 	Priority    *Priority
 	RepoID      *int64
 	Status      *Status
+	Message     *string
 }
 
 // TaskFilter restricts ListTasks. Zero values mean no restriction.

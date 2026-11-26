@@ -351,6 +351,20 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID int64, patc
 		titleChanged := newTitle != old.Title
 		descriptionChanged := newDescription != old.Description
 		priorityChanged := newPriority != old.Priority
+
+		requestingChanges := old.Status == StatusInReview && newStatus == StatusTodo
+		message := ""
+		if requestingChanges {
+			if patch.Message != nil {
+				message = strings.TrimSpace(*patch.Message)
+			}
+			if message == "" {
+				return fmt.Errorf("%w: a message is required when requesting changes", ErrInvalid)
+			}
+		} else if patch.Message != nil && strings.TrimSpace(*patch.Message) != "" {
+			return fmt.Errorf("%w: a message is only valid when requesting changes", ErrInvalid)
+		}
+
 		if !statusChanged && !titleChanged && !descriptionChanged && !priorityChanged && !repoChanged {
 			updated = old
 			return nil
@@ -398,6 +412,18 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID int64, patc
 		}
 
 		if statusChanged {
+			if requestingChanges {
+				if _, err := appendActivity(ctx, tx, activityInput{
+					Type:      ActivityTaskCommented,
+					Actor:     actor,
+					TaskID:    int64Pointer(taskID),
+					ProjectID: int64Pointer(old.ProjectID),
+					Timestamp: now,
+					Data:      map[string]any{"body": message},
+				}); err != nil {
+					return err
+				}
+			}
 			if _, err := appendActivity(ctx, tx, activityInput{
 				Type:      ActivityTaskStatusChanged,
 				Actor:     actor,
@@ -411,7 +437,7 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID int64, patc
 			}); err != nil {
 				return err
 			}
-			if old.Status == StatusInReview && newStatus == StatusTodo {
+			if requestingChanges {
 				if _, err := setMarkingTx(ctx, tx, actor, taskID, MarkingChangesRequested, true, now); err != nil {
 					return err
 				}
@@ -776,9 +802,11 @@ func projectTaskActivity(activities []Activity) []Activity {
 }
 
 // Review records a review decision. Only tasks currently in review may be
-// reviewed. Approval moves the task to done; requesting changes moves it to
-// todo and applies the changes-requested marking.
-func (s *Store) Review(ctx context.Context, actor string, taskID int64, decision ReviewDecision, detail string) (Task, error) {
+// reviewed. Approval moves the task to done. Requesting changes requires a
+// non-blank message, moves the task to todo, records the message as a comment,
+// and applies the changes-requested marking. A non-blank approval message is
+// recorded as a comment too.
+func (s *Store) Review(ctx context.Context, actor string, taskID int64, decision ReviewDecision, message string) (Task, error) {
 	actor, err := normalizeActor(actor)
 	if err != nil {
 		return Task{}, err
@@ -788,6 +816,10 @@ func (s *Store) Review(ctx context.Context, actor string, taskID int64, decision
 	}
 	if decision != ReviewApprove && decision != ReviewRequestChanges {
 		return Task{}, fmt.Errorf("%w: unsupported review decision %q", ErrInvalid, decision)
+	}
+	message = strings.TrimSpace(message)
+	if decision == ReviewRequestChanges && message == "" {
+		return Task{}, fmt.Errorf("%w: a message is required when requesting changes", ErrInvalid)
 	}
 
 	var task Task
@@ -813,13 +845,17 @@ func (s *Store) Review(ctx context.Context, actor string, taskID int64, decision
 		); err != nil {
 			return fmt.Errorf("store: apply review to task %d: %w", taskID, err)
 		}
-		data := map[string]any{
-			"old":    string(current.Status),
-			"new":    string(next),
-			"reason": reason,
-		}
-		if detail != "" {
-			data["detail"] = detail
+		if message != "" {
+			if _, err := appendActivity(ctx, tx, activityInput{
+				Type:      ActivityTaskCommented,
+				Actor:     actor,
+				TaskID:    int64Pointer(taskID),
+				ProjectID: int64Pointer(current.ProjectID),
+				Timestamp: now,
+				Data:      map[string]any{"body": message},
+			}); err != nil {
+				return err
+			}
 		}
 		if _, err := appendActivity(ctx, tx, activityInput{
 			Type:      ActivityTaskStatusChanged,
@@ -827,7 +863,11 @@ func (s *Store) Review(ctx context.Context, actor string, taskID int64, decision
 			TaskID:    int64Pointer(taskID),
 			ProjectID: int64Pointer(current.ProjectID),
 			Timestamp: now,
-			Data:      data,
+			Data: map[string]any{
+				"old":    string(current.Status),
+				"new":    string(next),
+				"reason": reason,
+			},
 		}); err != nil {
 			return err
 		}

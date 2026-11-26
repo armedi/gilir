@@ -14,6 +14,7 @@ var flagDescriptions = map[string]string{
 	"marking":     "Marking name",
 	"description": "Markdown description",
 	"title":       "Task title",
+	"message":     "Markdown review message",
 }
 
 var flagPlaceholders = map[string]string{
@@ -24,6 +25,7 @@ var flagPlaceholders = map[string]string{
 	"marking":     "marking",
 	"description": "markdown",
 	"title":       "title",
+	"message":     "markdown",
 }
 
 var groupSummaries = map[string]string{

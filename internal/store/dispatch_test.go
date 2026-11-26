@@ -213,7 +213,8 @@ func TestReserveDependencyEligibilityAndReblock(t *testing.T) {
 		t.Fatalf("add second dependency: %v", err)
 	}
 	todo := StatusTodo
-	blockerTask, err := s.UpdateTask(ctx, "alice", blocker.ID, TaskPatch{Status: &todo})
+	blockerMessage := "rework requested"
+	blockerTask, err := s.UpdateTask(ctx, "alice", blocker.ID, TaskPatch{Status: &todo, Message: &blockerMessage})
 	if err != nil {
 		t.Fatalf("return blocker to todo: %v", err)
 	}

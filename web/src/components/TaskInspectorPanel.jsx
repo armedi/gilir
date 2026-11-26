@@ -256,7 +256,14 @@ export default function TaskInspectorPanel(props) {
                       disabled={propBusy()}
                     >
                       <For each={STATUSES}>
-                        {(status) => <option value={status}>{STATUS_LABELS[status]}</option>}
+                        {(status) => (
+                          <option
+                            value={status}
+                            disabled={status === 'todo' && current().status === 'in-review'}
+                          >
+                            {STATUS_LABELS[status]}
+                          </option>
+                        )}
                       </For>
                     </select>
                   </div>

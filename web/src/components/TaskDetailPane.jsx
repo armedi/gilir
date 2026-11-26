@@ -330,14 +330,13 @@ export default function TaskDetailPane(props) {
     setActionBusy(approve ? 'approve' : 'changes');
     setCommentError(null);
     try {
-      // Post the comment before task.review so the dispatched agent immediately
-      // receives the review instructions when the task re-enters todo.
-      if (body) {
-        await command('task.comment', { id: taskId, body });
-        if (commentKey) clearDraft(commentKey);
-        if (activeTaskKey === taskKey) setComment('');
-      }
-      await command('task.review', { id: taskId, approve });
+      // The review message is part of the review command so the server records
+      // it as a comment and enforces it for request-changes from every client.
+      const args = { id: taskId, approve };
+      if (body) args.message = body;
+      await command('task.review', args);
+      if (body && commentKey) clearDraft(commentKey);
+      if (body && activeTaskKey === taskKey) setComment('');
       await props.onRefresh();
       if (activeTaskKey === taskKey) {
         props.notify(approve ? 'Task approved' : 'Changes requested');

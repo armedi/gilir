@@ -89,7 +89,9 @@ gilir list --project 1 --status todo
 gilir show 1 --json
 gilir depend 2 1                                 # task 2 waits for task 1
 gilir comment 1 "Repro in **ledger_test.go**" --actor agent:me
-gilir approve 1                                  # or: gilir request-changes 1
+gilir edit-comment 1 12 "Narrowed to **rounding**" --actor agent:me
+gilir remove-comment 1 12 --actor agent:me
+gilir approve 1                                  # or: gilir request-changes 1 --message "Add tests"
 gilir daemon status
 gilir daemon pause
 gilir daemon resume
@@ -116,8 +118,12 @@ gilir skill                                      # agent workflow instructions
 - A dispatched task moves to `in-progress`. A successful session moves it to
   `in-review`. A failed session leaves it `in-progress` and marks it `error`.
   To retry, move it back to `todo`.
-- `approve` moves an `in-review` task to `done`. `request-changes` moves it to
-  `todo` and marks it `changes-requested`.
+- `approve` moves an `in-review` task to `done`. `request-changes` requires a
+  message, moves the task to `todo`, marks it `changes-requested`, and records
+  the message as a comment. The same message requirement applies to
+  `gilir update <id> --status todo --message "..."` from `in-review`, because it
+  applies the same marking. The store enforces both paths, so CLI and HTTP
+  callers cannot request changes without a message.
 
 ## Hooks
 

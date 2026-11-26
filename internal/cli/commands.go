@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 type commandKind int
@@ -214,10 +215,10 @@ var commandSpecs = []command{
 	{
 		path:        "update",
 		wire:        "task.update",
-		usage:       "gilir update <id> [--title <title>] [--description <markdown>] [--repo <id>] [--status <status>] [--priority <priority>]",
-		summary:     "Update task fields.",
+		usage:       "gilir update <id> [--title <title>] [--description <markdown>] [--repo <id>] [--status <status>] [--priority <priority>] [--message <markdown>]",
+		summary:     "Update task fields. Moving in-review back to todo requires --message.",
 		positionals: []string{"<id>"},
-		flags:       []string{"title", "description", "repo", "status", "priority"},
+		flags:       []string{"title", "description", "repo", "status", "priority", "message"},
 		build: func(positionals []string, flags map[string]string) (map[string]any, error) {
 			id, err := parseID("task id", positionals[0])
 			if err != nil {
@@ -231,6 +232,7 @@ var commandSpecs = []command{
 			}
 			addStringFlag(args, flags, "status", "status")
 			addStringFlag(args, flags, "priority", "priority")
+			addStringFlag(args, flags, "message", "message")
 			return args, nil
 		},
 	},
@@ -289,23 +291,62 @@ var commandSpecs = []command{
 		},
 	},
 	{
+		path:        "edit-comment",
+		wire:        "task.comment.edit",
+		usage:       "gilir edit-comment <id> <comment-id> <markdown>",
+		summary:     "Edit one of your task comments.",
+		positionals: []string{"<id>", "<comment-id>", "<markdown>"},
+		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
+			id, err := parseID("task id", positionals[0])
+			if err != nil {
+				return nil, err
+			}
+			commentID, err := parseID("comment id", positionals[1])
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"id": id, "comment_id": commentID, "body": positionals[2]}, nil
+		},
+	},
+	{
+		path:        "remove-comment",
+		wire:        "task.comment.remove",
+		usage:       "gilir remove-comment <id> <comment-id>",
+		summary:     "Remove one of your task comments.",
+		positionals: []string{"<id>", "<comment-id>"},
+		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
+			id, err := parseID("task id", positionals[0])
+			if err != nil {
+				return nil, err
+			}
+			commentID, err := parseID("comment id", positionals[1])
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"id": id, "comment_id": commentID}, nil
+		},
+	},
+	{
 		path:        "approve",
 		wire:        "task.review",
-		usage:       "gilir approve <id>",
-		summary:     "Approve a task.",
+		usage:       "gilir approve <id> [--message <markdown>]",
+		summary:     "Approve a task, optionally with a message.",
 		positionals: []string{"<id>"},
-		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
-			return buildReview(positionals, true)
+		flags:       []string{"message"},
+		build: func(positionals []string, flags map[string]string) (map[string]any, error) {
+			return buildReview(positionals, flags, true)
 		},
 	},
 	{
 		path:        "request-changes",
 		wire:        "task.review",
-		usage:       "gilir request-changes <id>",
-		summary:     "Request changes on a task.",
+		usage:       "gilir request-changes <id> --message <markdown>",
+		summary:     "Request changes on a task with a required message.",
 		positionals: []string{"<id>"},
-		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
-			return buildReview(positionals, false)
+		flags:       []string{"message"},
+		required:    []string{"message"},
+		build: func(positionals []string, flags map[string]string) (map[string]any, error) {
+			return buildReview(positionals, flags, false)
 		},
 	},
 	{
@@ -434,12 +475,20 @@ func buildDependency(positionals []string, present bool) (map[string]any, error)
 	return map[string]any{"id": id, "blocker_id": blockerID, "present": present}, nil
 }
 
-func buildReview(positionals []string, approve bool) (map[string]any, error) {
+func buildReview(positionals []string, flags map[string]string, approve bool) (map[string]any, error) {
 	id, err := parseID("task id", positionals[0])
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": id, "approve": approve}, nil
+	message := strings.TrimSpace(flags["message"])
+	if !approve && message == "" {
+		return nil, fmt.Errorf("a message is required when requesting changes")
+	}
+	args := map[string]any{"id": id, "approve": approve}
+	if message != "" {
+		args["message"] = message
+	}
+	return args, nil
 }
 
 func addStringFlag(args map[string]any, flags map[string]string, flag, key string) {

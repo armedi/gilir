@@ -217,6 +217,7 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 			Title:       in.Title,
 			Description: in.Description,
 			RepoID:      in.RepoID,
+			Message:     in.Message,
 		}
 		if in.Status != nil {
 			status := store.Status(*in.Status)
@@ -319,8 +320,10 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		decision := store.ReviewRequestChanges
 		if *in.Approve {
 			decision = store.ReviewApprove
+		} else if strings.TrimSpace(in.Message) == "" {
+			return nil, fmt.Errorf("%w: message is required when requesting changes", store.ErrInvalid)
 		}
-		return s.store.Review(ctx, actor, in.ID, decision, "")
+		return s.store.Review(ctx, actor, in.ID, decision, in.Message)
 
 	case "daemon.status":
 		var in daemonStatusArgs
@@ -510,6 +513,7 @@ type taskUpdateArgs struct {
 	RepoID      *int64  `json:"repo_id"`
 	Status      *string `json:"status"`
 	Priority    *string `json:"priority"`
+	Message     *string `json:"message"`
 }
 
 type taskMarkArgs struct {
@@ -541,8 +545,9 @@ type taskCommentRemoveArgs struct {
 }
 
 type taskReviewArgs struct {
-	ID      int64 `json:"id"`
-	Approve *bool `json:"approve"`
+	ID      int64  `json:"id"`
+	Approve *bool  `json:"approve"`
+	Message string `json:"message"`
 }
 
 type daemonStatusArgs struct{}

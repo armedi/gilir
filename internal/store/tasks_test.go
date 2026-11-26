@@ -286,6 +286,10 @@ func TestUpdateTaskPatchNoOpAndAudit(t *testing.T) {
 	if _, err := s.UpdateTask(ctx, "bob", task.ID, TaskPatch{Title: &blank}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("blank title error = %v, want ErrInvalid", err)
 	}
+	strayMessage := "note"
+	if _, err := s.UpdateTask(ctx, "bob", task.ID, TaskPatch{Message: &strayMessage}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("message without request-changes error = %v, want ErrInvalid", err)
+	}
 	badStatus := Status("blocked")
 	if _, err := s.UpdateTask(ctx, "bob", task.ID, TaskPatch{Status: &badStatus}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("bad status error = %v, want ErrInvalid", err)
@@ -304,7 +308,11 @@ func TestUpdateTaskPatchNoOpAndAudit(t *testing.T) {
 		t.Fatalf("set in-review: %v", err)
 	}
 	todo := StatusTodo
-	task, err = s.UpdateTask(ctx, "bob", task.ID, TaskPatch{Status: &todo})
+	if _, err := s.UpdateTask(ctx, "bob", task.ID, TaskPatch{Status: &todo}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("in-review -> todo without message error = %v, want ErrInvalid", err)
+	}
+	reviewMessage := "please add tests"
+	task, err = s.UpdateTask(ctx, "bob", task.ID, TaskPatch{Status: &todo, Message: &reviewMessage})
 	if err != nil {
 		t.Fatalf("return to todo: %v", err)
 	}
@@ -333,6 +341,9 @@ func TestUpdateTaskPatchNoOpAndAudit(t *testing.T) {
 	}
 	if countActivityType(detail.Activity, ActivityTaskMarking) != 1 {
 		t.Fatalf("marking events = %v, want exactly the auto-applied one", activityTypes(detail.Activity))
+	}
+	if countActivityType(detail.Activity, ActivityTaskCommented) != 1 {
+		t.Fatalf("review comment events = %v, want one", activityTypes(detail.Activity))
 	}
 }
 
@@ -381,6 +392,9 @@ func TestReviewAndReworkTransitions(t *testing.T) {
 	changesTask := mustCreateTask(t, s, CreateTaskParams{
 		ProjectID: project.ID, RepoID: repo.ID, Title: "needs work", Status: StatusInReview,
 	})
+	if _, err := s.Review(ctx, "carol", changesTask.ID, ReviewRequestChanges, "  "); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("blank changes message error = %v, want ErrInvalid", err)
+	}
 	changes, err := s.Review(ctx, "carol", changesTask.ID, ReviewRequestChanges, "add tests")
 	if err != nil {
 		t.Fatalf("request changes: %v", err)
@@ -398,21 +412,28 @@ func TestReviewAndReworkTransitions(t *testing.T) {
 		t.Fatalf("changes-requested missing: %+v", changes.Markings)
 	}
 	changesDetail := mustShow(t, s, changesTask.ID)
-	var sawReason bool
+	var sawReason, sawComment bool
 	for _, activity := range changesDetail.Activity {
-		if activity.Type == ActivityTaskStatusChanged && activity.Data["reason"] == "changes_requested" && activity.Data["detail"] == "add tests" {
+		if activity.Type == ActivityTaskStatusChanged && activity.Data["reason"] == "changes_requested" {
 			sawReason = true
+		}
+		if activity.Type == ActivityTaskCommented && activity.Data["body"] == "add tests" {
+			sawComment = true
 		}
 	}
 	if !sawReason {
-		t.Fatalf("request-changes audit missing reason/detail: %+v", changesDetail.Activity)
+		t.Fatalf("request-changes audit missing reason: %+v", changesDetail.Activity)
+	}
+	if !sawComment {
+		t.Fatalf("request-changes did not record a comment: %+v", changesDetail.Activity)
 	}
 
 	auto := mustCreateTask(t, s, CreateTaskParams{
 		ProjectID: project.ID, RepoID: repo.ID, Title: "auto changes", Status: StatusInReview,
 	})
 	todo := StatusTodo
-	auto, err = s.UpdateTask(ctx, "carol", auto.ID, TaskPatch{Status: &todo})
+	autoMessage := "needs another pass"
+	auto, err = s.UpdateTask(ctx, "carol", auto.ID, TaskPatch{Status: &todo, Message: &autoMessage})
 	if err != nil {
 		t.Fatalf("UpdateTask in-review -> todo: %v", err)
 	}

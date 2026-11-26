@@ -157,7 +157,17 @@ func TestReviewFalseRequestsChanges(t *testing.T) {
 	if _, err := f.run(t, "task.update", map[string]any{"id": f.task, "status": "in-review"}); err != nil {
 		t.Fatalf("move to in-review: %v", err)
 	}
-	reviewed, err := f.run(t, "task.review", map[string]any{"id": f.task, "approve": false})
+	if _, err := f.run(t, "task.review", map[string]any{"id": f.task, "approve": false}); err == nil {
+		t.Fatal("request changes without a message was accepted")
+	} else {
+		requireInvalid(t, err)
+	}
+	if _, err := f.run(t, "task.review", map[string]any{"id": f.task, "approve": false, "message": "  "}); err == nil {
+		t.Fatal("request changes with a blank message was accepted")
+	} else {
+		requireInvalid(t, err)
+	}
+	reviewed, err := f.run(t, "task.review", map[string]any{"id": f.task, "approve": false, "message": "add tests"})
 	if err != nil {
 		t.Fatalf("request changes: %v", err)
 	}
@@ -173,6 +183,31 @@ func TestReviewFalseRequestsChanges(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("markings = %v, want changes-requested", task.Markings)
+	}
+}
+
+func TestTaskUpdateRequestChangesRequiresMessage(t *testing.T) {
+	f := newFixture(t, nil)
+
+	if _, err := f.run(t, "task.update", map[string]any{"id": f.task, "message": "note"}); err == nil {
+		t.Fatal("message without a request-changes transition was accepted")
+	} else {
+		requireInvalid(t, err)
+	}
+	if _, err := f.run(t, "task.update", map[string]any{"id": f.task, "status": "in-review"}); err != nil {
+		t.Fatalf("move to in-review: %v", err)
+	}
+	if _, err := f.run(t, "task.update", map[string]any{"id": f.task, "status": "todo"}); err == nil {
+		t.Fatal("in-review -> todo without a message was accepted")
+	} else {
+		requireInvalid(t, err)
+	}
+	updated, err := f.run(t, "task.update", map[string]any{"id": f.task, "status": "todo", "message": "add tests"})
+	if err != nil {
+		t.Fatalf("in-review -> todo with message: %v", err)
+	}
+	if task := updated.(store.Task); task.Status != store.StatusTodo {
+		t.Fatalf("status = %q, want todo", task.Status)
 	}
 }
 

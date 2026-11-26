@@ -89,6 +89,41 @@ func TestRunFlagPlacementAndActorPrecedence(t *testing.T) {
 			wantCommand: "task.comment",
 			wantArgs:    map[string]any{"id": int64(7), "body": "--json"},
 		},
+		{
+			name:        "edit comment",
+			argv:        []string{"edit-comment", "7", "9", "new body"},
+			wantActor:   "user",
+			wantCommand: "task.comment.edit",
+			wantArgs:    map[string]any{"id": int64(7), "comment_id": int64(9), "body": "new body"},
+		},
+		{
+			name:        "remove comment",
+			argv:        []string{"remove-comment", "7", "9"},
+			wantActor:   "user",
+			wantCommand: "task.comment.remove",
+			wantArgs:    map[string]any{"id": int64(7), "comment_id": int64(9)},
+		},
+		{
+			name:        "approve without message",
+			argv:        []string{"approve", "7"},
+			wantActor:   "user",
+			wantCommand: "task.review",
+			wantArgs:    map[string]any{"id": int64(7), "approve": true},
+		},
+		{
+			name:        "approve carries optional message",
+			argv:        []string{"approve", "7", "--message", "looks good"},
+			wantActor:   "user",
+			wantCommand: "task.review",
+			wantArgs:    map[string]any{"id": int64(7), "approve": true, "message": "looks good"},
+		},
+		{
+			name:        "request changes carries message flag",
+			argv:        []string{"request-changes", "7", "--message", "add tests"},
+			wantActor:   "user",
+			wantCommand: "task.review",
+			wantArgs:    map[string]any{"id": int64(7), "approve": false, "message": "add tests"},
+		},
 	}
 
 	for _, test := range tests {
@@ -270,6 +305,24 @@ func TestRunRejectsLinkAndOptionalIDArguments(t *testing.T) {
 	}
 }
 
+func TestCommandFlagsHaveHelpMetadata(t *testing.T) {
+	for _, spec := range commandSpecs {
+		for _, flag := range spec.flags {
+			if flagDescriptions[flag] == "" {
+				t.Errorf("%s: flag --%s has no description", spec.path, flag)
+			}
+			if flagPlaceholders[flag] == "" {
+				t.Errorf("%s: flag --%s has no placeholder", spec.path, flag)
+			}
+		}
+		for _, flag := range spec.required {
+			if !containsFlag(spec.flags, flag) {
+				t.Errorf("%s: required flag --%s is not in its flag list", spec.path, flag)
+			}
+		}
+	}
+}
+
 func TestRunRejectsRequiredAndInvalidArguments(t *testing.T) {
 	tests := []struct {
 		name string
@@ -284,6 +337,10 @@ func TestRunRejectsRequiredAndInvalidArguments(t *testing.T) {
 		{name: "unknown flag", argv: []string{"show", "1", "--bogus"}, want: "unknown flag"},
 		{name: "duplicate flag", argv: []string{"show", "1", "--json", "--json"}, want: "duplicate flag --json"},
 		{name: "extra argument", argv: []string{"show", "1", "extra"}, want: "unexpected argument"},
+		{name: "request changes missing message", argv: []string{"request-changes", "1"}, want: "missing required flag --message"},
+		{name: "request changes blank message", argv: []string{"request-changes", "1", "--message", "   "}, want: "a message is required"},
+		{name: "edit comment invalid comment id", argv: []string{"edit-comment", "1", "nope", "body"}, want: "invalid comment id"},
+		{name: "remove comment missing comment id", argv: []string{"remove-comment", "1"}, want: "missing <comment-id>"},
 	}
 
 	for _, test := range tests {
