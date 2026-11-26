@@ -223,7 +223,7 @@ func MessageID(attemptID string) string { return "msg_gilir_" + attemptID }
 
 // Prompt is the exact bootstrap text for a task. It carries no task content.
 func Prompt(taskID int64) string {
-	return fmt.Sprintf("Read task %d with gilir show %d --json.", taskID, taskID)
+	return fmt.Sprintf("Read task %d with `gilir show %d --json`.", taskID, taskID)
 }
 
 // observe classifies one open attempt and terminalizes it when OpenCode shows
