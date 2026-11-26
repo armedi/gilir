@@ -1448,6 +1448,14 @@ p {
   gap: 6px;
 }
 
+.task-delete-confirm {
+  margin-top: 10px;
+}
+
+.task-delete-error {
+  margin: 10px 0 0;
+}
+
 .center-scroll {
   flex: 1;
   min-height: 0;

@@ -31,6 +31,13 @@ function focusEditor(editor, selectAll = false) {
   });
 }
 
+function focusSoon(target) {
+  requestAnimationFrame(() => {
+    const element = target();
+    if (element?.isConnected) element.focus();
+  });
+}
+
 function readDescription(editor) {
   const isParagraph = (node) => node.nodeName === 'DIV' || node.nodeName === 'P';
   const children = Array.from(editor.childNodes);
@@ -62,6 +69,10 @@ export default function TaskDetailPane(props) {
   let activeTaskKey = null;
   let activeDescKey = null;
   let activeCommentKey = null;
+  // Solid 2 commits signal writes on flush, so a read right after a write can
+  // see the old value. Guard delete requests with a plain flag to stop double
+  // submits from a double click.
+  let deletePending = false;
 
   const [loadedTaskId, setLoadedTaskId] = createSignal(null);
 
@@ -77,6 +88,12 @@ export default function TaskDetailPane(props) {
   const [actionBusy, setActionBusy] = createSignal(null);
   const [comment, setComment] = createSignal('');
   const [commentError, setCommentError] = createSignal(null);
+
+  const [confirmingDelete, setConfirmingDelete] = createSignal(false);
+  const [deleteBusy, setDeleteBusy] = createSignal(false);
+  const [deleteError, setDeleteError] = createSignal(null);
+  let deleteButton;
+  let confirmDeleteButton;
 
   const task = () => props.detail?.task;
   const inReview = () => task()?.status === 'in-review';
@@ -112,6 +129,9 @@ export default function TaskDetailPane(props) {
     setComment(typeof storedComment === 'string' ? storedComment : '');
     setCommentError(null);
     setActionBusy(null);
+    setConfirmingDelete(false);
+    setDeleteBusy(false);
+    setDeleteError(null);
     setLoadedTaskId(String(current.id));
   }
 
@@ -368,6 +388,53 @@ export default function TaskDetailPane(props) {
   const removeComment = (commentId) =>
     mutateComment('task.comment.remove', commentId, {}, 'Comment removed');
 
+  function startDelete() {
+    const current = task();
+    if (!current || deleteBusy() || deletePending) return;
+    setDeleteError(null);
+    setConfirmingDelete(true);
+    focusSoon(() => confirmDeleteButton);
+  }
+
+  function cancelDelete() {
+    if (deleteBusy() || deletePending) return;
+    setDeleteError(null);
+    setConfirmingDelete(false);
+    focusSoon(() => deleteButton);
+  }
+
+  // Deletes are irreversible, so the request runs against the ID captured when
+  // the action started: a poll that swaps in another task mid-request must not
+  // retarget it. Errors stay attached to that task and only surface while it is
+  // still the loaded one.
+  async function removeTask() {
+    if (deletePending) return;
+    const current = task();
+    if (!current || loadedTaskId() !== String(current.id)) return;
+    const taskId = current.id;
+    const taskKey = activeTaskKey;
+    deletePending = true;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await props.onDelete(taskId);
+    } catch (requestError) {
+      if (activeTaskKey === taskKey) {
+        setDeleteError(errorText(requestError));
+        focusSoon(() => confirmDeleteButton);
+      }
+    } finally {
+      deletePending = false;
+      if (activeTaskKey === taskKey) setDeleteBusy(false);
+    }
+  }
+
+  function handleConfirmDeleteKeyDown(event) {
+    if (deleteBusy() || event.key !== 'Escape') return;
+    event.preventDefault();
+    cancelDelete();
+  }
+
   function handleCommentKeyDown(event) {
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault();
@@ -459,6 +526,19 @@ export default function TaskDetailPane(props) {
           </div>
 
           <div class="center-head-actions">
+            <Show when={task() && !confirmingDelete()}>
+              <button
+                ref={deleteButton}
+                class="btn btn-ghost btn-sm"
+                type="button"
+                aria-label={`Delete task #${props.taskId}`}
+                onClick={startDelete}
+                disabled={deleteBusy()}
+              >
+                Delete
+              </button>
+            </Show>
+
             <button
               class="panel-icon-btn"
               type="button"
@@ -477,6 +557,43 @@ export default function TaskDetailPane(props) {
             </button>
           </div>
         </div>
+
+        <Show when={confirmingDelete()}>
+          <div class="center-header-inner task-delete-confirm">
+            <div
+              class="confirm-inline"
+              role="group"
+              aria-label={`Confirm deletion of task #${props.taskId}`}
+              onKeyDown={handleConfirmDeleteKeyDown}
+            >
+              <span class="confirm-text">Delete task #{props.taskId}?</span>
+              <button
+                ref={confirmDeleteButton}
+                class="btn btn-danger btn-sm"
+                type="button"
+                aria-label={`Confirm deletion of task #${props.taskId}`}
+                onClick={removeTask}
+                disabled={deleteBusy()}
+              >
+                {deleteBusy() ? 'Deleting…' : 'Confirm delete'}
+              </button>
+              <button
+                class="btn btn-ghost btn-sm"
+                type="button"
+                onClick={cancelDelete}
+                disabled={deleteBusy()}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </Show>
+
+        <Show when={deleteError()}>
+          <div class="inline-alert task-delete-error" role="alert">
+            <span>{deleteError()}</span>
+          </div>
+        </Show>
       </header>
 
       <Show when={props.error}>

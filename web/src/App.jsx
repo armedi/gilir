@@ -8,7 +8,7 @@ import {
   onCleanup,
   onSettled,
 } from 'solid-js';
-import { command } from './api';
+import { CommandError, command } from './api';
 import { POLL_INTERVAL } from './constants';
 import {
   asArray,
@@ -121,6 +121,19 @@ export default function App() {
   let repoAbort = null;
   let lastTaskQuery = null;
   let lastDetailSelection = null;
+  // Task IDs are never reused, so a confirmed deletion is remembered for the
+  // session: payloads captured before the delete cannot replay the row in the
+  // queue, project counts, or dependency picker.
+  const deletedTaskIds = new Set();
+
+  function forgetTask(taskId) {
+    const key = String(taskId);
+    deletedTaskIds.add(key);
+    setTasks((previous) => {
+      if (!previous.some((task) => String(task.id) === key)) return previous;
+      return previous.filter((task) => String(task.id) !== key);
+    });
+  }
 
   const hasRepos = createMemo(() => repos().length > 0);
   const hasFilters = createMemo(() =>
@@ -250,6 +263,7 @@ export default function App() {
           const counts = {};
           for (const task of asArray(data)) {
             if (!task || task.project_id == null) continue;
+            if (deletedTaskIds.has(String(task.id))) continue;
             const key = String(task.project_id);
             counts[key] = (counts[key] || 0) + 1;
           }
@@ -335,6 +349,7 @@ export default function App() {
           if (cancelled) return;
           const list = sortTasks(
             asArray(data)
+              .filter((task) => !deletedTaskIds.has(String(task?.id)))
               .map((task) => normalizeTask(task))
               .filter(Boolean),
           );
@@ -428,6 +443,7 @@ export default function App() {
       setDetailLoading(true);
       const controller = new AbortController();
       let cancelled = false;
+      let stopped = false;
       let timer = null;
 
       const load = async () => {
@@ -440,6 +456,17 @@ export default function App() {
           setDetailError(null);
         } catch (error) {
           if (cancelled || isAbortError(error)) return;
+          if (String(selectedTaskId() ?? '') !== String(taskId)) return;
+          // IDs are never reused, so not_found is definitive: keep polling only
+          // while the task exists, and drop a snapshot that can no longer be
+          // served instead of reporting it as a paused live update.
+          if (error instanceof CommandError && error.code === 'not_found') {
+            stopped = true;
+            setDetail(null);
+            setDetailError(null);
+            setDetailLoading(false);
+            return;
+          }
           setDetailError(errorText(error));
         } finally {
           if (!cancelled) setDetailLoading(false);
@@ -448,7 +475,7 @@ export default function App() {
 
       const tick = async () => {
         await load();
-        if (!cancelled) timer = setTimeout(tick, POLL_INTERVAL);
+        if (!cancelled && !stopped) timer = setTimeout(tick, POLL_INTERVAL);
       };
 
       tick();
@@ -482,6 +509,7 @@ export default function App() {
           setBlockerSource({
             tasks: sortTasks(
               asArray(data)
+                .filter((item) => !deletedTaskIds.has(String(item?.id)))
                 .map((item) => normalizeTask(item))
                 .filter(Boolean),
             ),
@@ -575,6 +603,16 @@ export default function App() {
   async function handleProjectCreated() {
     await loadProjects();
     notify('Project created');
+  }
+
+  async function handleDeleteTask(taskId) {
+    await command('task.delete', { id: taskId });
+    // Evict before refetching so the deleted row disappears at once; the
+    // tombstone keeps any in-flight list response from putting it back.
+    forgetTask(taskId);
+    if (String(selectedTaskId() ?? '') === String(taskId)) closeTask();
+    refreshAfterTaskChange();
+    notify('Task deleted');
   }
 
   async function handleLinkRepo(repoId, projectId) {
@@ -942,6 +980,7 @@ export default function App() {
               onClose={closeTask}
               onOpenMobileInspector={() => setMobileLayer('inspector')}
               onRefresh={refreshAfterTaskChange}
+              onDelete={handleDeleteTask}
               notify={notify}
             />
           </Show>
