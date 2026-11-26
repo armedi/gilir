@@ -1415,8 +1415,9 @@ p {
   gap: 4px;
 }
 
-.inline-title-input {
+.inline-title-textbox {
   width: 100%;
+  min-height: calc(1.3 * var(--text-heading) + 8px);
   margin: -4px -8px;
   border: 1px solid var(--accent);
   border-radius: var(--radius-sm);
@@ -1427,10 +1428,12 @@ p {
   font-weight: 650;
   letter-spacing: -0.025em;
   line-height: 1.3;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   box-shadow: 0 0 0 3px rgba(15, 107, 78, 0.14);
 }
 
-.inline-title-input:focus {
+.inline-title-textbox:focus {
   outline: none;
 }
 
@@ -1531,7 +1534,7 @@ p {
   padding: 8px 12px 0;
 }
 
-.description-textarea {
+.description-textbox {
   width: 100%;
   min-height: 112px;
   border: 0;
@@ -1540,11 +1543,19 @@ p {
   color: var(--ink);
   font-size: var(--text-body);
   line-height: 1.55;
-  resize: vertical;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
-.description-textarea:focus {
+.description-textbox:focus {
   outline: none;
+}
+
+.description-textbox.is-empty::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  color: var(--muted);
+  pointer-events: none;
 }
 
 .description-preview-area {

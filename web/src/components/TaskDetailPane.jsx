@@ -19,23 +19,54 @@ import { PriorityBadge, StatusBadge } from './Badges';
 import ActivityFeed from './ActivityFeed';
 import Markdown from './Markdown';
 
+function focusEditor(editor, selectAll = false) {
+  requestAnimationFrame(() => {
+    if (!editor.isConnected || !editor.isContentEditable) return;
+    editor.focus();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    if (!selectAll) range.collapse(false);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  });
+}
+
+function readDescription(editor) {
+  const isParagraph = (node) => node.nodeName === 'DIV' || node.nodeName === 'P';
+  const children = Array.from(editor.childNodes);
+  if (children.some(isParagraph)) {
+    // Native multiline paste can wrap lines in blocks. Read each block on its own
+    // so an empty block's caret placeholder doesn't add a second line break.
+    return children.map((child, index) => {
+      const paragraph = isParagraph(child);
+      const boundary = index > 0 && (paragraph || isParagraph(children[index - 1]));
+      const text = paragraph ? readDescription(child) : child.nodeValue ?? child.innerText ?? '\n';
+      return boundary ? `\n${text}` : text;
+    }).join('');
+  }
+  const text = editor.innerText;
+  const lastChild = editor.lastChild;
+  // The browser adds a final break to keep the caret visible on an empty line.
+  if (lastChild?.nodeName === 'BR' || lastChild?.nodeValue === '\n') {
+    return text.replace(/\n$/, '');
+  }
+  return text;
+}
+
 export default function TaskDetailPane(props) {
-  const titleId = createUniqueId();
-  const descriptionId = createUniqueId();
   const titleErrorId = createUniqueId();
   const descErrorId = createUniqueId();
   const commentId = createUniqueId();
   const commentErrorId = createUniqueId();
-  let titleInput;
-  let descriptionInput;
   let commentInput;
-  let loadedTaskId = null;
   let activeTaskKey = null;
   let activeDescKey = null;
   let activeCommentKey = null;
 
+  const [loadedTaskId, setLoadedTaskId] = createSignal(null);
+
   const [editingTitle, setEditingTitle] = createSignal(false);
-  const [titleDraft, setTitleDraft] = createSignal('');
   const [titleBusy, setTitleBusy] = createSignal(false);
   const [titleError, setTitleError] = createSignal(null);
 
@@ -68,13 +99,11 @@ export default function TaskDetailPane(props) {
   });
 
   function loadTaskState(current) {
-    loadedTaskId = String(current.id);
     activeTaskKey = `task:${current.id}`;
     activeDescKey = draftKey('task-description', current.id);
     activeCommentKey = draftKey('comment', current.id);
 
     setEditingTitle(false);
-    setTitleDraft(asText(current.title));
     setTitleBusy(false);
     setTitleError(null);
 
@@ -91,21 +120,20 @@ export default function TaskDetailPane(props) {
     setComment(typeof storedComment === 'string' ? storedComment : '');
     setCommentError(null);
     setActionBusy(null);
+    setLoadedTaskId(String(current.id));
   }
 
   createEffect(
     () => ({
       current: task(),
-      isEditingTitle: editingTitle(),
       isEditingDesc: editingDesc(),
     }),
-    ({ current, isEditingTitle, isEditingDesc }) => {
+    ({ current, isEditingDesc }) => {
       if (!current) return;
-      if (loadedTaskId !== String(current.id)) {
+      if (loadedTaskId() !== String(current.id)) {
         loadTaskState(current);
         return;
       }
-      if (!isEditingTitle) setTitleDraft(asText(current.title));
       if (!isEditingDesc) setDescDraft(asText(current.description));
     },
   );
@@ -113,26 +141,21 @@ export default function TaskDetailPane(props) {
   function startTitleEdit() {
     const current = task();
     if (!current || titleBusy()) return;
-    setTitleDraft(asText(current.title));
     setTitleError(null);
     setEditingTitle(true);
-    requestAnimationFrame(() => {
-      titleInput?.focus();
-      titleInput?.select();
-    });
   }
 
   function cancelTitleEdit() {
-    setTitleDraft(asText(task()?.title));
     setTitleError(null);
     setEditingTitle(false);
   }
 
-  async function saveTitle() {
+  async function saveTitle(event) {
     if (titleBusy() || !editingTitle()) return;
     const current = task();
-    if (!current) return;
-    const next = titleDraft().trim();
+    if (!current || loadedTaskId() !== String(current.id)) return;
+    const editor = event.currentTarget;
+    const next = editor.innerText.replace(/[\r\n]+/g, ' ').trim();
     if (!next) {
       cancelTitleEdit();
       return;
@@ -156,7 +179,9 @@ export default function TaskDetailPane(props) {
     } catch (requestError) {
       if (activeTaskKey === taskKey) {
         setTitleError(errorText(requestError));
-        titleInput?.focus();
+        requestAnimationFrame(() => {
+          if (editor.isConnected) editor.focus();
+        });
       }
     } finally {
       if (activeTaskKey === taskKey) setTitleBusy(false);
@@ -164,9 +189,10 @@ export default function TaskDetailPane(props) {
   }
 
   function handleTitleKeyDown(event) {
+    if (titleBusy() || event.isComposing || event.keyCode === 229) return;
     if (event.key === 'Enter') {
       event.preventDefault();
-      saveTitle();
+      saveTitle(event);
     } else if (event.key === 'Escape') {
       event.preventDefault();
       cancelTitleEdit();
@@ -180,12 +206,6 @@ export default function TaskDetailPane(props) {
     setDescMode('write');
     setDescError(null);
     setEditingDesc(true);
-    requestAnimationFrame(() => {
-      if (!descriptionInput) return;
-      descriptionInput.focus();
-      const end = descriptionInput.value.length;
-      descriptionInput.setSelectionRange(end, end);
-    });
   }
 
   function handleDescriptionClick(event) {
@@ -251,7 +271,8 @@ export default function TaskDetailPane(props) {
     }
   }
 
-  function handleDescTextareaKeyDown(event) {
+  function handleDescEditorKeyDown(event) {
+    if (descBusy() || event.isComposing || event.keyCode === 229) return;
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault();
       saveDesc();
@@ -363,7 +384,7 @@ export default function TaskDetailPane(props) {
         <div class="center-header-inner">
           <div class="center-head-main">
             <Show
-              when={editingTitle()}
+              when={editingTitle() && loadedTaskId() === String(task()?.id)}
               fallback={
                 <Show
                   when={task()}
@@ -383,22 +404,19 @@ export default function TaskDetailPane(props) {
               }
             >
               <div class="inline-title-edit">
-                <label class="sr-only" for={titleId}>
-                  Task title
-                </label>
-                <input
-                  ref={titleInput}
-                  id={titleId}
-                  class="inline-title-input"
-                  type="text"
-                  value={titleDraft()}
-                  onInput={(event) => {
-                    setTitleDraft(event.currentTarget.value);
-                    setTitleError(null);
+                <div
+                  ref={(editor) => {
+                    editor.textContent = asText(task()?.title).replace(/[\r\n]+/g, ' ');
+                    focusEditor(editor, true);
                   }}
+                  class="inline-title-textbox"
+                  role="textbox"
+                  aria-label="Task title"
+                  contenteditable={titleBusy() ? 'false' : 'plaintext-only'}
+                  aria-readonly={titleBusy()}
+                  onInput={() => setTitleError(null)}
                   onKeyDown={handleTitleKeyDown}
                   onBlur={saveTitle}
-                  disabled={titleBusy()}
                   aria-describedby={titleError() ? titleErrorId : undefined}
                 />
                 <Show when={titleError()}>
@@ -489,7 +507,7 @@ export default function TaskDetailPane(props) {
               <div class="stream-column">
                 <section class="description-block" aria-label="Task description">
                   <Show
-                    when={editingDesc()}
+                    when={editingDesc() && loadedTaskId() === String(current().id)}
                     fallback={
                       <div
                         class="description-display"
@@ -510,9 +528,6 @@ export default function TaskDetailPane(props) {
                     }
                   >
                     <form class="description-editor" onSubmit={saveDesc}>
-                      <label class="sr-only" for={descriptionId}>
-                        Task description
-                      </label>
                       <div class="description-editor-box">
                         <div class="description-editor-top">
                           <div
@@ -554,16 +569,23 @@ export default function TaskDetailPane(props) {
                             </div>
                           }
                         >
-                          <textarea
-                            ref={descriptionInput}
-                            id={descriptionId}
-                            class="description-textarea"
-                            rows="5"
-                            value={descDraft()}
-                            onInput={(event) => updateDesc(event.currentTarget.value)}
-                            onKeyDown={handleDescTextareaKeyDown}
-                            placeholder="Write a Markdown description…"
-                            disabled={descBusy()}
+                          <div
+                            ref={(editor) => {
+                              const value = descDraft();
+                              editor.textContent = value;
+                              if (value.endsWith('\n')) editor.append(document.createElement('br'));
+                              focusEditor(editor);
+                            }}
+                            class={['description-textbox', { 'is-empty': descDraft() === '' }]}
+                            role="textbox"
+                            aria-label="Task description"
+                            aria-multiline="true"
+                            aria-readonly={descBusy()}
+                            aria-describedby={descError() ? descErrorId : undefined}
+                            contenteditable={descBusy() ? 'false' : 'plaintext-only'}
+                            data-placeholder="Write a Markdown description…"
+                            onInput={(event) => updateDesc(readDescription(event.currentTarget))}
+                            onKeyDown={handleDescEditorKeyDown}
                           />
                         </Show>
 
