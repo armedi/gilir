@@ -1,5 +1,7 @@
 const ENDPOINT = '/api/v1/command';
-const ACTOR = 'user';
+// Actor recorded for every web command. Comment edit/remove controls only appear
+// on comments written by this actor, matching the server's ownership check.
+export const ACTOR = 'user';
 const REQUEST_TIMEOUT_MS = 15000;
 
 export class CommandError extends Error {

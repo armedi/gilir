@@ -1938,6 +1938,39 @@ p {
   font-variant-numeric: tabular-nums;
 }
 
+.activity-comment-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.activity-comment-edited {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.activity-comment-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: -4px -6px -4px 0;
+}
+
+.activity-comment-edit {
+  margin-top: 2px;
+}
+
+.activity-comment-confirm {
+  justify-content: flex-start;
+  margin-top: 10px;
+}
+
+.activity-comment-error {
+  margin-top: 8px;
+}
+
 .activity-plain {
   margin: 4px 0 0;
   color: var(--ink-secondary);

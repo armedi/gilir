@@ -351,6 +351,24 @@ export default function TaskDetailPane(props) {
     }
   }
 
+  // Comment rows own their editor state; this runs the command, refetches and
+  // toasts. Errors propagate so the row can keep its draft and show them inline.
+  async function mutateComment(name, commentId, args, notice) {
+    const current = task();
+    if (!current || loadedTaskId() !== String(current.id)) {
+      throw new Error('This task is not loaded yet.');
+    }
+    const taskKey = activeTaskKey;
+    await command(name, { id: current.id, comment_id: commentId, ...args });
+    await props.onRefresh();
+    if (activeTaskKey === taskKey) props.notify(notice);
+  }
+
+  const editComment = (commentId, body) =>
+    mutateComment('task.comment.edit', commentId, { body }, 'Comment updated');
+  const removeComment = (commentId) =>
+    mutateComment('task.comment.remove', commentId, {}, 'Comment removed');
+
   function handleCommentKeyDown(event) {
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault();
@@ -647,7 +665,11 @@ export default function TaskDetailPane(props) {
                       {detail().activity.length === 1 ? 'event' : 'events'}
                     </span>
                   </div>
-                  <ActivityFeed activity={detail().activity} />
+                  <ActivityFeed
+                    activity={detail().activity}
+                    onEditComment={editComment}
+                    onRemoveComment={removeComment}
+                  />
                 </section>
               </div>
             </div>
