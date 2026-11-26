@@ -1,7 +1,7 @@
 import { defineConfig, lazyPlugins } from 'vite-plus';
 import solid from '@solidjs/vite-plugin';
 
-const API_TARGET = 'http://127.0.0.1:4718';
+const API_TARGET = 'http://127.0.0.1:44547';
 const DEV_PORT = 5173;
 
 function isLoopbackHost(hostname) {

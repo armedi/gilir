@@ -124,6 +124,27 @@ func TestRunFlagPlacementAndActorPrecedence(t *testing.T) {
 			wantCommand: "task.review",
 			wantArgs:    map[string]any{"id": int64(7), "approve": false, "message": "add tests"},
 		},
+		{
+			name:        "daemon run without port",
+			argv:        []string{"daemon", "run"},
+			wantActor:   "user",
+			wantCommand: "daemon.run",
+			wantArgs:    map[string]any{},
+		},
+		{
+			name:        "daemon run with port",
+			argv:        []string{"daemon", "run", "--port", "9000"},
+			wantActor:   "user",
+			wantCommand: "daemon.run",
+			wantArgs:    map[string]any{"port": 9000},
+		},
+		{
+			name:        "daemon run with inline port",
+			argv:        []string{"daemon", "run", "--port=9000"},
+			wantActor:   "user",
+			wantCommand: "daemon.run",
+			wantArgs:    map[string]any{"port": 9000},
+		},
 	}
 
 	for _, test := range tests {
@@ -333,6 +354,10 @@ func TestRunRejectsRequiredAndInvalidArguments(t *testing.T) {
 		{name: "invalid task id", argv: []string{"show", "nope"}, want: "invalid task id"},
 		{name: "invalid optional repo id", argv: []string{"list", "--project", "1", "--repo", "nope"}, want: "invalid repo id"},
 		{name: "invalid concurrency", argv: []string{"daemon", "concurrency", "0"}, want: "invalid concurrency"},
+		{name: "invalid port", argv: []string{"daemon", "run", "--port", "0"}, want: "invalid port"},
+		{name: "out of range port", argv: []string{"daemon", "run", "--port", "65536"}, want: "invalid port"},
+		{name: "non-numeric port", argv: []string{"daemon", "run", "--port", "nope"}, want: "invalid port"},
+		{name: "port on status", argv: []string{"daemon", "status", "--port", "9000"}, want: "flag --port is not valid"},
 		{name: "whitespace actor", argv: []string{"show", "1", "--actor", "   "}, want: "non-empty value"},
 		{name: "unknown flag", argv: []string{"show", "1", "--bogus"}, want: "unknown flag"},
 		{name: "duplicate flag", argv: []string{"show", "1", "--json", "--json"}, want: "duplicate flag --json"},

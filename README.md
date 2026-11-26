@@ -30,15 +30,16 @@ the environment where the OpenCode server runs its agents.
 
 ```sh
 gilir daemon run      # stays in the foreground; stop it with Ctrl-C or SIGTERM
+gilir daemon run --port 9000   # override the default port for this run
 ```
 
-Open <http://127.0.0.1:4718>. Startup details go to stderr. One daemon runs per
+Open <http://127.0.0.1:44547>. Startup details go to stderr. One daemon runs per
 database: a second `daemon run` on the same database exits with an error.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `GILIR_DB` | `${XDG_DATA_HOME:-$HOME/.local/share}/gilir/gilir.sqlite` (Windows: `%LOCALAPPDATA%\gilir\gilir.sqlite`) | Database file. If missing, it is created with mode 0600 in a 0700 directory. An existing file keeps its mode. |
-| `GILIR_LISTEN` | `127.0.0.1:4718` | HTTP address. The host must be `127.0.0.1` or `[::1]`. |
+| `GILIR_LISTEN` | `127.0.0.1:44547` | HTTP address. The host must be `127.0.0.1` or `[::1]`. `gilir daemon run --port` overrides only the port. |
 | `GILIR_WEB_DIR` | `web/dist` | Static web bundle. Gilir serves only the API if `index.html` is absent. |
 | `GILIR_OPENCODE_URL` | discovered from `opencode service status` | OpenCode V2 server. It must be on loopback. Set it to pin an explicit server. |
 | `OPENCODE_PASSWORD` | discovered from `opencode service get password` | Sent as HTTP Basic auth (user `opencode`). Set it to pin an explicit password. |

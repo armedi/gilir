@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 
 	"github.com/armedi/gilir/internal/cli"
 	"github.com/armedi/gilir/internal/commands"
@@ -30,7 +31,11 @@ func main() {
 func execute(ctx context.Context, command, actor string, args map[string]any) (any, error) {
 	switch command {
 	case "daemon.run":
-		return runDaemon(ctx)
+		port, err := portArg(args)
+		if err != nil {
+			return nil, err
+		}
+		return runDaemon(ctx, port)
 	case "daemon.status":
 		return daemonStatus(ctx)
 	}
@@ -48,6 +53,20 @@ func execute(ctx context.Context, command, actor string, args map[string]any) (a
 	}
 	defer st.Close()
 	return commands.New(st, nil).Execute(ctx, command, actor, raw)
+}
+
+// portArg returns the optional daemon.run port as a decimal string, leaving it
+// empty so the daemon falls back to GILIR_LISTEN.
+func portArg(args map[string]any) (string, error) {
+	value, ok := args["port"]
+	if !ok {
+		return "", nil
+	}
+	port, ok := value.(int)
+	if !ok {
+		return "", fmt.Errorf("invalid port %v", value)
+	}
+	return strconv.Itoa(port), nil
 }
 
 // prepareDatabase resolves the database path, creates its parent directory

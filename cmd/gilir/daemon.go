@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	defaultListen   = "127.0.0.1:4718"
+	defaultListen   = "127.0.0.1:44547"
 	defaultWebDir   = "web/dist"
 	shutdownTimeout = 10 * time.Second
 	statusTimeout   = 5 * time.Second
@@ -68,8 +68,8 @@ func opencodeOverrides() opencode.Overrides {
 // runDaemon serves until SIGINT/SIGTERM or a server failure, then stops the
 // HTTP server, cancels and waits for the watcher and hooks, and only then
 // closes SQLite and releases the lock.
-func runDaemon(parent context.Context) (any, error) {
-	listen, err := listenAddress()
+func runDaemon(parent context.Context, port string) (any, error) {
+	listen, err := listenAddress(port)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +126,7 @@ func runDaemon(parent context.Context) (any, error) {
 		return nil, fmt.Errorf("listen on %s: %w", listen, err)
 	}
 	host, _, _ := net.SplitHostPort(listen)
-	port := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+	boundPort := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
 
 	w := watcher.NewWithConnection(st, conn)
 	service := commands.New(st, func() commands.Snapshot {
@@ -134,7 +134,7 @@ func runDaemon(parent context.Context) (any, error) {
 		return commands.Snapshot{ActiveParents: snap.ActiveParents, WatcherError: snap.Error}
 	})
 	server := &http.Server{
-		Handler:           localhttp.Handler(port, web, service.Execute, commands.Classify),
+		Handler:           localhttp.Handler(boundPort, web, service.Execute, commands.Classify),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
@@ -168,7 +168,7 @@ func runDaemon(parent context.Context) (any, error) {
 		webNote = "no web UI (" + webDir + "/index.html not found)"
 	}
 	fmt.Fprintf(os.Stderr, "gilir: daemon listening on http://%s (database %s, OpenCode %s, %s, %d hooks)\n",
-		net.JoinHostPort(host, port), dbPath, opencodeEndpoint(overrides), webNote, len(hookConfigs))
+		net.JoinHostPort(host, boundPort), dbPath, opencodeEndpoint(overrides), webNote, len(hookConfigs))
 
 	var runErr error
 	select {
@@ -193,7 +193,7 @@ func runDaemon(parent context.Context) (any, error) {
 // daemonStatus asks the running daemon for daemon.status over its local
 // HTTP API, since only the daemon knows the live watcher state.
 func daemonStatus(ctx context.Context) (any, error) {
-	listen, err := listenAddress()
+	listen, err := listenAddress("")
 	if err != nil {
 		return nil, err
 	}
@@ -241,21 +241,25 @@ func daemonStatus(ctx context.Context) (any, error) {
 }
 
 // listenAddress returns GILIR_LISTEN, which must be a literal loopback IP
-// (127.0.0.1 or ::1) and a decimal port.
-func listenAddress() (string, error) {
+// (127.0.0.1 or ::1) and a decimal port. A non-empty port overrides the port
+// from GILIR_LISTEN while keeping its host.
+func listenAddress(port string) (string, error) {
 	listen := envOr("GILIR_LISTEN", defaultListen)
-	host, port, err := net.SplitHostPort(listen)
+	host, listenPort, err := net.SplitHostPort(listen)
 	if err != nil {
 		return "", fmt.Errorf("GILIR_LISTEN %q: %w", listen, err)
 	}
 	if host != "127.0.0.1" && host != "::1" {
 		return "", fmt.Errorf("GILIR_LISTEN %q: host must be 127.0.0.1 or [::1]", listen)
 	}
-	n, err := strconv.Atoi(port)
-	if err != nil || port != strconv.Itoa(n) || n < 0 || n > 65535 {
-		return "", fmt.Errorf("GILIR_LISTEN %q: port must be a number from 0 to 65535", listen)
+	if port != "" {
+		listenPort = port
 	}
-	return net.JoinHostPort(host, port), nil
+	n, err := strconv.Atoi(listenPort)
+	if err != nil || listenPort != strconv.Itoa(n) || n < 0 || n > 65535 {
+		return "", fmt.Errorf("GILIR_LISTEN %q: port must be a number from 0 to 65535", net.JoinHostPort(host, listenPort))
+	}
+	return net.JoinHostPort(host, listenPort), nil
 }
 
 // openWeb returns the static bundle in dir when it has an index.html, read

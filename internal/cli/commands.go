@@ -352,10 +352,15 @@ var commandSpecs = []command{
 	{
 		path:    "daemon run",
 		wire:    "daemon.run",
-		usage:   "gilir daemon run",
+		usage:   "gilir daemon run [--port <port>]",
 		summary: "Run the daemon in the foreground.",
-		build: func(_ []string, _ map[string]string) (map[string]any, error) {
-			return map[string]any{}, nil
+		flags:   []string{"port"},
+		build: func(_ []string, flags map[string]string) (map[string]any, error) {
+			args := map[string]any{}
+			if err := addPortFlag(args, flags); err != nil {
+				return nil, err
+			}
+			return args, nil
 		},
 	},
 	{
@@ -495,6 +500,22 @@ func addStringFlag(args map[string]any, flags map[string]string, flag, key strin
 	if value, ok := flags[flag]; ok {
 		args[key] = value
 	}
+}
+
+func addPortFlag(args map[string]any, flags map[string]string) error {
+	value, ok := flags["port"]
+	if !ok {
+		return nil
+	}
+	if !isPositiveInteger(value) {
+		return fmt.Errorf("invalid port %q: must be a number from 1 to 65535", value)
+	}
+	port, err := strconv.Atoi(value)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("invalid port %q: must be a number from 1 to 65535", value)
+	}
+	args["port"] = port
+	return nil
 }
 
 func addIDFlag(args map[string]any, flags map[string]string, flag, key, kind string) error {

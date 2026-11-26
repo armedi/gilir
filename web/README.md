@@ -20,13 +20,14 @@ pnpm dev
 
 `pnpm dev` runs `vp dev`. The dev server is pinned to
 `http://localhost:5173` (Vite `strictPort`). It proxies `/api` to
-`http://127.0.0.1:4718` with `changeOrigin: true`.
+`http://127.0.0.1:44547` with `changeOrigin: true`.
 
 The backend validates `Host` and `Origin` including ports. The dev proxy only
 rewrites `Origin` to the backend origin when the incoming `Origin` exactly
 matches the request host, the host is loopback, and the port is `5173`. Other
 origins are forwarded unchanged so the backend can reject them. Run the backend
-on `127.0.0.1:4718` while using the dev server.
+on `127.0.0.1:44547` (the default) while using the dev server; if you pass
+`gilir daemon run --port`, point `API_TARGET` in `vite.config.js` at it.
 
 ## Production
 

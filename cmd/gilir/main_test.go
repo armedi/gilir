@@ -19,16 +19,47 @@ import (
 func TestListenAddressAcceptsOnlyLiteralLoopback(t *testing.T) {
 	for _, value := range []string{"127.0.0.1:4718", "[::1]:4718", "127.0.0.1:0"} {
 		t.Setenv("GILIR_LISTEN", value)
-		if _, err := listenAddress(); err != nil {
+		if _, err := listenAddress(""); err != nil {
 			t.Errorf("%q rejected: %v", value, err)
 		}
 	}
 	for _, value := range []string{"0.0.0.0:4718", "localhost:4718", "192.168.1.2:4718", "127.0.0.2:4718",
 		"127.0.0.1", "127.0.0.1:+80", "127.0.0.1:080", "127.0.0.1:65536", "127.0.0.1:http"} {
 		t.Setenv("GILIR_LISTEN", value)
-		if _, err := listenAddress(); err == nil {
+		if _, err := listenAddress(""); err == nil {
 			t.Errorf("%q accepted", value)
 		}
+	}
+}
+
+func TestListenAddressDefaultsTo44547(t *testing.T) {
+	t.Setenv("GILIR_LISTEN", "")
+	got, err := listenAddress("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "127.0.0.1:44547" {
+		t.Fatalf("listen address = %q, want 127.0.0.1:44547", got)
+	}
+}
+
+func TestListenAddressPortOverridesEnvPort(t *testing.T) {
+	t.Setenv("GILIR_LISTEN", "127.0.0.1:44547")
+	got, err := listenAddress("9000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "127.0.0.1:9000" {
+		t.Fatalf("listen address = %q, want 127.0.0.1:9000", got)
+	}
+
+	t.Setenv("GILIR_LISTEN", "[::1]:44547")
+	got, err = listenAddress("9000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "[::1]:9000" {
+		t.Fatalf("listen address = %q, want [::1]:9000", got)
 	}
 }
 
@@ -109,7 +140,7 @@ func TestDaemonServesStatusAndRejectsSecondInstance(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := runDaemon(ctx)
+		_, err := runDaemon(ctx, "")
 		done <- err
 	}()
 
@@ -134,7 +165,7 @@ func TestDaemonServesStatusAndRejectsSecondInstance(t *testing.T) {
 		t.Fatalf("status with unreachable OpenCode = %v", status)
 	}
 
-	if _, err := runDaemon(context.Background()); err == nil || !strings.Contains(err.Error(), "already running") {
+	if _, err := runDaemon(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("second daemon error = %v", err)
 	}
 
