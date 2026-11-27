@@ -15,7 +15,8 @@ var flagDescriptions = map[string]string{
 	"description": "Markdown description",
 	"title":       "Task title",
 	"message":     "Markdown review message",
-	"port":        "HTTP port to listen on",
+	"host":        "HTTP host to bind (default: 127.0.0.1)",
+	"port":        "HTTP port to bind (default: 44547)",
 }
 
 var flagPlaceholders = map[string]string{
@@ -27,13 +28,15 @@ var flagPlaceholders = map[string]string{
 	"description": "markdown",
 	"title":       "title",
 	"message":     "markdown",
+	"host":        "host",
 	"port":        "port",
 }
 
 var groupSummaries = map[string]string{
 	"project": "Manage projects.",
 	"repo":    "Manage repositories and their project links.",
-	"daemon":  "Run and control the background daemon.",
+	"service": "Manage the background service.",
+	"daemon":  "Pause, resume, and tune task dispatch.",
 }
 
 func helpFor(positionals []string) string {
@@ -72,8 +75,13 @@ func generalHelp() string {
 	writeCommandUsages(&builder, func(spec command) bool {
 		return !strings.HasPrefix(spec.path, "project ") &&
 			!strings.HasPrefix(spec.path, "repo ") &&
+			!strings.HasPrefix(spec.path, "service ") &&
 			!strings.HasPrefix(spec.path, "daemon ") &&
 			spec.path != "skill"
+	})
+	builder.WriteString("\nService commands:\n")
+	writeCommandUsages(&builder, func(spec command) bool {
+		return strings.HasPrefix(spec.path, "service ")
 	})
 	builder.WriteString("\nDaemon commands:\n")
 	writeCommandUsages(&builder, func(spec command) bool {

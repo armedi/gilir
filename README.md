@@ -1,8 +1,9 @@
 # Gilir
 
 Gilir is a local task queue for coding agents. Tasks live in a local SQLite
-database. A single daemon dispatches ready tasks to an OpenCode V2 server and
-serves a web dashboard on loopback. Each dispatch gets its own new session.
+database. A single background service dispatches ready tasks to an OpenCode V2
+server and serves a web dashboard, on loopback by default. Each dispatch gets
+its own new session.
 A task that goes through several review cycles keeps every earlier session in
 its history.
 
@@ -37,7 +38,7 @@ The explicit `--prod=false` keeps the Vite+ development dependencies installed
 when `NODE_ENV=production`. Run the CLI from that install as `pnpm exec vp` in
 `web` when you need it directly.
 
-Put `gilir` on your `PATH`. The daemon prompts each agent to run `gilir show
+Put `gilir` on your `PATH`. The service prompts each agent to run `gilir show
 GILIR-<n> --json`, so the binary and the same `GILIR_DB` must also be available
 in the environment where the OpenCode server runs its agents.
 
@@ -61,21 +62,45 @@ the launcher package locally without publishing.
 ## Run
 
 ```sh
-gilir daemon run      # stays in the foreground; stop it with Ctrl-C or SIGTERM
-gilir daemon run --port 9000   # override the default port for this run
+gilir service start                  # detached; default http://127.0.0.1:44547
+gilir service start --port 9000      # bind another port
+gilir service start --host 0.0.0.0   # accept connections from other machines
+gilir service status
+gilir service stop
+gilir service restart
 ```
 
-Open <http://127.0.0.1:44547>. Startup details go to stderr. One daemon runs per
-database: a second `daemon run` on the same database exits with an error.
+`service start` launches a detached worker and returns once it is serving.
+`service restart` keeps the running host and port unless a flag or
+`GILIR_LISTEN` overrides them. The worker appends startup, warning, and
+shutdown details to `<GILIR_DB>.service.log`, and publishes
+`<GILIR_DB>.service.json` while it runs; stop and status use that record, so
+they do not need the original flags. One service runs per database: a second
+start on the same database is refused, or is a no-op when the requested
+address matches.
+
+Open <http://127.0.0.1:44547>. To reach the dashboard from another machine,
+bind a wildcard address and visit `http://<machine-ip>:44547`:
+
+```sh
+gilir service start --host 0.0.0.0
+```
+
+There is no authentication and the API can create, change, and delete tasks, so
+only expose the port on a trusted network. When bound to a wildcard address the
+server accepts request hosts that are IP literals (plus loopback); access by a
+DNS name other than `localhost` is rejected to limit DNS rebinding. Process
+shutdown is served only on a private loopback listener, so it is never exposed
+with the UI.
 
 The schema version changed when task IDs gained their `GILIR-` prefix. A
 database created by an older Gilir is rejected with an error; delete the file
-and restart the daemon to recreate it (task history is not migrated).
+and restart the service to recreate it (task history is not migrated).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `GILIR_DB` | `${XDG_DATA_HOME:-$HOME/.local/share}/gilir/gilir.sqlite` (Windows: `%LOCALAPPDATA%\gilir\gilir.sqlite`) | Database file. If missing, it is created with mode 0600 in a 0700 directory. An existing file keeps its mode. |
-| `GILIR_LISTEN` | `127.0.0.1:44547` | HTTP address. The host must be `127.0.0.1` or `[::1]`. `gilir daemon run --port` overrides only the port. |
+| `GILIR_LISTEN` | `127.0.0.1:44547` | Default HTTP bind address. The host may be any IP literal or `localhost`, including `0.0.0.0` and `::` for remote access. `--host` and `--port` on `service start`/`restart` override it. |
 | `GILIR_WEB_DIR` | Embedded dashboard, or `web/dist` for Go-only builds | Override the static web bundle. If the selected directory has no `index.html`, Gilir serves only the API. |
 | `GILIR_OPENCODE_URL` | discovered from `opencode service status` | OpenCode V2 server. It must be on loopback. Set it to pin an explicit server. |
 | `OPENCODE_PASSWORD` | discovered from `opencode service get password` | Sent as HTTP Basic auth (user `opencode`). Set it to pin an explicit password. |
@@ -87,8 +112,8 @@ and restart the daemon to recreate it (task history is not migrated).
 By default Gilir discovers the local managed OpenCode service through the
 `opencode` CLI: `opencode service status` for the URL and `opencode service get
 password` for the Basic auth password. Nothing needs to be set. Gilir never
-starts OpenCode; when the service is not running the daemon stays up, dispatches
-nothing, and `gilir daemon status` reports `OpenCode is not running`. It
+starts OpenCode; when it is not running the Gilir service stays up, dispatches
+nothing, and `gilir service status` reports `OpenCode is not running`. It
 connects on its own once OpenCode starts, and re-reads the password if the
 service restarts and rotates it.
 
@@ -102,15 +127,15 @@ read -rsp 'OpenCode password: ' OPENCODE_PASSWORD && echo && export OPENCODE_PAS
 ```
 
 The CLI and API still work when OpenCode cannot be reached. In that case
-`gilir daemon status` shows `active_parents: null` and a `watcher_error`. Once
+`gilir service status` shows `active_parents: null` and a `watcher_error`. Once
 connected, each dispatched task shows a session link in the dashboard. The
 link opens the session in OpenCode Web.
 
 ## CLI
 
-Commands work directly on the database, so they also work when the daemon is
-stopped. The exception is `daemon status`, which asks the running daemon. Add
-`--json` to get machine-readable output on stdout.
+Commands work directly on the database, so they also work when the service is
+stopped. `service status` asks the running service. Add `--json` to get
+machine-readable output on stdout.
 
 ```sh
 gilir project create Payments                    # -> id 1
@@ -129,7 +154,7 @@ gilir comment GILIR-1 "Repro in **ledger_test.go**" --actor agent:me
 gilir edit-comment GILIR-1 12 "Narrowed to **rounding**" --actor agent:me
 gilir remove-comment GILIR-1 12 --actor agent:me
 gilir approve GILIR-1                            # or: gilir request-changes GILIR-1 --message "Add tests"
-gilir daemon status
+gilir service status
 gilir daemon pause
 gilir daemon resume
 gilir daemon concurrency 2

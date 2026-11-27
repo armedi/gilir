@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 
@@ -366,24 +367,39 @@ var commandSpecs = []command{
 		},
 	},
 	{
-		path:    "daemon run",
-		wire:    "daemon.run",
-		usage:   "gilir daemon run [--port <port>]",
-		summary: "Run the daemon in the foreground.",
-		flags:   []string{"port"},
+		path:    "service start",
+		wire:    "service.start",
+		usage:   "gilir service start [--host <host>] [--port <port>]",
+		summary: "Start the background service.",
+		flags:   []string{"host", "port"},
 		build: func(_ []string, flags map[string]string) (map[string]any, error) {
-			args := map[string]any{}
-			if err := addPortFlag(args, flags); err != nil {
-				return nil, err
-			}
-			return args, nil
+			return buildServiceListen(flags)
 		},
 	},
 	{
-		path:    "daemon status",
-		wire:    "daemon.status",
-		usage:   "gilir daemon status",
-		summary: "Show daemon status.",
+		path:    "service stop",
+		wire:    "service.stop",
+		usage:   "gilir service stop",
+		summary: "Stop the background service.",
+		build: func(_ []string, _ map[string]string) (map[string]any, error) {
+			return map[string]any{}, nil
+		},
+	},
+	{
+		path:    "service restart",
+		wire:    "service.restart",
+		usage:   "gilir service restart [--host <host>] [--port <port>]",
+		summary: "Restart the background service.",
+		flags:   []string{"host", "port"},
+		build: func(_ []string, flags map[string]string) (map[string]any, error) {
+			return buildServiceListen(flags)
+		},
+	},
+	{
+		path:    "service status",
+		wire:    "service.status",
+		usage:   "gilir service status",
+		summary: "Show background service status.",
 		build: func(_ []string, _ map[string]string) (map[string]any, error) {
 			return map[string]any{}, nil
 		},
@@ -440,6 +456,7 @@ var commandGroupNames = map[string]bool{
 	"project": true,
 	"repo":    true,
 	"daemon":  true,
+	"service": true,
 }
 
 var knownCommandFlags = func() map[string]bool {
@@ -516,6 +533,45 @@ func addStringFlag(args map[string]any, flags map[string]string, flag, key strin
 	if value, ok := flags[flag]; ok {
 		args[key] = value
 	}
+}
+
+func buildServiceListen(flags map[string]string) (map[string]any, error) {
+	args := map[string]any{}
+	if err := addHostFlag(args, flags); err != nil {
+		return nil, err
+	}
+	if err := addPortFlag(args, flags); err != nil {
+		return nil, err
+	}
+	return args, nil
+}
+
+func addHostFlag(args map[string]any, flags map[string]string) error {
+	value, ok := flags["host"]
+	if !ok {
+		return nil
+	}
+	host := normalizeHost(value)
+	if !validHostValue(host) {
+		return fmt.Errorf("invalid host %q: must be an IP address or localhost", value)
+	}
+	args["host"] = host
+	return nil
+}
+
+func normalizeHost(host string) string {
+	host = strings.TrimSpace(host)
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = host[1 : len(host)-1]
+	}
+	return host
+}
+
+func validHostValue(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	return net.ParseIP(host) != nil
 }
 
 func addPortFlag(args map[string]any, flags map[string]string) error {

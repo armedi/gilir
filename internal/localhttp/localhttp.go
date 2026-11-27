@@ -46,7 +46,17 @@ const (
 		"frame-ancestors 'none'; form-action 'self'"
 )
 
+// Config is the bound listen address that request validation depends on. Host
+// is the address the daemon actually bound (127.0.0.1, ::1, localhost, a
+// concrete interface address, or a wildcard such as 0.0.0.0 or ::). Port is
+// the actual port, which matters when the daemon was started with port 0.
+type Config struct {
+	Host string
+	Port string
+}
+
 type handler struct {
+	host     string
 	port     string
 	web      fs.FS
 	execute  func(context.Context, string, string, json.RawMessage) (any, error)
@@ -66,12 +76,17 @@ type errorDetail struct {
 	Message string `json:"message"`
 }
 
-// Handler returns the HTTP handler for the local UI. port is normalized to
-// its canonical decimal form; a leading colon is allowed. Requests are
-// accepted only when Host is 127.0.0.1, [::1], or localhost at that port.
-// When the canonical port is 80, the port may be omitted from Host. When an
-// Origin header is present it must be exactly http:// followed by the request
-// Host; no CORS headers are emitted.
+// Handler returns the HTTP handler for the local UI. The configured port is
+// normalized to its canonical decimal form; a leading colon is allowed.
+// Loopback Hosts (127.0.0.1, [::1], localhost) are always accepted at that
+// port. A wildcard bind also accepts Hosts that are concrete IP literals, so
+// a machine can be reached by its LAN or public address; a specific
+// non-loopback bind accepts only that address. DNS names other than localhost
+// are rejected, which keeps a wildcard bind from becoming a DNS-rebinding
+// target. An unspecified address (0.0.0.0 or ::) is never a valid request
+// Host. When the canonical port is 80, the port may be omitted from Host.
+// When an Origin header is present it must be exactly http:// followed by the
+// request Host; no CORS headers are emitted.
 //
 // execute is called for valid POST /api/v1/command requests with the command,
 // the actor (default "user"), and the JSON args object (default {}). classify
@@ -80,9 +95,10 @@ type errorDetail struct {
 // regular files are served read-only for GET and HEAD with directory listings
 // disabled. web must confine path resolution to a trusted root; main uses
 // os.OpenRoot. Plain os.DirFS can follow symlinks outside the served root.
-func Handler(port string, web fs.FS, execute func(context.Context, string, string, json.RawMessage) (any, error), classify func(error) (int, string)) http.Handler {
+func Handler(config Config, web fs.FS, execute func(context.Context, string, string, json.RawMessage) (any, error), classify func(error) (int, string)) http.Handler {
 	return &handler{
-		port:     canonicalPort(port),
+		host:     config.Host,
+		port:     canonicalPort(config.Port),
 		web:      web,
 		execute:  execute,
 		classify: classify,
@@ -260,9 +276,39 @@ func (h *handler) validHost(authority string) bool {
 	}
 	host, port, err := net.SplitHostPort(authority)
 	if err != nil {
-		return h.port == "80" && isBareLoopbackAuthority(authority)
+		if h.port != "80" {
+			return false
+		}
+		host, err = bareAuthorityHost(authority)
+		if err != nil {
+			return false
+		}
+		return h.acceptsHost(host)
 	}
-	return port == h.port && isLoopbackHost(host)
+	return port == h.port && h.acceptsHost(host)
+}
+
+// acceptsHost reports whether a request Host may name this listener. Loopback
+// names are always accepted so the same daemon answers on the local machine.
+// A wildcard bind accepts concrete address literals (any local interface);
+// a specific bind accepts exactly its own address. DNS names beyond localhost
+// are rejected so a rebinding name cannot ride a wildcard bind.
+func (h *handler) acceptsHost(host string) bool {
+	if isLoopbackHost(host) {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	if ip.IsUnspecified() {
+		return false
+	}
+	if isWildcardHost(h.host) {
+		return true
+	}
+	bind := net.ParseIP(h.host)
+	return bind != nil && bind.Equal(ip)
 }
 
 func isLoopbackHost(host string) bool {
@@ -272,11 +318,29 @@ func isLoopbackHost(host string) bool {
 	return strings.EqualFold(host, "localhost")
 }
 
-func isBareLoopbackAuthority(authority string) bool {
-	if authority == "127.0.0.1" || authority == "[::1]" {
-		return true
+func isWildcardHost(host string) bool {
+	return host == "0.0.0.0" || host == "::"
+}
+
+// bareAuthorityHost extracts a host from an authority without a port, which is
+// valid only at port 80. Bracketed IPv6 is unwrapped; anything with extra
+// colons, brackets, or userinfo is malformed.
+func bareAuthorityHost(authority string) (string, error) {
+	if strings.HasPrefix(authority, "[") && strings.HasSuffix(authority, "]") {
+		inner := authority[1 : len(authority)-1]
+		ip := net.ParseIP(inner)
+		if ip == nil || !strings.Contains(inner, ":") {
+			return "", errors.New("invalid IPv6 authority")
+		}
+		return inner, nil
 	}
-	return strings.EqualFold(authority, "localhost")
+	if strings.ContainsAny(authority, "[]:@") {
+		return "", errors.New("invalid authority")
+	}
+	if authority == "" {
+		return "", errors.New("empty authority")
+	}
+	return authority, nil
 }
 
 func (h *handler) classifyError(err error) (status int, code string, expose bool) {

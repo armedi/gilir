@@ -23,7 +23,7 @@ Back/Forward:
 - `/projects` - combined Projects & Repos management
 - `/projects/repos/new` - the add-repository form inside that screen
 
-`App.jsx` is the router's root layout and owns the queue, daemon, and detail
+`App.jsx` is the router's root layout and owns the queue, service, and detail
 polling plus the panel chrome; `src/pages/` holds the per-URL views. The Go
 server answers direct loads and refreshes of these paths with `index.html`
 (see `staticPagePath` in `internal/localhttp/localhttp.go`), while unknown
@@ -45,7 +45,7 @@ rewrites `Origin` to the backend origin when the incoming `Origin` exactly
 matches the request host, the host is loopback, and the port is `5173`. Other
 origins are forwarded unchanged so the backend can reject them. Run the backend
 on `127.0.0.1:44547` (the default) while using the dev server; if you pass
-`gilir daemon run --port`, point `API_TARGET` in `vite.config.js` at it.
+`gilir service start --port`, point `API_TARGET` in `vite.config.js` at it.
 
 ## Production
 

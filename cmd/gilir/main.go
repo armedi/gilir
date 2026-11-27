@@ -1,9 +1,9 @@
-// Command gilir is the Gilir CLI and local daemon.
+// Command gilir is the Gilir CLI and background service.
 //
 // Ordinary commands run directly against the local SQLite database, so they
-// work while the daemon is stopped. "gilir daemon run" serves the loopback
-// HTTP API and web UI and runs the queue watcher and hooks; "gilir daemon
-// status" asks that running daemon for its live state.
+// work while the service is stopped. "gilir service start" launches the
+// detached process that serves the HTTP API and web UI and runs the queue
+// watcher and hooks; the service commands manage that process.
 package main
 
 import (
@@ -23,6 +23,16 @@ import (
 )
 
 func main() {
+	// The lifecycle commands re-exec this binary as a detached worker. The
+	// marker is checked before CLI parsing so that path is private and cannot
+	// recurse into another launcher.
+	if len(os.Args) == 2 && os.Args[1] == serviceWorkerCommand {
+		if _, err := runDaemon(context.Background(), "", ""); err != nil {
+			fmt.Fprintf(os.Stderr, "gilir: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	os.Exit(cli.Run(context.Background(), os.Args[1:], os.Stdout, os.Stderr, os.Getenv("GILIR_ACTOR"), execute))
 }
 
@@ -30,14 +40,30 @@ func main() {
 // help and skill output never touch the database.
 func execute(ctx context.Context, command, actor string, args map[string]any) (any, error) {
 	switch command {
-	case "daemon.run":
+	case "service.start":
+		host, err := hostArg(args)
+		if err != nil {
+			return nil, err
+		}
 		port, err := portArg(args)
 		if err != nil {
 			return nil, err
 		}
-		return runDaemon(ctx, port)
-	case "daemon.status":
-		return daemonStatus(ctx)
+		return startService(ctx, host, port)
+	case "service.stop":
+		return stopService(ctx)
+	case "service.restart":
+		host, err := hostArg(args)
+		if err != nil {
+			return nil, err
+		}
+		port, err := portArg(args)
+		if err != nil {
+			return nil, err
+		}
+		return restartService(ctx, host, port)
+	case "service.status":
+		return queryServiceStatus(ctx)
 	}
 	raw, err := json.Marshal(args)
 	if err != nil {
@@ -55,8 +81,22 @@ func execute(ctx context.Context, command, actor string, args map[string]any) (a
 	return commands.New(st, nil).Execute(ctx, command, actor, raw)
 }
 
-// portArg returns the optional daemon.run port as a decimal string, leaving it
-// empty so the daemon falls back to GILIR_LISTEN.
+// hostArg returns the optional --host value, leaving it empty so the service
+// falls back to GILIR_LISTEN.
+func hostArg(args map[string]any) (string, error) {
+	value, ok := args["host"]
+	if !ok {
+		return "", nil
+	}
+	host, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid host %v", value)
+	}
+	return host, nil
+}
+
+// portArg returns the optional --port value as a decimal string, leaving it
+// empty so the service falls back to GILIR_LISTEN.
 func portArg(args map[string]any) (string, error) {
 	value, ok := args["port"]
 	if !ok {

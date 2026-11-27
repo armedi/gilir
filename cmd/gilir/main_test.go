@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -16,50 +17,97 @@ import (
 	"github.com/armedi/gilir/internal/store"
 )
 
-func TestListenAddressAcceptsOnlyLiteralLoopback(t *testing.T) {
-	for _, value := range []string{"127.0.0.1:4718", "[::1]:4718", "127.0.0.1:0"} {
-		t.Setenv("GILIR_LISTEN", value)
-		if _, err := listenAddress(""); err != nil {
-			t.Errorf("%q rejected: %v", value, err)
+// TestMain doubles as the detached worker entry point. service.start re-execs
+// this test binary with the worker marker set and no arguments, which lands
+// here before the test framework starts.
+func TestMain(m *testing.M) {
+	if len(os.Args) == 2 && os.Args[1] == serviceWorkerCommand {
+		if _, err := runDaemon(context.Background(), "", ""); err != nil {
+			fmt.Fprintf(os.Stderr, "gilir worker: %v\n", err)
+			os.Exit(1)
 		}
+		os.Exit(0)
 	}
-	for _, value := range []string{"0.0.0.0:4718", "localhost:4718", "192.168.1.2:4718", "127.0.0.2:4718",
-		"127.0.0.1", "127.0.0.1:+80", "127.0.0.1:080", "127.0.0.1:65536", "127.0.0.1:http"} {
-		t.Setenv("GILIR_LISTEN", value)
-		if _, err := listenAddress(""); err == nil {
-			t.Errorf("%q accepted", value)
+	os.Exit(m.Run())
+}
+
+func TestResolveListenAcceptsAddresses(t *testing.T) {
+	tests := []struct {
+		env  string
+		host string
+		port string
+		want string
+	}{
+		{env: "127.0.0.1:4718", want: "127.0.0.1:4718"},
+		{env: "[::1]:4718", want: "[::1]:4718"},
+		{env: "0.0.0.0:4718", want: "0.0.0.0:4718"},
+		{env: "[::]:4718", want: "[::]:4718"},
+		{env: "192.168.1.2:4718", want: "192.168.1.2:4718"},
+		{env: "localhost:4718", want: "localhost:4718"},
+		{env: "127.0.0.1:0", want: "127.0.0.1:0"},
+		{env: "127.0.0.1:44547", host: "0.0.0.0", want: "0.0.0.0:44547"},
+		{env: "127.0.0.1:44547", port: "9000", want: "127.0.0.1:9000"},
+		{env: "127.0.0.1:44547", host: "[::1]", port: "9000", want: "[::1]:9000"},
+	}
+	for _, test := range tests {
+		t.Setenv("GILIR_LISTEN", test.env)
+		got, err := resolveListen(test.host, test.port)
+		if err != nil {
+			t.Errorf("%q/%q/%q rejected: %v", test.env, test.host, test.port, err)
+			continue
+		}
+		if got.address() != test.want {
+			t.Errorf("listen address = %q, want %q", got.address(), test.want)
 		}
 	}
 }
 
-func TestListenAddressDefaultsTo44547(t *testing.T) {
+func TestResolveListenRejectsBadAddresses(t *testing.T) {
+	for _, test := range []struct {
+		env  string
+		host string
+	}{
+		{env: "example.com:4718"},
+		{env: ":4718"},
+		{env: "127.0.0.1"},
+		{env: "127.0.0.1:+80"},
+		{env: "127.0.0.1:080"},
+		{env: "127.0.0.1:65536"},
+		{env: "127.0.0.1:http"},
+		{env: "127.0.0.1:4718", host: "example.com"},
+	} {
+		t.Setenv("GILIR_LISTEN", test.env)
+		if _, err := resolveListen(test.host, ""); err == nil {
+			t.Errorf("%q/%q accepted", test.env, test.host)
+		}
+	}
+}
+
+func TestResolveListenDefaultsTo44547(t *testing.T) {
 	t.Setenv("GILIR_LISTEN", "")
-	got, err := listenAddress("")
+	got, err := resolveListen("", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "127.0.0.1:44547" {
-		t.Fatalf("listen address = %q, want 127.0.0.1:44547", got)
+	if got.address() != "127.0.0.1:44547" {
+		t.Fatalf("listen address = %q, want 127.0.0.1:44547", got.address())
 	}
 }
 
-func TestListenAddressPortOverridesEnvPort(t *testing.T) {
-	t.Setenv("GILIR_LISTEN", "127.0.0.1:44547")
-	got, err := listenAddress("9000")
-	if err != nil {
-		t.Fatal(err)
+func TestServiceURLMapsWildcardToLoopback(t *testing.T) {
+	tests := []struct {
+		host string
+		want string
+	}{
+		{host: "0.0.0.0", want: "http://127.0.0.1:9000"},
+		{host: "::", want: "http://[::1]:9000"},
+		{host: "192.168.1.5", want: "http://192.168.1.5:9000"},
 	}
-	if got != "127.0.0.1:9000" {
-		t.Fatalf("listen address = %q, want 127.0.0.1:9000", got)
-	}
-
-	t.Setenv("GILIR_LISTEN", "[::1]:44547")
-	got, err = listenAddress("9000")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "[::1]:9000" {
-		t.Fatalf("listen address = %q, want [::1]:9000", got)
+	for _, test := range tests {
+		got := listenConfig{host: test.host, port: "9000"}.urlFor("9000")
+		if got != test.want {
+			t.Errorf("%q url = %q, want %q", test.host, got, test.want)
+		}
 	}
 }
 
@@ -124,7 +172,7 @@ func TestDaemonServesStatusAndRejectsSecondInstance(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("GILIR_DB", dbPath)
-	t.Setenv("GILIR_LISTEN", "127.0.0.1:"+freePort(t))
+	t.Setenv("GILIR_LISTEN", "127.0.0.1:0")
 	t.Setenv("GILIR_OPENCODE_URL", "http://127.0.0.1:"+freePort(t)) // nothing listens
 	t.Setenv("GILIR_WEB_DIR", filepath.Join(dir, "missing"))
 	t.Setenv("GILIR_HOOKS", hooksPath)
@@ -133,42 +181,60 @@ func TestDaemonServesStatusAndRejectsSecondInstance(t *testing.T) {
 	if _, err := execute(context.Background(), "project.create", "user", map[string]any{"name": "Before"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := daemonStatus(context.Background()); err == nil || !strings.Contains(err.Error(), "not running") {
-		t.Fatalf("offline status error = %v", err)
+	offline, err := queryServiceStatus(context.Background())
+	if err != nil {
+		t.Fatalf("offline status: %v", err)
+	}
+	if offline.(serviceStatus).Running {
+		t.Fatal("offline status reported a running service")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := runDaemon(ctx, "")
+		_, err := runDaemon(ctx, "", "")
 		done <- err
 	}()
 
-	var status map[string]any
+	var status serviceStatus
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		result, err := daemonStatus(context.Background())
+		result, err := queryServiceStatus(context.Background())
 		if err == nil {
-			if err := json.Unmarshal(result.(json.RawMessage), &status); err != nil {
-				t.Fatal(err)
-			}
-			if status["watcher_error"] != "not yet polled" {
+			status = result.(serviceStatus)
+			if status.Running && status.WatcherError != "not yet polled" {
 				break
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("daemon status unavailable: %v", err)
+			t.Fatalf("service status unavailable: %v", err)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if status["running"] != true || status["active_parents"] != nil || status["watcher_error"] == "" {
-		t.Fatalf("status with unreachable OpenCode = %v", status)
+	if !status.Running || status.ActiveParents != nil || status.WatcherError == "" || status.Port == 0 {
+		t.Fatalf("status with unreachable OpenCode = %+v", status)
 	}
 
-	if _, err := runDaemon(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "already running") {
+	// The public API must not expose process shutdown, even though it can
+	// change queue state.
+	if _, err := callDaemon(context.Background(), status.URL, "daemon.stop", json.RawMessage(`{}`), time.Second); err == nil {
+		t.Fatal("daemon.stop was accepted on the public API")
+	}
+	if result, err := queryServiceStatus(context.Background()); err != nil || !result.(serviceStatus).Running {
+		t.Fatalf("service stopped after a rejected daemon.stop: %+v %v", result, err)
+	}
+
+	if _, err := runDaemon(context.Background(), "", ""); err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("second daemon error = %v", err)
 	}
 
+	stopped, err := stopService(context.Background())
+	if err != nil {
+		t.Fatalf("stop service: %v", err)
+	}
+	if !stopped.(serviceStopped).Stopped {
+		t.Fatal("stop reported that the service was not stopped")
+	}
 	cancel()
 	select {
 	case err := <-done:
@@ -177,6 +243,9 @@ func TestDaemonServesStatusAndRejectsSecondInstance(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("daemon did not stop")
+	}
+	if _, err := os.Stat(serviceStatePath(dbPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("service state after stop: %v", err)
 	}
 
 	st, err := store.Open(dbPath)
@@ -191,6 +260,67 @@ func TestDaemonServesStatusAndRejectsSecondInstance(t *testing.T) {
 	cursor, initialized, err := st.HookCursor(context.Background(), "audit")
 	if err != nil || !initialized || cursor != latest || latest == 0 {
 		t.Fatalf("hook cursor = %d %v %v, want initialized at %d", cursor, initialized, err, latest)
+	}
+}
+
+func TestServiceStartsDetachedAndStatusUsesState(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "gilir.sqlite")
+	t.Setenv("GILIR_DB", dbPath)
+	t.Setenv("GILIR_LISTEN", "127.0.0.1:0")
+	t.Setenv("GILIR_OPENCODE_URL", "http://127.0.0.1:"+freePort(t))
+	t.Setenv("GILIR_WEB_DIR", filepath.Join(dir, "missing"))
+	t.Setenv("OPENCODE_PASSWORD", "")
+	t.Cleanup(func() { _, _ = stopService(context.Background()) })
+
+	started, err := startService(context.Background(), "", "")
+	if err != nil {
+		t.Fatalf("start service: %v", err)
+	}
+	status := started.(serviceStatus)
+	if !status.Running || status.PID == 0 || status.Port == 0 || status.URL == "" {
+		t.Fatalf("started status = %+v", status)
+	}
+	if status.PID == os.Getpid() {
+		t.Fatal("service runs inside the launcher instead of a detached worker")
+	}
+	if _, err := os.Stat(serviceStatePath(dbPath)); err != nil {
+		t.Fatalf("service state: %v", err)
+	}
+
+	// A later invocation must find the service through the state file even
+	// when GILIR_LISTEN points somewhere else.
+	t.Setenv("GILIR_LISTEN", "127.0.0.1:1")
+	result, err := queryServiceStatus(context.Background())
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	queried := result.(serviceStatus)
+	if !queried.Running || queried.URL != status.URL || queried.Port != status.Port {
+		t.Fatalf("status from state = %+v, want %+v", queried, status)
+	}
+
+	// Starting again with the same requested address is idempotent.
+	again, err := startService(context.Background(), "127.0.0.1", "0")
+	if err != nil {
+		t.Fatalf("idempotent start: %v", err)
+	}
+	if got := again.(serviceStatus); got.PID != status.PID {
+		t.Fatalf("idempotent start pid = %d, want %d", got.PID, status.PID)
+	}
+
+	stopped, err := stopService(context.Background())
+	if err != nil {
+		t.Fatalf("stop service: %v", err)
+	}
+	if !stopped.(serviceStopped).Stopped {
+		t.Fatal("stop reported that the service was not stopped")
+	}
+	if _, err := queryServiceStatus(context.Background()); err != nil {
+		t.Fatalf("status after stop: %v", err)
+	}
+	if _, err := os.Stat(serviceStatePath(dbPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("service state after stop: %v", err)
 	}
 }
 

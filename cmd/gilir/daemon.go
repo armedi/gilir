@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -13,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -65,11 +63,11 @@ func opencodeOverrides() opencode.Overrides {
 	return overrides
 }
 
-// runDaemon serves until SIGINT/SIGTERM or a server failure, then stops the
-// HTTP server, cancels and waits for the watcher and hooks, and only then
-// closes SQLite and releases the lock.
-func runDaemon(parent context.Context, port string) (any, error) {
-	listen, err := listenAddress(port)
+// runDaemon serves until SIGINT/SIGTERM, a private stop request, or a server
+// failure, then stops the HTTP servers, cancels and waits for the watcher and
+// hooks, and only then closes SQLite and releases the lock.
+func runDaemon(parent context.Context, host, port string) (any, error) {
+	listen, err := resolveListen(host, port)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +78,7 @@ func runDaemon(parent context.Context, port string) (any, error) {
 	}
 	// Resolve once at startup so a stopped service is reported immediately and
 	// the first watcher tick reuses the cached client instead of running the
-	// discovery CLI again. Discovery failure never stops the daemon: the
+	// discovery CLI again. Discovery failure never stops the service: the
 	// watcher keeps retrying with backoff once OpenCode is available.
 	if _, _, err := conn.Client(parent); err != nil {
 		fmt.Fprintf(os.Stderr, "gilir: warning: %s\n", conn.Redact(opencode.Describe(err)))
@@ -99,7 +97,7 @@ func runDaemon(parent context.Context, port string) (any, error) {
 	}
 	lock, err := lockFile(dbPath + ".lock")
 	if errors.Is(err, errLocked) {
-		return nil, fmt.Errorf("another gilir daemon is already running for %s", dbPath)
+		return nil, fmt.Errorf("another gilir service is already running for %s", dbPath)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("acquire daemon lock: %w", err)
@@ -133,12 +131,60 @@ func runDaemon(parent context.Context, port string) (any, error) {
 		}
 	}
 
-	ln, err := net.Listen("tcp", listen)
+	ln, err := net.Listen("tcp", listen.address())
 	if err != nil {
-		return nil, fmt.Errorf("listen on %s: %w", listen, err)
+		return nil, fmt.Errorf("listen on %s: %w", listen.address(), err)
 	}
-	host, _, _ := net.SplitHostPort(listen)
 	boundPort := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+
+	// The stop channel is served on a private loopback listener so a public
+	// bind never exposes process shutdown.
+	controlLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		ln.Close()
+		return nil, fmt.Errorf("listen for service control: %w", err)
+	}
+	token, err := randomHex(32)
+	if err != nil {
+		ln.Close()
+		controlLn.Close()
+		return nil, fmt.Errorf("generate service token: %w", err)
+	}
+	instance := os.Getenv(serviceInstanceEnvName)
+	if instance == "" {
+		if instance, err = randomHex(16); err != nil {
+			ln.Close()
+			controlLn.Close()
+			return nil, fmt.Errorf("generate service identity: %w", err)
+		}
+	}
+	state := serviceState{
+		Version:       serviceVersion,
+		Instance:      instance,
+		PID:           os.Getpid(),
+		RequestedHost: listen.host,
+		RequestedPort: requestedPort(listen.port),
+		Host:          listen.host,
+		Port:          ln.Addr().(*net.TCPAddr).Port,
+		URL:           listen.urlFor(boundPort),
+		ControlPort:   controlLn.Addr().(*net.TCPAddr).Port,
+		Token:         token,
+		LogPath:       serviceLogPath(dbPath),
+		StartedAt:     time.Now().UTC(),
+	}
+	if err := writeServiceState(dbPath, state); err != nil {
+		ln.Close()
+		controlLn.Close()
+		return nil, err
+	}
+	defer removeServiceState(dbPath)
+
+	stopRequests := make(chan struct{}, 1)
+	controlServer := &http.Server{
+		Handler:           &controlHandler{token: token, stop: stopRequests},
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = controlServer.Serve(controlLn) }()
 
 	w := watcher.NewWithConnection(st, conn)
 	service := commands.New(st, func() commands.Snapshot {
@@ -146,7 +192,8 @@ func runDaemon(parent context.Context, port string) (any, error) {
 		return commands.Snapshot{ActiveParents: snap.ActiveParents, WatcherError: snap.Error}
 	})
 	server := &http.Server{
-		Handler:           localhttp.Handler(boundPort, web, service.Execute, commands.Classify),
+		Handler: localhttp.Handler(localhttp.Config{Host: listen.host, Port: boundPort},
+			web, service.Execute, commands.Classify),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
@@ -175,99 +222,29 @@ func runDaemon(parent context.Context, port string) (any, error) {
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(ln) }()
 
-	fmt.Fprintf(os.Stderr, "gilir: daemon listening on http://%s (database %s, OpenCode %s, %s, %d hooks)\n",
-		net.JoinHostPort(host, boundPort), dbPath, opencodeEndpoint(overrides), webNote, len(hookConfigs))
+	fmt.Fprintf(os.Stderr, "gilir: service listening on http://%s (database %s, OpenCode %s, %s, %d hooks)\n",
+		net.JoinHostPort(listen.host, boundPort), dbPath, opencodeEndpoint(overrides), webNote, len(hookConfigs))
 
 	var runErr error
 	select {
 	case <-ctx.Done():
+	case <-stopRequests:
 	case err := <-served:
 		runErr = fmt.Errorf("http server: %w", err)
 	}
-	fmt.Fprintln(os.Stderr, "gilir: daemon shutting down")
+	fmt.Fprintln(os.Stderr, "gilir: service shutting down")
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancelShutdown()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		_ = server.Close()
 	}
+	controlServer.Close()
 	cancel()
 	wg.Wait()
 	if runErr != nil {
 		return nil, runErr
 	}
 	return stopped{Stopped: true}, nil
-}
-
-// daemonStatus asks the running daemon for daemon.status over its local
-// HTTP API, since only the daemon knows the live watcher state.
-func daemonStatus(ctx context.Context) (any, error) {
-	listen, err := listenAddress("")
-	if err != nil {
-		return nil, err
-	}
-	if _, port, _ := net.SplitHostPort(listen); port == "0" {
-		return nil, errors.New("GILIR_LISTEN uses port 0; set an explicit port to query daemon status")
-	}
-	ctx, cancel := context.WithTimeout(ctx, statusTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+listen+"/api/v1/command",
-		strings.NewReader(`{"command":"daemon.status","args":{}}`))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{
-		Transport:     &http.Transport{Proxy: nil},
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("daemon is not running at %s (start it with \"gilir daemon run\"): %w", listen, err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxStatusBytes))
-	if err != nil {
-		return nil, fmt.Errorf("read daemon status: %w", err)
-	}
-	var envelope struct {
-		Data  json.RawMessage `json:"data"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("daemon at %s returned HTTP %d without a Gilir response", listen, resp.StatusCode)
-	}
-	if resp.StatusCode != http.StatusOK || envelope.Error != nil || len(envelope.Data) == 0 {
-		message := http.StatusText(resp.StatusCode)
-		if envelope.Error != nil && envelope.Error.Message != "" {
-			message = envelope.Error.Message
-		}
-		return nil, fmt.Errorf("daemon status failed: %s", message)
-	}
-	return envelope.Data, nil
-}
-
-// listenAddress returns GILIR_LISTEN, which must be a literal loopback IP
-// (127.0.0.1 or ::1) and a decimal port. A non-empty port overrides the port
-// from GILIR_LISTEN while keeping its host.
-func listenAddress(port string) (string, error) {
-	listen := envOr("GILIR_LISTEN", defaultListen)
-	host, listenPort, err := net.SplitHostPort(listen)
-	if err != nil {
-		return "", fmt.Errorf("GILIR_LISTEN %q: %w", listen, err)
-	}
-	if host != "127.0.0.1" && host != "::1" {
-		return "", fmt.Errorf("GILIR_LISTEN %q: host must be 127.0.0.1 or [::1]", listen)
-	}
-	if port != "" {
-		listenPort = port
-	}
-	n, err := strconv.Atoi(listenPort)
-	if err != nil || listenPort != strconv.Itoa(n) || n < 0 || n > 65535 {
-		return "", fmt.Errorf("GILIR_LISTEN %q: port must be a number from 0 to 65535", net.JoinHostPort(host, listenPort))
-	}
-	return net.JoinHostPort(host, listenPort), nil
 }
 
 // openWeb returns the static bundle in dir when it has an index.html, read

@@ -31,6 +31,14 @@ func serveRequest(handler http.Handler, request *http.Request) *httptest.Respons
 	return recorder
 }
 
+func testHandler(web fs.FS, execute func(context.Context, string, string, json.RawMessage) (any, error), classify func(error) (int, string)) http.Handler {
+	return Handler(Config{Host: "127.0.0.1", Port: testPort}, web, execute, classify)
+}
+
+func testHandlerPort(port string, web fs.FS, execute func(context.Context, string, string, json.RawMessage) (any, error), classify func(error) (int, string)) http.Handler {
+	return Handler(Config{Host: "127.0.0.1", Port: port}, web, execute, classify)
+}
+
 func commandRequest(body string) *http.Request {
 	request := httptest.NewRequest(http.MethodPost, testAPI, strings.NewReader(body))
 	request.Host = testHost
@@ -219,7 +227,7 @@ func TestCommandAPISuccess(t *testing.T) {
 				return map[string]any{"result": "ok"}, nil
 			}
 
-			handler := Handler(tt.port, nil, execute, nil)
+			handler := testHandlerPort(tt.port, nil, execute, nil)
 			request := commandRequest(tt.body)
 			request.Host = tt.host
 			request = request.WithContext(context.WithValue(request.Context(), contextKey{}, "live"))
@@ -265,7 +273,7 @@ func TestCommandAPIHostValidation(t *testing.T) {
 	for _, tt := range hosts {
 		t.Run(tt.name, func(t *testing.T) {
 			called := false
-			handler := Handler(testPort, nil, func(context.Context, string, string, json.RawMessage) (any, error) {
+			handler := testHandler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
 				called = true
 				return nil, nil
 			}, nil)
@@ -277,6 +285,82 @@ func TestCommandAPIHostValidation(t *testing.T) {
 				t.Error("execute was called for a rejected Host")
 			}
 		})
+	}
+}
+
+func TestCommandAPIBindHostPolicy(t *testing.T) {
+	tests := []struct {
+		name      string
+		bind      string
+		host      string
+		origin    string
+		wantAllow bool
+	}{
+		{name: "loopback bind rejects lan ip", bind: "127.0.0.1", host: "192.168.1.5:8080"},
+		{name: "wildcard accepts ipv4 literal", bind: "0.0.0.0", host: "192.168.1.5:8080", wantAllow: true},
+		{name: "wildcard accepts loopback", bind: "0.0.0.0", host: "127.0.0.1:8080", wantAllow: true},
+		{name: "wildcard accepts ipv6 literal", bind: "0.0.0.0", host: "[fd00::1]:8080", wantAllow: true},
+		{name: "wildcard accepts matching origin", bind: "0.0.0.0", host: "192.168.1.5:8080",
+			origin: "http://192.168.1.5:8080", wantAllow: true},
+		{name: "wildcard rejects dns name", bind: "0.0.0.0", host: "gilir.example:8080"},
+		{name: "wildcard rejects dns name with matching origin", bind: "0.0.0.0", host: "gilir.example:8080",
+			origin: "http://gilir.example:8080"},
+		{name: "wildcard rejects unspecified host", bind: "0.0.0.0", host: "0.0.0.0:8080"},
+		{name: "wildcard rejects wrong port", bind: "0.0.0.0", host: "192.168.1.5:9090"},
+		{name: "ipv6 wildcard accepts ipv6 literal", bind: "::", host: "[fd00::1]:8080", wantAllow: true},
+		{name: "specific bind accepts its address", bind: "192.168.1.5", host: "192.168.1.5:8080", wantAllow: true},
+		{name: "specific bind accepts loopback", bind: "192.168.1.5", host: "localhost:8080", wantAllow: true},
+		{name: "specific bind rejects another address", bind: "192.168.1.5", host: "192.168.1.6:8080"},
+		{name: "specific loopback bind rejects another loopback", bind: "127.0.0.1", host: "127.0.0.2:8080"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			handler := Handler(Config{Host: tt.bind, Port: testPort}, nil,
+				func(context.Context, string, string, json.RawMessage) (any, error) {
+					called = true
+					return map[string]any{"ok": true}, nil
+				}, nil)
+			request := commandRequest(`{"command":"status"}`)
+			request.Host = tt.host
+			if tt.origin != "" {
+				request.Header.Set("Origin", tt.origin)
+			}
+			recorder := serveRequest(handler, request)
+			if tt.wantAllow {
+				assertAPISuccess(t, recorder)
+				if !called {
+					t.Error("execute was not called for an accepted Host")
+				}
+				return
+			}
+			assertAPIError(t, recorder, http.StatusForbidden, "invalid_host")
+			if called {
+				t.Error("execute was called for a rejected Host")
+			}
+		})
+	}
+}
+
+func TestStaticAcceptsRemoteIPWhenBoundToWildcard(t *testing.T) {
+	web := fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("<!doctype html><title>gilir app</title>")},
+	}
+	handler := Handler(Config{Host: "0.0.0.0", Port: testPort}, web, unexpectedExecute(t), nil)
+
+	request := pageRequest(http.MethodGet, "/")
+	request.Host = "192.168.1.5:8080"
+	recorder := serveRequest(handler, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+
+	request = pageRequest(http.MethodGet, "/")
+	request.Host = "gilir.example:8080"
+	recorder = serveRequest(handler, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("dns host status = %d, want %d", recorder.Code, http.StatusForbidden)
 	}
 }
 
@@ -367,7 +451,7 @@ func TestCommandAPIPortNormalizationAndDefaultPort(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			called := false
-			handler := Handler(tt.port, nil, func(context.Context, string, string, json.RawMessage) (any, error) {
+			handler := testHandlerPort(tt.port, nil, func(context.Context, string, string, json.RawMessage) (any, error) {
 				called = true
 				return map[string]any{"ok": true}, nil
 			}, nil)
@@ -411,7 +495,7 @@ func TestCommandAPIOriginValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			called := false
-			handler := Handler(testPort, nil, func(context.Context, string, string, json.RawMessage) (any, error) {
+			handler := testHandler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
 				called = true
 				return nil, nil
 			}, nil)
@@ -492,7 +576,7 @@ func TestCommandAPIMethodAndMediaType(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			called := false
-			handler := Handler(testPort, nil, func(context.Context, string, string, json.RawMessage) (any, error) {
+			handler := testHandler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
 				called = true
 				return nil, nil
 			}, nil)
@@ -554,7 +638,7 @@ func TestCommandAPIRequestValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			called := false
-			handler := Handler(testPort, nil, func(context.Context, string, string, json.RawMessage) (any, error) {
+			handler := testHandler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
 				called = true
 				return nil, nil
 			}, nil)
@@ -570,7 +654,7 @@ func TestCommandAPIRequestValidation(t *testing.T) {
 func TestCommandAPIBodyLimitWithoutContentLength(t *testing.T) {
 	oversized := `{"command":"` + strings.Repeat("a", 1<<20) + `"}`
 	called := false
-	handler := Handler(testPort, nil, func(context.Context, string, string, json.RawMessage) (any, error) {
+	handler := testHandler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
 		called = true
 		return nil, nil
 	}, nil)
@@ -698,7 +782,7 @@ func TestCommandAPIApplicationErrors(t *testing.T) {
 				return tt.status, tt.code
 			}
 
-			handler := Handler(testPort, nil, execute, classify)
+			handler := testHandler(nil, execute, classify)
 			recorder := serveRequest(handler, commandRequest(`{"command":"status"}`))
 			body := assertAPIError(t, recorder, tt.wantStatus, tt.wantCode)
 			errorValue := body["error"].(map[string]any)
@@ -713,7 +797,7 @@ func TestCommandAPIApplicationErrors(t *testing.T) {
 }
 
 func TestCommandAPISuccessMarshalFailure(t *testing.T) {
-	handler := Handler(testPort, nil, func(context.Context, string, string, json.RawMessage) (any, error) {
+	handler := testHandler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
 		return func() {}, nil
 	}, nil)
 	recorder := serveRequest(handler, commandRequest(`{"command":"status"}`))
@@ -732,7 +816,7 @@ func TestStaticServing(t *testing.T) {
 			Data: []byte("nested index"),
 		},
 	}
-	handler := Handler(testPort, web, unexpectedExecute(t), nil)
+	handler := testHandler(web, unexpectedExecute(t), nil)
 
 	t.Run("index", func(t *testing.T) {
 		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/"))
@@ -844,7 +928,7 @@ func TestStaticPageFallback(t *testing.T) {
 		"app.js":           &fstest.MapFile{Data: []byte("console.log('gilir')")},
 		"assets/style.css": &fstest.MapFile{Data: []byte("body { color: black; }")},
 	}
-	handler := Handler(testPort, web, unexpectedExecute(t), nil)
+	handler := testHandler(web, unexpectedExecute(t), nil)
 
 	pages := []string{
 		"/tasks/GILIR-42",
@@ -927,7 +1011,7 @@ func TestStaticPageFallbackWithoutIndex(t *testing.T) {
 	web := fstest.MapFS{
 		"app.js": &fstest.MapFile{Data: []byte("console.log('gilir')")},
 	}
-	handler := Handler(testPort, web, unexpectedExecute(t), nil)
+	handler := testHandler(web, unexpectedExecute(t), nil)
 
 	t.Run("page path", func(t *testing.T) {
 		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/tasks/GILIR-42"))
@@ -945,7 +1029,7 @@ func TestStaticPageFallbackWithoutIndex(t *testing.T) {
 
 	t.Run("nil web", func(t *testing.T) {
 		recorder := serveRequest(
-			Handler(testPort, nil, unexpectedExecute(t), nil),
+			testHandler(nil, unexpectedExecute(t), nil),
 			pageRequest(http.MethodGet, "/projects"),
 		)
 		if recorder.Code != http.StatusNotFound {
@@ -962,7 +1046,7 @@ func TestStaticPageFallbackPrefersRealFile(t *testing.T) {
 		"index.html": &fstest.MapFile{Data: []byte("entry point")},
 		"projects":   &fstest.MapFile{Data: []byte("real projects file")},
 	}
-	handler := Handler(testPort, web, unexpectedExecute(t), nil)
+	handler := testHandler(web, unexpectedExecute(t), nil)
 
 	recorder := serveRequest(handler, pageRequest(http.MethodGet, "/projects"))
 	if recorder.Code != http.StatusOK {
@@ -977,7 +1061,7 @@ func TestStaticPageFallbackKeepsMethodAndHostGuards(t *testing.T) {
 	web := fstest.MapFS{
 		"index.html": &fstest.MapFile{Data: []byte("<!doctype html><title>gilir app</title>")},
 	}
-	handler := Handler(testPort, web, unexpectedExecute(t), nil)
+	handler := testHandler(web, unexpectedExecute(t), nil)
 
 	t.Run("post page path", func(t *testing.T) {
 		recorder := serveRequest(handler, pageRequest(http.MethodPost, "/projects"))
@@ -1017,7 +1101,7 @@ func TestStaticRejectsNonRegularFiles(t *testing.T) {
 			web := fstest.MapFS{
 				"item": &fstest.MapFile{Data: []byte("non-regular payload"), Mode: tt.mode},
 			}
-			handler := Handler(testPort, web, unexpectedExecute(t), nil)
+			handler := testHandler(web, unexpectedExecute(t), nil)
 			recorder := serveRequest(handler, pageRequest(http.MethodGet, "/item"))
 			if recorder.Code != http.StatusNotFound {
 				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
@@ -1037,7 +1121,7 @@ func TestStaticSeekableRangeDoesNotReadWholeFile(t *testing.T) {
 			"asset.txt": &fstest.MapFile{Data: data},
 		},
 	}
-	handler := Handler(testPort, web, unexpectedExecute(t), nil)
+	handler := testHandler(web, unexpectedExecute(t), nil)
 
 	request := pageRequest(http.MethodGet, "/asset.txt")
 	request.Header.Set("Range", "bytes=0-3")
@@ -1058,7 +1142,7 @@ func TestStaticNonSeekableFallback(t *testing.T) {
 		"index.html": &fstest.MapFile{Data: []byte("fallback index")},
 		"asset.txt":  &fstest.MapFile{Data: []byte("non-seekable asset")},
 	}
-	handler := Handler(testPort, nonSeekableFS{FS: web}, unexpectedExecute(t), nil)
+	handler := testHandler(nonSeekableFS{FS: web}, unexpectedExecute(t), nil)
 
 	t.Run("get", func(t *testing.T) {
 		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/"))
@@ -1093,7 +1177,7 @@ func TestStaticNonSeekableFallback(t *testing.T) {
 	})
 
 	t.Run("oversized", func(t *testing.T) {
-		handler := Handler(testPort, oversizedStaticFS{}, unexpectedExecute(t), nil)
+		handler := testHandler(oversizedStaticFS{}, unexpectedExecute(t), nil)
 		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/huge.bin"))
 		if recorder.Code != http.StatusInternalServerError {
 			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
@@ -1105,7 +1189,7 @@ func TestStaticNonSeekableFallback(t *testing.T) {
 
 	t.Run("under-reported size is bounded", func(t *testing.T) {
 		web := &oversizedStreamFS{}
-		handler := Handler(testPort, web, unexpectedExecute(t), nil)
+		handler := testHandler(web, unexpectedExecute(t), nil)
 		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/huge.bin"))
 		if recorder.Code != http.StatusInternalServerError {
 			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
@@ -1123,7 +1207,7 @@ func TestStaticRequestGuards(t *testing.T) {
 	web := fstest.MapFS{
 		"index.html": &fstest.MapFile{Data: []byte("<h1>private ui</h1>")},
 	}
-	handler := Handler(testPort, web, unexpectedExecute(t), nil)
+	handler := testHandler(web, unexpectedExecute(t), nil)
 
 	t.Run("unexpected host", func(t *testing.T) {
 		request := pageRequest(http.MethodGet, "/")
@@ -1180,7 +1264,7 @@ func TestStaticWithoutWebIndex(t *testing.T) {
 	}
 
 	t.Run("nil web", func(t *testing.T) {
-		handler := Handler(testPort, nil, execute, nil)
+		handler := testHandler(nil, execute, nil)
 		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/"))
 		if recorder.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
@@ -1195,7 +1279,7 @@ func TestStaticWithoutWebIndex(t *testing.T) {
 		web := fstest.MapFS{
 			"app.js": &fstest.MapFile{Data: []byte("console.log('gilir')")},
 		}
-		handler := Handler(testPort, web, execute, nil)
+		handler := testHandler(web, execute, nil)
 		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/"))
 		if recorder.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
@@ -1224,7 +1308,7 @@ func TestStaticRejectsPathTraversal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := Handler(testPort, os.DirFS(root), unexpectedExecute(t), nil)
+	handler := testHandler(os.DirFS(root), unexpectedExecute(t), nil)
 
 	recorder := serveRequest(handler, pageRequest(http.MethodGet, "/"))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "public index") {
