@@ -15,7 +15,7 @@ const targets = manifest.os.flatMap(os => manifest.cpu.map(cpu => {
   const extension = os === 'win32' ? '.exe' : '';
   return {
     platform,
-    file: `${manifest.name}-${platform}${extension}`,
+    file: `gilir-${platform}${extension}`,
     goOS: os === 'win32' ? 'windows' : os,
     goArch: cpu === 'x64' ? 'amd64' : cpu,
   };

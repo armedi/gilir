@@ -1,5 +1,5 @@
 {
-  "name": "gilir",
+  "name": "@armedi/gilir",
   "version": "0.1.0",
   "description": "Local task queue and dashboard for coding agents",
   "repository": {
@@ -19,6 +19,7 @@
     "prepack": "node npm/build.mjs --check",
     "postinstall": "node npm/download.cjs"
   },
+  "publishConfig": { "access": "public" },
   "engines": { "node": ">=22" },
   "os": ["darwin", "linux", "win32"],
   "cpu": ["arm64", "x64"]

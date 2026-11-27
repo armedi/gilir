@@ -9,14 +9,14 @@ its history.
 ## Install
 
 ```sh
-npm install -g gilir
+npm install -g @armedi/gilir
 ```
 
-The npm launcher requires Node.js 22 or newer. `npm install` downloads and
-verifies the matching binary from GitHub Releases. If install scripts are
-disabled or the download fails, the launcher tries on first run. The binary
-includes the dashboard and is cached for offline use. Supported platforms are
-macOS, Linux, and Windows on x64 and arm64.
+The installed command is `gilir` and requires Node.js 22 or newer. `npm install`
+downloads and verifies the matching binary from GitHub Releases. If install
+scripts are disabled or the download fails, the launcher tries on first run.
+The binary includes the dashboard and is cached for offline use. Supported
+platforms are macOS, Linux, and Windows on x64 and arm64.
 
 ## Build
 
