@@ -67,7 +67,7 @@ func opencodeOverrides() opencode.Overrides {
 // failure, then stops the HTTP servers, cancels and waits for the watcher and
 // hooks, and only then closes SQLite and releases the lock.
 func runDaemon(parent context.Context, host, port string) (any, error) {
-	listen, err := resolveListen(host, port)
+	listen, err := resolveWorkerListen(host, port)
 	if err != nil {
 		return nil, err
 	}
@@ -136,6 +136,9 @@ func runDaemon(parent context.Context, host, port string) (any, error) {
 		return nil, fmt.Errorf("listen on %s: %w", listen.address(), err)
 	}
 	boundPort := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+	// Hooks are local clients of this service. Use the routable form so a
+	// wildcard bind still produces a URL that the Host guard accepts.
+	boundURL := boundURLFor(listen, ln.Addr())
 
 	// The stop channel is served on a private loopback listener so a public
 	// bind never exposes process shutdown.
@@ -166,7 +169,7 @@ func runDaemon(parent context.Context, host, port string) (any, error) {
 		RequestedPort: requestedPort(listen.port),
 		Host:          listen.host,
 		Port:          ln.Addr().(*net.TCPAddr).Port,
-		URL:           listen.urlFor(boundPort),
+		URL:           boundURL,
 		ControlPort:   controlLn.Addr().(*net.TCPAddr).Port,
 		Token:         token,
 		LogPath:       serviceLogPath(dbPath),
@@ -219,15 +222,15 @@ func runDaemon(parent context.Context, host, port string) (any, error) {
 	}()
 	go func() {
 		defer wg.Done()
-		hooks.Run(ctx, hookConfigs, source, func(err error) {
+		hooks.RunWithURL(ctx, hookConfigs, source, boundURL, func(err error) {
 			fmt.Fprintf(os.Stderr, "gilir: %v\n", err)
 		})
 	}()
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(ln) }()
 
-	fmt.Fprintf(os.Stderr, "gilir: service listening on http://%s (database %s, OpenCode %s, %s, %d hooks)\n",
-		net.JoinHostPort(listen.host, boundPort), dbPath, opencodeEndpoint(overrides), webNote, len(hookConfigs))
+	fmt.Fprintf(os.Stderr, "gilir: service listening on %s, local URL %s (database %s, OpenCode %s, %s, %d hooks)\n",
+		ln.Addr().String(), boundURL, dbPath, opencodeEndpoint(overrides), webNote, len(hookConfigs))
 
 	var runErr error
 	select {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 )
 
 func Run(ctx context.Context, argv []string, stdout, stderr io.Writer, defaultActor string, execute func(context.Context, string, string, map[string]any) (any, error)) int {
@@ -44,7 +45,10 @@ func Run(ctx context.Context, argv []string, stdout, stderr io.Writer, defaultAc
 		return 0
 	}
 
-	actor := defaultActor
+	// An unusable default (unset or whitespace) falls back to "user". The
+	// HTTP API rejects a blank actor on every command, including reads, so a
+	// whitespace GILIR_ACTOR must not turn a working read into a failure.
+	actor := strings.TrimSpace(defaultActor)
 	if actor == "" {
 		actor = "user"
 	}

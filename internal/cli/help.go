@@ -62,6 +62,8 @@ func generalHelp() string {
 	var builder strings.Builder
 	builder.WriteString("gilir tracks projects, repositories, and tasks for coding agents.\n\n")
 	builder.WriteString("Usage:\n  gilir [--actor <actor>] [--json] <command> [arguments]\n\n")
+	builder.WriteString("Ordinary commands and queue controls use GILIR_URL (default\n")
+	builder.WriteString("http://127.0.0.1:44547). Service start/restart flags choose the bind address.\n\n")
 
 	builder.WriteString("Project commands:\n")
 	writeCommandUsages(&builder, func(spec command) bool {

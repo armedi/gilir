@@ -206,10 +206,15 @@ func (l *errorLog) all() []string {
 // waits for it to return.
 func start(t *testing.T, configs []Config, source Source, log *errorLog) (stop func()) {
 	t.Helper()
+	return startWithURL(t, configs, source, "", log)
+}
+
+func startWithURL(t *testing.T, configs []Config, source Source, daemonURL string, log *errorLog) (stop func()) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		Run(ctx, configs, source, log.report)
+		RunWithURL(ctx, configs, source, daemonURL, log.report)
 		close(done)
 	}()
 	stop = func() {
@@ -338,6 +343,30 @@ func TestCommandReceivesArgvStdinAndHookEnvironment(t *testing.T) {
 	want := "$HOME;x|hook:local|7|unset|" + string(source.events[0].Payload)
 	if string(got) != want {
 		t.Fatalf("command saw %q; want %q", got, want)
+	}
+}
+
+func TestCommandReceivesDaemonURLInsteadOfInheritedValue(t *testing.T) {
+	t.Setenv("GILIR_URL", "http://inherited.invalid:1")
+	out := filepath.Join(t.TempDir(), "out")
+	script := `printf '%s' "$GILIR_URL" > "$1"`
+
+	source := newMemorySource(event(4, "task.created", "user"))
+	source.cursors["local"] = 3
+	var log errorLog
+	startWithURL(t, []Config{{Name: "local", Command: []string{"/bin/sh", "-c", script, "sh", out}}},
+		source, "http://127.0.0.1:9000", &log)
+
+	eventually(t, "cursor to reach 4", func() bool { return source.cursor("local") == 4 })
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "http://127.0.0.1:9000" {
+		t.Fatalf("GILIR_URL = %q; want the daemon URL", got)
+	}
+	if errs := log.all(); len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
 	}
 }
 

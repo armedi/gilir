@@ -1,14 +1,15 @@
 // Command gilir is the Gilir CLI and background service.
 //
-// Ordinary commands run directly against the local SQLite database, so they
-// work while the service is stopped. "gilir service start" launches the
-// detached process that serves the HTTP API and web UI and runs the queue
-// watcher and hooks; the service commands manage that process.
+// The service is the only process that opens SQLite. "gilir service start"
+// launches the detached process that serves the HTTP API and web UI and runs
+// the queue watcher and hooks; the service commands manage that process.
+// Every ordinary command and queue control sends one POST to that service's
+// HTTP command API at GILIR_URL, so help, skill and command failures never
+// create or open SQLite.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -16,10 +17,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/armedi/gilir/internal/cli"
-	"github.com/armedi/gilir/internal/commands"
-	"github.com/armedi/gilir/internal/store"
 )
 
 func main() {
@@ -33,11 +33,12 @@ func main() {
 		}
 		return
 	}
-	os.Exit(cli.Run(context.Background(), os.Args[1:], os.Stdout, os.Stderr, os.Getenv("GILIR_ACTOR"), execute))
+	os.Exit(cli.Run(context.Background(), os.Args[1:], os.Stdout, os.Stderr, strings.TrimSpace(os.Getenv("GILIR_ACTOR")), execute))
 }
 
-// execute routes one parsed CLI command. The store is opened only here, so
-// help and skill output never touch the database.
+// execute routes one parsed CLI command. Service lifecycle commands use local
+// state; every ordinary command and queue control is sent to the service at
+// GILIR_URL, so help, skill and command failures never create or open SQLite.
 func execute(ctx context.Context, command, actor string, args map[string]any) (any, error) {
 	switch command {
 	case "service.start":
@@ -65,24 +66,11 @@ func execute(ctx context.Context, command, actor string, args map[string]any) (a
 	case "service.status":
 		return queryServiceStatus(ctx)
 	}
-	raw, err := json.Marshal(args)
-	if err != nil {
-		return nil, fmt.Errorf("encode arguments: %w", err)
-	}
-	dbPath, err := prepareDatabase()
-	if err != nil {
-		return nil, err
-	}
-	st, err := store.Open(dbPath)
-	if err != nil {
-		return nil, err
-	}
-	defer st.Close()
-	return commands.New(st, nil).Execute(ctx, command, actor, raw)
+	return postCommand(ctx, command, actor, args)
 }
 
 // hostArg returns the optional --host value, leaving it empty so the service
-// falls back to GILIR_LISTEN.
+// uses its default loopback host or the running instance's address on restart.
 func hostArg(args map[string]any) (string, error) {
 	value, ok := args["host"]
 	if !ok {
@@ -96,7 +84,7 @@ func hostArg(args map[string]any) (string, error) {
 }
 
 // portArg returns the optional --port value as a decimal string, leaving it
-// empty so the service falls back to GILIR_LISTEN.
+// empty so the service uses its default port or the stored restart address.
 func portArg(args map[string]any) (string, error) {
 	value, ok := args["port"]
 	if !ok {
