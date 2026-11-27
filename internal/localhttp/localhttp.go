@@ -319,7 +319,8 @@ func isLoopbackHost(host string) bool {
 }
 
 func isWildcardHost(host string) bool {
-	return host == "0.0.0.0" || host == "::"
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
 }
 
 // bareAuthorityHost extracts a host from an authority without a port, which is

@@ -189,7 +189,11 @@ func runDaemon(parent context.Context, host, port string) (any, error) {
 	w := watcher.NewWithConnection(st, conn)
 	service := commands.New(st, func() commands.Snapshot {
 		snap := w.Snapshot()
-		return commands.Snapshot{ActiveParents: snap.ActiveParents, WatcherError: snap.Error}
+		return commands.Snapshot{
+			ActiveParents: snap.ActiveParents,
+			WatcherError:  snap.Error,
+			Instance:      instance,
+		}
 	})
 	server := &http.Server{
 		Handler: localhttp.Handler(localhttp.Config{Host: listen.host, Port: boundPort},

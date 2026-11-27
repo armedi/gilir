@@ -28,8 +28,8 @@ const (
 	serviceInstanceEnvName = "GILIR_SERVICE_INSTANCE"
 	serviceVersion         = 1
 
-	serviceStartTimeout = 30 * time.Second
-	serviceStopTimeout  = 15 * time.Second
+	serviceStartTimeout = 60 * time.Second
+	serviceStopTimeout  = 30 * time.Second
 	servicePollInterval = 100 * time.Millisecond
 	serviceLogTailBytes = 8 << 10
 	serviceLogTailLines = 12
@@ -56,7 +56,11 @@ func resolveListen(host, port string) (listenConfig, error) {
 		host = envHost
 	}
 	host = normalizeHost(host)
-	if !validListenHost(host) {
+	if ip := net.ParseIP(host); ip != nil {
+		// Canonical spelling makes wildcard detection and identity checks
+		// independent of how the address was written (::0 vs ::, and so on).
+		host = ip.String()
+	} else if !strings.EqualFold(host, "localhost") {
 		return listenConfig{}, fmt.Errorf("listen host %q: must be an IP address or localhost", host)
 	}
 	if port == "" {
@@ -96,14 +100,18 @@ func (c listenConfig) urlFor(port string) string {
 }
 
 func (c listenConfig) clientHost() string {
-	switch c.host {
-	case "0.0.0.0":
+	ip := net.ParseIP(c.host)
+	if ip == nil {
+		// The only non-literal host accepted by resolveListen is localhost.
 		return "127.0.0.1"
-	case "::":
-		return "::1"
-	default:
-		return c.host
 	}
+	if !ip.IsUnspecified() {
+		return ip.String()
+	}
+	if ip.To4() != nil {
+		return "127.0.0.1"
+	}
+	return "::1"
 }
 
 func (c listenConfig) matches(other listenConfig) bool {
@@ -142,9 +150,9 @@ type serviceStatus struct {
 	URL            string `json:"url,omitempty"`
 	StartedAt      string `json:"started_at,omitempty"`
 	LogPath        string `json:"log_path,omitempty"`
-	Paused         bool   `json:"paused,omitempty"`
-	MaxConcurrency int    `json:"max_concurrency,omitempty"`
-	ActiveParents  *int   `json:"active_parents,omitempty"`
+	Paused         bool   `json:"paused"`
+	MaxConcurrency int    `json:"max_concurrency"`
+	ActiveParents  *int   `json:"active_parents"`
 	WatcherError   string `json:"watcher_error,omitempty"`
 }
 
@@ -157,6 +165,7 @@ type daemonStatusPayload struct {
 	MaxConcurrency int    `json:"max_concurrency"`
 	ActiveParents  *int   `json:"active_parents"`
 	WatcherError   string `json:"watcher_error"`
+	Instance       string `json:"instance"`
 }
 
 func serviceStatePath(dbPath string) string {
@@ -273,7 +282,7 @@ func startService(ctx context.Context, host, port string) (any, error) {
 
 func startServiceLocked(ctx context.Context, dbPath string, requested listenConfig) (any, error) {
 	if state, ok := readServiceState(dbPath); ok {
-		if live, err := daemonStatusAt(ctx, state.URL); err == nil {
+		if live, err := daemonStatusAt(ctx, state.URL); err == nil && live.Instance == state.Instance {
 			current := listenConfig{host: state.RequestedHost, port: strconv.Itoa(state.RequestedPort)}
 			if current.matches(requested) {
 				return statusFrom(state, live), nil
@@ -463,6 +472,11 @@ func stopServiceLocked(ctx context.Context, dbPath string) (any, error) {
 		return serviceStopped{Stopped: false}, nil
 	}
 
+	if !daemonLockHeld(dbPath) {
+		removeServiceState(dbPath)
+		return serviceStopped{Stopped: false}, nil
+	}
+
 	controlErr := requestStop(ctx, state)
 	// The listener is closed before watcher, hook, and store cleanup, so wait
 	// for the database lock to be released rather than for HTTP to fail.
@@ -481,11 +495,6 @@ func restartService(ctx context.Context, host, port string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	state, ok := readServiceState(dbPath)
-	requested, err := resolveRestartListen(host, port, state, ok)
-	if err != nil {
-		return nil, err
-	}
 	if dbPath, err = prepareDatabase(); err != nil {
 		return nil, err
 	}
@@ -499,6 +508,11 @@ func restartService(ctx context.Context, host, port string) (any, error) {
 	}
 	defer lock.Close()
 
+	state, ok := readServiceState(dbPath)
+	requested, err := resolveRestartListen(host, port, state, ok)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := stopServiceLocked(ctx, dbPath); err != nil {
 		return nil, err
 	}
@@ -549,6 +563,11 @@ func queryServiceStatus(ctx context.Context) (any, error) {
 		if daemonLockHeld(dbPath) {
 			return nil, fmt.Errorf("gilir service is running but not responding at %s: %v (see %s)", state.URL, err, state.LogPath)
 		}
+		return out, nil
+	}
+	if live.Instance != state.Instance {
+		// Another database's service reused this address; this database's
+		// state is stale.
 		return out, nil
 	}
 	return statusFrom(state, live), nil

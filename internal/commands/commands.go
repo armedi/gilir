@@ -18,10 +18,13 @@ import (
 )
 
 // Snapshot is the dynamic watch state of a running daemon. ActiveParents is
-// nil when watcher health is unknown; zero is a known count of zero.
+// nil when watcher health is unknown; zero is a known count of zero. Instance
+// identifies the process serving the database so lifecycle commands cannot
+// mistake a different service that reused the same port for their own.
 type Snapshot struct {
 	ActiveParents *int
 	WatcherError  string
+	Instance      string
 }
 
 // Service executes wire commands against an open store.
@@ -367,6 +370,7 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 			snapshot := s.status()
 			status.ActiveParents = snapshot.ActiveParents
 			status.WatcherError = snapshot.WatcherError
+			status.Instance = snapshot.Instance
 		}
 		return status, nil
 
@@ -601,4 +605,5 @@ type daemonStatus struct {
 	MaxConcurrency int    `json:"max_concurrency"`
 	ActiveParents  *int   `json:"active_parents"`
 	WatcherError   string `json:"watcher_error,omitempty"`
+	Instance       string `json:"instance,omitempty"`
 }

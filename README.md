@@ -86,8 +86,10 @@ bind a wildcard address and visit `http://<machine-ip>:44547`:
 gilir service start --host 0.0.0.0
 ```
 
-There is no authentication and the API can create, change, and delete tasks, so
-only expose the port on a trusted network. When bound to a wildcard address the
+There is no authentication and the API can create, change, and delete tasks,
+and dispatched tasks run OpenCode agents on this machine. Treat an exposed port
+as remote code execution on the host and only expose it on a trusted network.
+When bound to a wildcard address the
 server accepts request hosts that are IP literals (plus loopback); access by a
 DNS name other than `localhost` is rejected to limit DNS rebinding. Process
 shutdown is served only on a private loopback listener, so it is never exposed

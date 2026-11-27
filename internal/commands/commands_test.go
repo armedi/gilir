@@ -258,7 +258,7 @@ func TestStrictArgsRejectUnknownAndMissingFields(t *testing.T) {
 func TestDaemonStatusShape(t *testing.T) {
 	parents := 3
 	f := newFixture(t, func() Snapshot {
-		return Snapshot{ActiveParents: &parents, WatcherError: "watcher crashed"}
+		return Snapshot{ActiveParents: &parents, WatcherError: "watcher crashed", Instance: "inst-1"}
 	})
 
 	result, err := f.run(t, "daemon.status", map[string]any{})
@@ -287,6 +287,9 @@ func TestDaemonStatusShape(t *testing.T) {
 	}
 	if decoded["watcher_error"] != "watcher crashed" {
 		t.Fatalf("watcher_error = %v", decoded["watcher_error"])
+	}
+	if decoded["instance"] != "inst-1" {
+		t.Fatalf("instance = %v, want inst-1", decoded["instance"])
 	}
 
 	_, err = f.run(t, "daemon.update", map[string]any{"paused": true, "max_concurrency": 2})

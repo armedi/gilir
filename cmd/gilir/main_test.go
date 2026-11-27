@@ -42,6 +42,9 @@ func TestResolveListenAcceptsAddresses(t *testing.T) {
 		{env: "[::1]:4718", want: "[::1]:4718"},
 		{env: "0.0.0.0:4718", want: "0.0.0.0:4718"},
 		{env: "[::]:4718", want: "[::]:4718"},
+		{env: "[::0]:4718", want: "[::]:4718"},
+		{env: "[0:0:0:0:0:0:0:0]:4718", want: "[::]:4718"},
+		{env: "[::ffff:0.0.0.0]:4718", want: "0.0.0.0:4718"},
 		{env: "192.168.1.2:4718", want: "192.168.1.2:4718"},
 		{env: "localhost:4718", want: "localhost:4718"},
 		{env: "127.0.0.1:0", want: "127.0.0.1:0"},
@@ -101,6 +104,8 @@ func TestServiceURLMapsWildcardToLoopback(t *testing.T) {
 	}{
 		{host: "0.0.0.0", want: "http://127.0.0.1:9000"},
 		{host: "::", want: "http://[::1]:9000"},
+		{host: "::0", want: "http://[::1]:9000"},
+		{host: "localhost", want: "http://127.0.0.1:9000"},
 		{host: "192.168.1.5", want: "http://192.168.1.5:9000"},
 	}
 	for _, test := range tests {
@@ -321,6 +326,46 @@ func TestServiceStartsDetachedAndStatusUsesState(t *testing.T) {
 	}
 	if _, err := os.Stat(serviceStatePath(dbPath)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("service state after stop: %v", err)
+	}
+}
+
+func TestServiceStatusRejectsForeignInstance(t *testing.T) {
+	dir := t.TempDir()
+	liveDB := filepath.Join(dir, "live.sqlite")
+	foreignDB := filepath.Join(dir, "foreign.sqlite")
+	t.Setenv("GILIR_DB", liveDB)
+	t.Setenv("GILIR_LISTEN", "127.0.0.1:0")
+	t.Setenv("GILIR_OPENCODE_URL", "http://127.0.0.1:"+freePort(t))
+	t.Setenv("GILIR_WEB_DIR", filepath.Join(dir, "missing"))
+	t.Setenv("OPENCODE_PASSWORD", "")
+
+	if _, err := startService(context.Background(), "", ""); err != nil {
+		t.Fatalf("start service: %v", err)
+	}
+	t.Cleanup(func() { _, _ = stopService(context.Background()) })
+
+	// Simulate another database whose state file survived a crash and whose
+	// port was then reused by the live service: the URL answers, but the
+	// instance is not this database's.
+	state, ok := readServiceState(liveDB)
+	if !ok {
+		t.Fatal("live service state missing")
+	}
+	state.Instance = "someone-else"
+	if err := writeServiceState(foreignDB, state); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GILIR_DB", foreignDB)
+	result, err := queryServiceStatus(context.Background())
+	if err != nil {
+		t.Fatalf("foreign status: %v", err)
+	}
+	if result.(serviceStatus).Running {
+		t.Fatalf("foreign state reported a running service: %+v", result)
+	}
+	t.Setenv("GILIR_DB", liveDB)
+	if stopped, err := stopService(context.Background()); err != nil || !stopped.(serviceStopped).Stopped {
+		t.Fatalf("stop live service = %+v, %v", stopped, err)
 	}
 }
 
