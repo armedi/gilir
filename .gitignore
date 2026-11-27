@@ -1,2 +1,4 @@
+node_modules
 /npm/dist/
 /npm/release.json
+.DS_Store
