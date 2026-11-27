@@ -1,5 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal, createUniqueId } from 'solid-js';
 import { knownPriority, markingTone } from '../tone';
+import { taskPath } from '../shell';
 import {
   asArray,
   basename,
@@ -45,11 +46,10 @@ function TaskRow(props) {
 
   return (
     <li class={['task-row', { selected: selected() }]}>
-      <button
-        type="button"
+      <a
+        href={taskPath(task().id)}
         class="task-row-open"
-        onClick={() => props.onOpen(task().id)}
-        aria-current={selected() ? 'true' : undefined}
+        aria-current={selected() ? 'page' : undefined}
       >
         <span class="task-row-top">
           <PriorityMark value={task().priority} />
@@ -89,7 +89,7 @@ function TaskRow(props) {
             {formatRelativeTime(task().updated_at)}
           </time>
         </span>
-      </button>
+      </a>
     </li>
   );
 }
@@ -138,7 +138,6 @@ function GroupSection(props) {
                 repos={props.repos}
                 projects={props.projects}
                 selectedTaskId={props.selectedTaskId}
-                onOpen={props.onOpen}
               />
             )}
           </For>
@@ -187,7 +186,6 @@ export default function TaskList(props) {
             selectedTaskId={props.selectedTaskId}
             isCollapsed={isCollapsed}
             onToggle={toggle}
-            onOpen={props.onOpen}
           />
         )}
       </For>

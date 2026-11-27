@@ -11,6 +11,24 @@ SolidJS dashboard for the Gilir local task queue. It talks to the same-origin
 - Vite+ CLI 1.8.0, installed locally with the development dependencies. Run it
   with `pnpm exec vp` or through the scripts below.
 
+## Routes
+
+The dashboard uses browser-history routing (`@solidjs/router`), so every view has
+a real URL that can be bookmarked, opened in a new tab, and reached with
+Back/Forward:
+
+- `/` - dispatch queue, including first-run repository onboarding
+- `/tasks/:taskId` - task detail (canonical IDs such as `GILIR-42`)
+- `/tasks/new` - new task composer
+- `/projects` - combined Projects & Repos management
+- `/projects/repos/new` - the add-repository form inside that screen
+
+`App.jsx` is the router's root layout and owns the queue, daemon, and detail
+polling plus the panel chrome; `src/pages/` holds the per-URL views. The Go
+server answers direct loads and refreshes of these paths with `index.html`
+(see `staticPagePath` in `internal/localhttp/localhttp.go`), while unknown
+assets and `/api` paths still return 404. Keep the two path lists in sync.
+
 ## Development
 
 ```sh
