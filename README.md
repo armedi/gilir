@@ -48,9 +48,8 @@ Set the version in the root `package.json`, then tag that commit as
 them to GitHub Releases, and publish the npm launcher from the same checkout:
 
 ```sh
-tag="v$(node -p 'require("./package.json").version')"
 npm run build:release
-gh release create "$tag" --verify-tag --generate-notes npm/dist/"$tag"/gilir-*
+tag="v$(node -p 'require("./package.json").version')" && gh release create "$tag" --verify-tag --generate-notes npm/dist/"$tag"/gilir-*
 npm publish
 ```
 
