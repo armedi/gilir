@@ -19,7 +19,7 @@ type fixture struct {
 	store   *store.Store
 	project int64
 	repo    int64
-	task    int64
+	task    string
 }
 
 func newFixture(t *testing.T, status func() Snapshot) *fixture {
@@ -442,7 +442,7 @@ func TestVoidMutationsReturnOK(t *testing.T) {
 		t.Fatalf("show: %v", err)
 	}
 	if got := detail.(store.TaskDetail).Blockers; len(got) != 1 || got[0] != otherID {
-		t.Fatalf("blockers = %v, want [%d]", got, otherID)
+		t.Fatalf("blockers = %v, want [%s]", got, otherID)
 	}
 
 	comment, err := f.run(t, "task.comment", map[string]any{"id": f.task, "body": "Progress: **done**"})
@@ -508,16 +508,18 @@ func TestVoidMutationsReturnOK(t *testing.T) {
 func TestUnknownCommandAndMissingRecordClassification(t *testing.T) {
 	f := newFixture(t, nil)
 
-	if _, err := f.run(t, "task.show", map[string]any{"id": 999}); err == nil {
+	if _, err := f.run(t, "task.show", map[string]any{"id": "GILIR-999"}); err == nil {
 		t.Fatal("missing task was accepted")
 	} else if status, code := Classify(err); status != 404 || code != "not_found" {
 		t.Fatalf("classify = (%d, %q), want (404, not_found)", status, code)
 	}
 
-	if _, err := f.run(t, "task.delete", map[string]any{"id": 0}); err == nil {
-		t.Fatal("zero task.delete id was accepted")
-	} else {
-		requireInvalid(t, err)
+	for _, malformed := range []any{0, "0", "42", "gilir-", "GILIR-0"} {
+		if _, err := f.run(t, "task.delete", map[string]any{"id": malformed}); err == nil {
+			t.Fatalf("task.delete id %v was accepted", malformed)
+		} else {
+			requireInvalid(t, err)
+		}
 	}
 
 	if _, err := f.run(t, "task.create", map[string]any{
@@ -755,7 +757,7 @@ func TestTaskListGlobalAndProjectScoped(t *testing.T) {
 	}
 	tasks := global.([]store.Task)
 	if len(tasks) != 1 || tasks[0].ID != f.task {
-		t.Fatalf("global tasks = %+v, want task %d", tasks, f.task)
+		t.Fatalf("global tasks = %+v, want task %s", tasks, f.task)
 	}
 
 	scoped, err := f.run(t, "task.list", map[string]any{"project_id": f.project})

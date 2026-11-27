@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/armedi/gilir/internal/store"
+	"github.com/armedi/gilir/internal/taskid"
 )
 
 // Snapshot is the dynamic watch state of a running daemon. ActiveParents is
@@ -200,20 +201,22 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
-		if err := requireID("id", in.ID); err != nil {
+		id, err := requireTaskID("id", in.ID)
+		if err != nil {
 			return nil, err
 		}
-		return s.store.Show(ctx, in.ID)
+		return s.store.Show(ctx, id)
 
 	case "task.delete":
 		var in taskDeleteArgs
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
-		if err := requireID("id", in.ID); err != nil {
+		id, err := requireTaskID("id", in.ID)
+		if err != nil {
 			return nil, err
 		}
-		if err := s.store.DeleteTask(ctx, actor, in.ID); err != nil {
+		if err := s.store.DeleteTask(ctx, actor, id); err != nil {
 			return nil, err
 		}
 		return okResult{OK: true}, nil
@@ -223,7 +226,8 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
-		if err := requireID("id", in.ID); err != nil {
+		id, err := requireTaskID("id", in.ID)
+		if err != nil {
 			return nil, err
 		}
 		patch := store.TaskPatch{
@@ -240,14 +244,15 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 			priority := store.Priority(*in.Priority)
 			patch.Priority = &priority
 		}
-		return s.store.UpdateTask(ctx, actor, in.ID, patch)
+		return s.store.UpdateTask(ctx, actor, id, patch)
 
 	case "task.mark":
 		var in taskMarkArgs
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
-		if err := requireID("id", in.ID); err != nil {
+		id, err := requireTaskID("id", in.ID)
+		if err != nil {
 			return nil, err
 		}
 		if strings.TrimSpace(in.Marking) == "" {
@@ -256,23 +261,25 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		if err := requireBool("present", in.Present); err != nil {
 			return nil, err
 		}
-		return s.store.SetMarking(ctx, actor, in.ID, in.Marking, *in.Present)
+		return s.store.SetMarking(ctx, actor, id, in.Marking, *in.Present)
 
 	case "task.depend":
 		var in taskDependArgs
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
-		if err := requireID("id", in.ID); err != nil {
+		id, err := requireTaskID("id", in.ID)
+		if err != nil {
 			return nil, err
 		}
-		if err := requireID("blocker_id", in.BlockerID); err != nil {
+		blockerID, err := requireTaskID("blocker_id", in.BlockerID)
+		if err != nil {
 			return nil, err
 		}
 		if err := requireBool("present", in.Present); err != nil {
 			return nil, err
 		}
-		if err := s.store.SetDependency(ctx, actor, in.ID, in.BlockerID, *in.Present); err != nil {
+		if err := s.store.SetDependency(ctx, actor, id, blockerID, *in.Present); err != nil {
 			return nil, err
 		}
 		return okResult{OK: true}, nil
@@ -282,20 +289,22 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
-		if err := requireID("id", in.ID); err != nil {
+		id, err := requireTaskID("id", in.ID)
+		if err != nil {
 			return nil, err
 		}
 		if strings.TrimSpace(in.Body) == "" {
 			return nil, fmt.Errorf("%w: body is required", store.ErrInvalid)
 		}
-		return s.store.Comment(ctx, actor, in.ID, in.Body)
+		return s.store.Comment(ctx, actor, id, in.Body)
 
 	case "task.comment.edit":
 		var in taskCommentEditArgs
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
-		if err := requireID("id", in.ID); err != nil {
+		id, err := requireTaskID("id", in.ID)
+		if err != nil {
 			return nil, err
 		}
 		if err := requireID("comment_id", in.CommentID); err != nil {
@@ -304,27 +313,29 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		if strings.TrimSpace(in.Body) == "" {
 			return nil, fmt.Errorf("%w: body is required", store.ErrInvalid)
 		}
-		return s.store.EditComment(ctx, actor, in.ID, in.CommentID, in.Body)
+		return s.store.EditComment(ctx, actor, id, in.CommentID, in.Body)
 
 	case "task.comment.remove":
 		var in taskCommentRemoveArgs
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
-		if err := requireID("id", in.ID); err != nil {
+		id, err := requireTaskID("id", in.ID)
+		if err != nil {
 			return nil, err
 		}
 		if err := requireID("comment_id", in.CommentID); err != nil {
 			return nil, err
 		}
-		return s.store.RemoveComment(ctx, actor, in.ID, in.CommentID)
+		return s.store.RemoveComment(ctx, actor, id, in.CommentID)
 
 	case "task.review":
 		var in taskReviewArgs
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
-		if err := requireID("id", in.ID); err != nil {
+		id, err := requireTaskID("id", in.ID)
+		if err != nil {
 			return nil, err
 		}
 		if err := requireBool("approve", in.Approve); err != nil {
@@ -336,7 +347,7 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		} else if strings.TrimSpace(in.Message) == "" {
 			return nil, fmt.Errorf("%w: message is required when requesting changes", store.ErrInvalid)
 		}
-		return s.store.Review(ctx, actor, in.ID, decision, in.Message)
+		return s.store.Review(ctx, actor, id, decision, in.Message)
 
 	case "daemon.status":
 		var in daemonStatusArgs
@@ -400,6 +411,16 @@ func decodeArgs(args json.RawMessage, target any) error {
 		return fmt.Errorf("%w: args must contain a single JSON object", store.ErrInvalid)
 	}
 	return nil
+}
+
+// requireTaskID validates a task ID argument and returns its canonical
+// spelling (uppercase prefix, no leading zeros) for the store.
+func requireTaskID(field string, value string) (string, error) {
+	id, err := taskid.Normalize(value)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s: %v", store.ErrInvalid, field, err)
+	}
+	return id, nil
 }
 
 func requireID(field string, id int64) error {
@@ -516,15 +537,15 @@ type taskCreateArgs struct {
 }
 
 type taskShowArgs struct {
-	ID int64 `json:"id"`
+	ID string `json:"id"`
 }
 
 type taskDeleteArgs struct {
-	ID int64 `json:"id"`
+	ID string `json:"id"`
 }
 
 type taskUpdateArgs struct {
-	ID          int64   `json:"id"`
+	ID          string  `json:"id"`
 	Title       *string `json:"title"`
 	Description *string `json:"description"`
 	RepoID      *int64  `json:"repo_id"`
@@ -534,35 +555,35 @@ type taskUpdateArgs struct {
 }
 
 type taskMarkArgs struct {
-	ID      int64  `json:"id"`
+	ID      string `json:"id"`
 	Marking string `json:"marking"`
 	Present *bool  `json:"present"`
 }
 
 type taskDependArgs struct {
-	ID        int64 `json:"id"`
-	BlockerID int64 `json:"blocker_id"`
-	Present   *bool `json:"present"`
+	ID        string `json:"id"`
+	BlockerID string `json:"blocker_id"`
+	Present   *bool  `json:"present"`
 }
 
 type taskCommentArgs struct {
-	ID   int64  `json:"id"`
+	ID   string `json:"id"`
 	Body string `json:"body"`
 }
 
 type taskCommentEditArgs struct {
-	ID        int64  `json:"id"`
+	ID        string `json:"id"`
 	CommentID int64  `json:"comment_id"`
 	Body      string `json:"body"`
 }
 
 type taskCommentRemoveArgs struct {
-	ID        int64 `json:"id"`
-	CommentID int64 `json:"comment_id"`
+	ID        string `json:"id"`
+	CommentID int64  `json:"comment_id"`
 }
 
 type taskReviewArgs struct {
-	ID      int64  `json:"id"`
+	ID      string `json:"id"`
 	Approve *bool  `json:"approve"`
 	Message string `json:"message"`
 }

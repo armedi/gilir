@@ -53,7 +53,7 @@ function TaskRow(props) {
       >
         <span class="task-row-top">
           <PriorityMark value={task().priority} />
-          <span class="task-id">#{task().id}</span>
+          <span class="task-id">{task().id}</span>
           <span class="task-title">{task().title || 'Untitled task'}</span>
         </span>
 

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/armedi/gilir/internal/taskid"
 	"modernc.org/sqlite"
 )
 
@@ -23,7 +24,10 @@ var (
 	ErrConflict = errors.New("store: conflict")
 )
 
-const schemaVersion = 2
+// schemaVersion 3 stores task IDs as the self-describing "GILIR-<n>" text key.
+// Version 2 and earlier used bare integers and are not migrated: an older
+// database is rejected at Open so the caller recreates it.
+const schemaVersion = 3
 
 const databaseBusyTimeout = "5000"
 
@@ -150,7 +154,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	case version > schemaVersion:
 		return fmt.Errorf("store: database schema version %d is newer than supported version %d", version, schemaVersion)
 	default:
-		return fmt.Errorf("store: database schema version %d is not supported", version)
+		return fmt.Errorf("store: database schema version %d is not supported; delete the database file and restart to recreate it with prefixed task IDs", version)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -212,6 +216,18 @@ func validateID(label string, id int64) error {
 	return nil
 }
 
+// normalizeTaskID validates and canonicalizes a Gilir task ID such as
+// "GILIR-42". It accepts any case for the prefix and returns the uppercase
+// form so lookups always match the stored key. The error never echoes the
+// malformed input as a valid identifier; it explains the expected shape.
+func normalizeTaskID(id string) (string, error) {
+	canonical, err := taskid.Normalize(id)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", ErrInvalid, err)
+	}
+	return canonical, nil
+}
+
 func normalizeActor(actor string) (string, error) {
 	actor = strings.TrimSpace(actor)
 	if actor == "" {
@@ -241,7 +257,7 @@ func mapConstraintError(err error) error {
 type activityInput struct {
 	Type      string
 	Actor     string
-	TaskID    *int64
+	TaskID    *string
 	ProjectID *int64
 	Timestamp time.Time
 	Data      map[string]any
@@ -271,7 +287,7 @@ func appendActivity(ctx context.Context, tx *sql.Tx, in activityInput) (Activity
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO activity (type, actor, task_id, project_id, timestamp, data)
 		VALUES (?, ?, ?, ?, ?, ?)`,
-		in.Type, actor, nullableInt64(in.TaskID), nullableInt64(in.ProjectID), formatTime(at), string(encoded),
+		in.Type, actor, nullableString(in.TaskID), nullableInt64(in.ProjectID), formatTime(at), string(encoded),
 	)
 	if err != nil {
 		return Activity{}, fmt.Errorf("store: append activity: %w", err)
@@ -284,11 +300,18 @@ func appendActivity(ctx context.Context, tx *sql.Tx, in activityInput) (Activity
 		ID:        id,
 		Type:      in.Type,
 		Actor:     actor,
-		TaskID:    copyInt64(in.TaskID),
+		TaskID:    copyString(in.TaskID),
 		ProjectID: copyInt64(in.ProjectID),
 		Timestamp: at.UTC(),
 		Data:      data,
 	}, nil
+}
+
+func nullableString(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 func nullableInt64(value *int64) any {
@@ -296,6 +319,14 @@ func nullableInt64(value *int64) any {
 		return nil
 	}
 	return *value
+}
+
+func copyString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
 }
 
 func copyInt64(value *int64) *int64 {
@@ -310,6 +341,10 @@ func int64Pointer(value int64) *int64 {
 	return &value
 }
 
+func stringPointer(value string) *string {
+	return &value
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }
@@ -317,7 +352,7 @@ type scanner interface {
 func scanActivity(sc scanner) (Activity, error) {
 	var (
 		activity  Activity
-		taskID    sql.NullInt64
+		taskID    sql.NullString
 		projectID sql.NullInt64
 		timestamp string
 		encoded   string
@@ -326,7 +361,7 @@ func scanActivity(sc scanner) (Activity, error) {
 		return Activity{}, err
 	}
 	if taskID.Valid {
-		activity.TaskID = int64Pointer(taskID.Int64)
+		activity.TaskID = stringPointer(taskID.String)
 	}
 	if projectID.Valid {
 		activity.ProjectID = int64Pointer(projectID.Int64)
@@ -347,14 +382,14 @@ func scanActivity(sc scanner) (Activity, error) {
 	return activity, nil
 }
 
-func requireTask(ctx context.Context, tx *sql.Tx, taskID int64) (int64, error) {
+func requireTask(ctx context.Context, tx *sql.Tx, taskID string) (int64, error) {
 	var projectID int64
 	err := tx.QueryRowContext(ctx, `SELECT project_id FROM tasks WHERE id = ?`, taskID).Scan(&projectID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("%w: task %d", ErrNotFound, taskID)
+		return 0, fmt.Errorf("%w: task %s", ErrNotFound, taskID)
 	}
 	if err != nil {
-		return 0, fmt.Errorf("store: load task %d: %w", taskID, err)
+		return 0, fmt.Errorf("store: load task %s: %w", taskID, err)
 	}
 	return projectID, nil
 }

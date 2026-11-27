@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/armedi/gilir/internal/taskid"
 )
 
 const taskColumns = `id, project_id, repo_id, title, description, status, priority, created_at, updated_at`
@@ -29,26 +31,26 @@ func scanTask(sc scanner) (Task, error) {
 	}
 	task.Status = Status(status)
 	if !task.Status.Valid() {
-		return Task{}, fmt.Errorf("store: task %d has unsupported status %q", task.ID, status)
+		return Task{}, fmt.Errorf("store: task %s has unsupported status %q", task.ID, status)
 	}
 	task.Priority = Priority(priority)
 	if !task.Priority.Valid() {
-		return Task{}, fmt.Errorf("store: task %d has unsupported priority %q", task.ID, priority)
+		return Task{}, fmt.Errorf("store: task %s has unsupported priority %q", task.ID, priority)
 	}
 	var err error
 	task.CreatedAt, err = parseTime(createdAt)
 	if err != nil {
-		return Task{}, fmt.Errorf("store: task %d created_at: %w", task.ID, err)
+		return Task{}, fmt.Errorf("store: task %s created_at: %w", task.ID, err)
 	}
 	task.UpdatedAt, err = parseTime(updatedAt)
 	if err != nil {
-		return Task{}, fmt.Errorf("store: task %d updated_at: %w", task.ID, err)
+		return Task{}, fmt.Errorf("store: task %s updated_at: %w", task.ID, err)
 	}
 	task.Markings = []string{}
 	return task, nil
 }
 
-func loadMarkings(ctx context.Context, tx *sql.Tx, taskID int64) ([]string, error) {
+func loadMarkings(ctx context.Context, tx *sql.Tx, taskID string) ([]string, error) {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT marking FROM task_markings WHERE task_id = ? ORDER BY marking`, taskID,
 	)
@@ -71,13 +73,13 @@ func loadMarkings(ctx context.Context, tx *sql.Tx, taskID int64) ([]string, erro
 	return markings, nil
 }
 
-func taskByID(ctx context.Context, tx *sql.Tx, taskID int64) (Task, error) {
+func taskByID(ctx context.Context, tx *sql.Tx, taskID string) (Task, error) {
 	task, err := scanTask(tx.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = ?`, taskID))
 	if errors.Is(err, sql.ErrNoRows) {
-		return Task{}, fmt.Errorf("%w: task %d", ErrNotFound, taskID)
+		return Task{}, fmt.Errorf("%w: task %s", ErrNotFound, taskID)
 	}
 	if err != nil {
-		return Task{}, fmt.Errorf("store: load task %d: %w", taskID, err)
+		return Task{}, fmt.Errorf("store: load task %s: %w", taskID, err)
 	}
 	task.Markings, err = loadMarkings(ctx, tx, taskID)
 	if err != nil {
@@ -97,7 +99,7 @@ func normalizeMarking(marking string) (string, error) {
 // setMarkingTx adds or removes a marking inside an existing transaction. It
 // returns false without writing an event when the requested state already
 // holds.
-func setMarkingTx(ctx context.Context, tx *sql.Tx, actor string, taskID int64, marking string, present bool, at time.Time) (bool, error) {
+func setMarkingTx(ctx context.Context, tx *sql.Tx, actor string, taskID string, marking string, present bool, at time.Time) (bool, error) {
 	marking, err := normalizeMarking(marking)
 	if err != nil {
 		return false, err
@@ -140,7 +142,7 @@ func setMarkingTx(ctx context.Context, tx *sql.Tx, actor string, taskID int64, m
 	_, err = appendActivity(ctx, tx, activityInput{
 		Type:      ActivityTaskMarking,
 		Actor:     actor,
-		TaskID:    int64Pointer(taskID),
+		TaskID:    stringPointer(taskID),
 		ProjectID: int64Pointer(projectID),
 		Timestamp: at,
 		Data: map[string]any{
@@ -229,10 +231,11 @@ func (s *Store) CreateTask(ctx context.Context, actor string, in CreateTaskParam
 		if err != nil {
 			return fmt.Errorf("store: create task: %w", mapConstraintError(err))
 		}
-		id, err := result.LastInsertId()
+		seq, err := result.LastInsertId()
 		if err != nil {
-			return fmt.Errorf("store: read task ID: %w", err)
+			return fmt.Errorf("store: read task sequence: %w", err)
 		}
+		id := taskid.Format(seq)
 		created = Task{
 			ID:          id,
 			ProjectID:   projectID,
@@ -248,7 +251,7 @@ func (s *Store) CreateTask(ctx context.Context, actor string, in CreateTaskParam
 		_, err = appendActivity(ctx, tx, activityInput{
 			Type:      ActivityTaskCreated,
 			Actor:     actor,
-			TaskID:    int64Pointer(id),
+			TaskID:    stringPointer(id),
 			ProjectID: int64Pointer(projectID),
 			Timestamp: now,
 			Data: map[string]any{
@@ -272,12 +275,12 @@ func (s *Store) CreateTask(ctx context.Context, actor string, in CreateTaskParam
 // Outgoing dependencies, terminal attempts and their sessions, and markings are
 // removed in the same transaction that appends the task.deleted audit event;
 // the append-only activity history is never discarded.
-func (s *Store) DeleteTask(ctx context.Context, actor string, taskID int64) error {
+func (s *Store) DeleteTask(ctx context.Context, actor string, taskID string) error {
 	actor, err := normalizeActor(actor)
 	if err != nil {
 		return err
 	}
-	if err := validateID("task", taskID); err != nil {
+	if taskID, err = normalizeTaskID(taskID); err != nil {
 		return err
 	}
 
@@ -296,7 +299,7 @@ func (s *Store) DeleteTask(ctx context.Context, actor string, taskID int64) erro
 			LIMIT 1`, taskID,
 		).Scan(&reservedAttempt)
 		if err == nil {
-			return fmt.Errorf("%w: task %d has reserved dispatch attempt %s; wait for it to finish before deleting the task",
+			return fmt.Errorf("%w: task %s has reserved dispatch attempt %s; wait for it to finish before deleting the task",
 				ErrConflict, taskID, reservedAttempt)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -304,14 +307,14 @@ func (s *Store) DeleteTask(ctx context.Context, actor string, taskID int64) erro
 		}
 
 		rows, err := tx.QueryContext(ctx,
-			`SELECT task_id FROM task_dependencies WHERE depends_on_id = ? ORDER BY task_id`, taskID,
+			`SELECT task_id FROM task_dependencies WHERE depends_on_id = ? ORDER BY length(task_id), task_id`, taskID,
 		)
 		if err != nil {
 			return fmt.Errorf("store: list task dependents: %w", err)
 		}
-		dependentIDs := []int64{}
+		dependentIDs := []string{}
 		for rows.Next() {
-			var dependentID int64
+			var dependentID string
 			if err := rows.Scan(&dependentID); err != nil {
 				rows.Close()
 				return fmt.Errorf("store: scan task dependent: %w", err)
@@ -324,14 +327,14 @@ func (s *Store) DeleteTask(ctx context.Context, actor string, taskID int64) erro
 		}
 		rows.Close()
 		if len(dependentIDs) > 0 {
-			return fmt.Errorf("%w: task %d still has incoming dependencies from tasks %v; remove those dependencies before deleting the task",
+			return fmt.Errorf("%w: task %s still has incoming dependencies from tasks %v; remove those dependencies before deleting the task",
 				ErrConflict, taskID, dependentIDs)
 		}
 
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM task_dependencies WHERE task_id = ?`, taskID,
 		); err != nil {
-			return fmt.Errorf("store: delete task %d dependencies: %w", taskID, err)
+			return fmt.Errorf("store: delete task %s dependencies: %w", taskID, err)
 		}
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM sessions
@@ -340,23 +343,23 @@ func (s *Store) DeleteTask(ctx context.Context, actor string, taskID int64) erro
 				WHERE task_id = ? AND state <> 'reserved'
 			)`, taskID,
 		); err != nil {
-			return fmt.Errorf("store: delete task %d sessions: %w", taskID, err)
+			return fmt.Errorf("store: delete task %s sessions: %w", taskID, err)
 		}
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM dispatch_attempts WHERE task_id = ? AND state <> 'reserved'`, taskID,
 		); err != nil {
-			return fmt.Errorf("store: delete task %d dispatch attempts: %w", taskID, err)
+			return fmt.Errorf("store: delete task %s dispatch attempts: %w", taskID, err)
 		}
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM tasks WHERE id = ?`, taskID,
 		); err != nil {
-			return fmt.Errorf("store: delete task %d: %w", taskID, err)
+			return fmt.Errorf("store: delete task %s: %w", taskID, err)
 		}
 
 		_, err = appendActivity(ctx, tx, activityInput{
 			Type:      ActivityTaskDeleted,
 			Actor:     actor,
-			TaskID:    int64Pointer(taskID),
+			TaskID:    stringPointer(taskID),
 			ProjectID: int64Pointer(task.ProjectID),
 		})
 		return err
@@ -366,12 +369,12 @@ func (s *Store) DeleteTask(ctx context.Context, actor string, taskID int64) erro
 // UpdateTask applies a partial edit. Nil patch fields are unchanged. A no-op
 // patch writes no audit event. Moving a task from in-review back to todo adds
 // the changes-requested marking in the same transaction.
-func (s *Store) UpdateTask(ctx context.Context, actor string, taskID int64, patch TaskPatch) (Task, error) {
+func (s *Store) UpdateTask(ctx context.Context, actor string, taskID string, patch TaskPatch) (Task, error) {
 	actor, err := normalizeActor(actor)
 	if err != nil {
 		return Task{}, err
 	}
-	if err := validateID("task", taskID); err != nil {
+	if taskID, err = normalizeTaskID(taskID); err != nil {
 		return Task{}, err
 	}
 
@@ -432,7 +435,7 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID int64, patc
 				return fmt.Errorf("store: count open task attempts: %w", err)
 			}
 			if openAttempts > 0 {
-				return fmt.Errorf("%w: task %d has an outstanding dispatch attempt", ErrConflict, taskID)
+				return fmt.Errorf("%w: task %s has an outstanding dispatch attempt", ErrConflict, taskID)
 			}
 			linked, err := projectRepoLinked(ctx, tx, old.ProjectID, newRepoID)
 			if err != nil {
@@ -473,7 +476,7 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID int64, patc
 			WHERE id = ?`,
 			newTitle, newDescription, string(newPriority), newRepoID, string(newStatus), formatTime(now), taskID,
 		); err != nil {
-			return fmt.Errorf("store: update task %d: %w", taskID, err)
+			return fmt.Errorf("store: update task %s: %w", taskID, err)
 		}
 
 		if titleChanged || descriptionChanged || priorityChanged || repoChanged {
@@ -498,7 +501,7 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID int64, patc
 			if _, err := appendActivity(ctx, tx, activityInput{
 				Type:      ActivityTaskUpdated,
 				Actor:     actor,
-				TaskID:    int64Pointer(taskID),
+				TaskID:    stringPointer(taskID),
 				ProjectID: int64Pointer(old.ProjectID),
 				Timestamp: now,
 				Data:      map[string]any{"old": oldFields, "new": newFields},
@@ -512,7 +515,7 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID int64, patc
 				if _, err := appendActivity(ctx, tx, activityInput{
 					Type:      ActivityTaskCommented,
 					Actor:     actor,
-					TaskID:    int64Pointer(taskID),
+					TaskID:    stringPointer(taskID),
 					ProjectID: int64Pointer(old.ProjectID),
 					Timestamp: now,
 					Data:      map[string]any{"body": message},
@@ -523,7 +526,7 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID int64, patc
 			if _, err := appendActivity(ctx, tx, activityInput{
 				Type:      ActivityTaskStatusChanged,
 				Actor:     actor,
-				TaskID:    int64Pointer(taskID),
+				TaskID:    stringPointer(taskID),
 				ProjectID: int64Pointer(old.ProjectID),
 				Timestamp: now,
 				Data: map[string]any{
@@ -551,12 +554,12 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID int64, patc
 
 // SetMarking adds or removes a task marking. A duplicate add or remove is a
 // no-op without an audit event.
-func (s *Store) SetMarking(ctx context.Context, actor string, taskID int64, marking string, present bool) (Task, error) {
+func (s *Store) SetMarking(ctx context.Context, actor string, taskID string, marking string, present bool) (Task, error) {
 	actor, err := normalizeActor(actor)
 	if err != nil {
 		return Task{}, err
 	}
-	if err := validateID("task", taskID); err != nil {
+	if taskID, err = normalizeTaskID(taskID); err != nil {
 		return Task{}, err
 	}
 	marking, err = normalizeMarking(marking)
@@ -585,15 +588,15 @@ func (s *Store) SetMarking(ctx context.Context, actor string, taskID int64, mark
 // SetDependency adds or removes a blocker relationship. Both tasks must belong
 // to the same project. Adding a dependency that would create a cycle fails with
 // ErrConflict. Duplicate adds and removes are no-ops without audit events.
-func (s *Store) SetDependency(ctx context.Context, actor string, taskID, dependsOnTaskID int64, present bool) error {
+func (s *Store) SetDependency(ctx context.Context, actor string, taskID, dependsOnTaskID string, present bool) error {
 	actor, err := normalizeActor(actor)
 	if err != nil {
 		return err
 	}
-	if err := validateID("task", taskID); err != nil {
+	if taskID, err = normalizeTaskID(taskID); err != nil {
 		return err
 	}
-	if err := validateID("blocker task", dependsOnTaskID); err != nil {
+	if dependsOnTaskID, err = normalizeTaskID(dependsOnTaskID); err != nil {
 		return err
 	}
 	if taskID == dependsOnTaskID {
@@ -649,7 +652,7 @@ func (s *Store) SetDependency(ctx context.Context, actor string, taskID, depends
 			_, err = appendActivity(ctx, tx, activityInput{
 				Type:      ActivityDependencyAdded,
 				Actor:     actor,
-				TaskID:    int64Pointer(taskID),
+				TaskID:    stringPointer(taskID),
 				ProjectID: int64Pointer(projectID),
 				Timestamp: now,
 				Data:      map[string]any{"depends_on_id": dependsOnTaskID},
@@ -675,7 +678,7 @@ func (s *Store) SetDependency(ctx context.Context, actor string, taskID, depends
 		_, err = appendActivity(ctx, tx, activityInput{
 			Type:      ActivityDependencyRemoved,
 			Actor:     actor,
-			TaskID:    int64Pointer(taskID),
+			TaskID:    stringPointer(taskID),
 			ProjectID: int64Pointer(projectID),
 			Timestamp: now,
 			Data:      map[string]any{"depends_on_id": dependsOnTaskID},
@@ -684,7 +687,7 @@ func (s *Store) SetDependency(ctx context.Context, actor string, taskID, depends
 	})
 }
 
-func dependencyCreatesCycle(ctx context.Context, tx *sql.Tx, taskID, dependsOnTaskID int64) (bool, error) {
+func dependencyCreatesCycle(ctx context.Context, tx *sql.Tx, taskID, dependsOnTaskID string) (bool, error) {
 	var found int
 	err := tx.QueryRowContext(ctx, `
 		WITH RECURSIVE reachable(id) AS (
@@ -708,12 +711,12 @@ func dependencyCreatesCycle(ctx context.Context, tx *sql.Tx, taskID, dependsOnTa
 
 // Comment appends a comment as an immutable task.commented activity record.
 // Blank comments are rejected.
-func (s *Store) Comment(ctx context.Context, actor string, taskID int64, body string) (Activity, error) {
+func (s *Store) Comment(ctx context.Context, actor string, taskID string, body string) (Activity, error) {
 	actor, err := normalizeActor(actor)
 	if err != nil {
 		return Activity{}, err
 	}
-	if err := validateID("task", taskID); err != nil {
+	if taskID, err = normalizeTaskID(taskID); err != nil {
 		return Activity{}, err
 	}
 	if strings.TrimSpace(body) == "" {
@@ -729,7 +732,7 @@ func (s *Store) Comment(ctx context.Context, actor string, taskID int64, body st
 		comment, err = appendActivity(ctx, tx, activityInput{
 			Type:      ActivityTaskCommented,
 			Actor:     actor,
-			TaskID:    int64Pointer(taskID),
+			TaskID:    stringPointer(taskID),
 			ProjectID: int64Pointer(projectID),
 			Data:      map[string]any{"body": body},
 		})
@@ -744,7 +747,7 @@ func (s *Store) Comment(ctx context.Context, actor string, taskID int64, body st
 // EditComment appends an edit event for an existing comment. The comment must
 // be a task.commented event on taskID owned by actor. Removed comments cannot
 // be edited.
-func (s *Store) EditComment(ctx context.Context, actor string, taskID, commentID int64, body string) (Activity, error) {
+func (s *Store) EditComment(ctx context.Context, actor string, taskID string, commentID int64, body string) (Activity, error) {
 	if strings.TrimSpace(body) == "" {
 		return Activity{}, fmt.Errorf("%w: comment body is required", ErrInvalid)
 	}
@@ -754,19 +757,19 @@ func (s *Store) EditComment(ctx context.Context, actor string, taskID, commentID
 // RemoveComment appends a removal event for an existing comment. The comment
 // must be a task.commented event on taskID owned by actor. Removing an already
 // removed comment is a conflict.
-func (s *Store) RemoveComment(ctx context.Context, actor string, taskID, commentID int64) (Activity, error) {
+func (s *Store) RemoveComment(ctx context.Context, actor string, taskID string, commentID int64) (Activity, error) {
 	return s.mutateComment(ctx, actor, taskID, commentID, ActivityTaskCommentRemoved, nil)
 }
 
 // mutateComment validates a comment mutation and appends its audit event in
 // one transaction. Removal is terminal, so a removed comment cannot be mutated
 // again.
-func (s *Store) mutateComment(ctx context.Context, actor string, taskID, commentID int64, activityType string, data map[string]any) (Activity, error) {
+func (s *Store) mutateComment(ctx context.Context, actor string, taskID string, commentID int64, activityType string, data map[string]any) (Activity, error) {
 	actor, err := normalizeActor(actor)
 	if err != nil {
 		return Activity{}, err
 	}
-	if err := validateID("task", taskID); err != nil {
+	if taskID, err = normalizeTaskID(taskID); err != nil {
 		return Activity{}, err
 	}
 	if err := validateID("comment", commentID); err != nil {
@@ -794,7 +797,7 @@ func (s *Store) mutateComment(ctx context.Context, actor string, taskID, comment
 		mutation, err = appendActivity(ctx, tx, activityInput{
 			Type:      activityType,
 			Actor:     actor,
-			TaskID:    int64Pointer(taskID),
+			TaskID:    stringPointer(taskID),
 			ProjectID: int64Pointer(projectID),
 			Data:      data,
 		})
@@ -808,7 +811,7 @@ func (s *Store) mutateComment(ctx context.Context, actor string, taskID, comment
 
 // commentProjectID verifies that commentID is a task.commented event on taskID
 // owned by actor and returns the project to record on the mutation.
-func commentProjectID(ctx context.Context, tx *sql.Tx, actor string, taskID, commentID int64) (int64, error) {
+func commentProjectID(ctx context.Context, tx *sql.Tx, actor string, taskID string, commentID int64) (int64, error) {
 	var projectID sql.NullInt64
 	err := tx.QueryRowContext(ctx, `
 		SELECT project_id
@@ -828,7 +831,7 @@ func commentProjectID(ctx context.Context, tx *sql.Tx, actor string, taskID, com
 	return projectID.Int64, nil
 }
 
-func commentRemoved(ctx context.Context, tx *sql.Tx, taskID int64, commentKey string) (bool, error) {
+func commentRemoved(ctx context.Context, tx *sql.Tx, taskID string, commentKey string) (bool, error) {
 	var removed bool
 	err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS (
@@ -902,12 +905,12 @@ func projectTaskActivity(activities []Activity) []Activity {
 // non-blank message, moves the task to todo, records the message as a comment,
 // and applies the changes-requested marking. A non-blank approval message is
 // recorded as a comment too.
-func (s *Store) Review(ctx context.Context, actor string, taskID int64, decision ReviewDecision, message string) (Task, error) {
+func (s *Store) Review(ctx context.Context, actor string, taskID string, decision ReviewDecision, message string) (Task, error) {
 	actor, err := normalizeActor(actor)
 	if err != nil {
 		return Task{}, err
 	}
-	if err := validateID("task", taskID); err != nil {
+	if taskID, err = normalizeTaskID(taskID); err != nil {
 		return Task{}, err
 	}
 	if decision != ReviewApprove && decision != ReviewRequestChanges {
@@ -925,7 +928,7 @@ func (s *Store) Review(ctx context.Context, actor string, taskID int64, decision
 			return err
 		}
 		if current.Status != StatusInReview {
-			return fmt.Errorf("%w: task %d is not in review", ErrConflict, taskID)
+			return fmt.Errorf("%w: task %s is not in review", ErrConflict, taskID)
 		}
 
 		now := nowUTC()
@@ -939,13 +942,13 @@ func (s *Store) Review(ctx context.Context, actor string, taskID int64, decision
 			`UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`,
 			string(next), formatTime(now), taskID,
 		); err != nil {
-			return fmt.Errorf("store: apply review to task %d: %w", taskID, err)
+			return fmt.Errorf("store: apply review to task %s: %w", taskID, err)
 		}
 		if message != "" {
 			if _, err := appendActivity(ctx, tx, activityInput{
 				Type:      ActivityTaskCommented,
 				Actor:     actor,
-				TaskID:    int64Pointer(taskID),
+				TaskID:    stringPointer(taskID),
 				ProjectID: int64Pointer(current.ProjectID),
 				Timestamp: now,
 				Data:      map[string]any{"body": message},
@@ -956,7 +959,7 @@ func (s *Store) Review(ctx context.Context, actor string, taskID int64, decision
 		if _, err := appendActivity(ctx, tx, activityInput{
 			Type:      ActivityTaskStatusChanged,
 			Actor:     actor,
-			TaskID:    int64Pointer(taskID),
+			TaskID:    stringPointer(taskID),
 			ProjectID: int64Pointer(current.ProjectID),
 			Timestamp: now,
 			Data: map[string]any{
@@ -1031,7 +1034,7 @@ func (s *Store) ListTasks(ctx context.Context, filter TaskFilter) ([]Task, error
 		if len(conditions) > 0 {
 			query += ` WHERE ` + strings.Join(conditions, ` AND `)
 		}
-		query += ` ORDER BY id`
+		query += ` ORDER BY seq`
 
 		rows, err := tx.QueryContext(ctx, query, args...)
 		if err != nil {
@@ -1067,32 +1070,34 @@ func (s *Store) ListTasks(ctx context.Context, filter TaskFilter) ([]Task, error
 
 // Show returns a task with its direct blocker IDs, linked sessions in link
 // order, and projected task activity in audit order.
-func (s *Store) Show(ctx context.Context, taskID int64) (TaskDetail, error) {
-	if err := validateID("task", taskID); err != nil {
+func (s *Store) Show(ctx context.Context, taskID string) (TaskDetail, error) {
+	normalized, err := normalizeTaskID(taskID)
+	if err != nil {
 		return TaskDetail{}, err
 	}
+	taskID = normalized
 
 	var detail TaskDetail
-	err := s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
 		task, err := taskByID(ctx, tx, taskID)
 		if err != nil {
 			return err
 		}
 		detail = TaskDetail{
 			Task:     task,
-			Blockers: []int64{},
+			Blockers: []string{},
 			Sessions: []Session{},
 			Activity: []Activity{},
 		}
 
 		blockerRows, err := tx.QueryContext(ctx,
-			`SELECT depends_on_id FROM task_dependencies WHERE task_id = ? ORDER BY depends_on_id`, taskID,
+			`SELECT depends_on_id FROM task_dependencies WHERE task_id = ? ORDER BY length(depends_on_id), depends_on_id`, taskID,
 		)
 		if err != nil {
 			return fmt.Errorf("store: list task blockers: %w", err)
 		}
 		for blockerRows.Next() {
-			var blockerID int64
+			var blockerID string
 			if err := blockerRows.Scan(&blockerID); err != nil {
 				blockerRows.Close()
 				return fmt.Errorf("store: scan task blocker: %w", err)

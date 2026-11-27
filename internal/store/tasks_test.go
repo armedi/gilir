@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -41,7 +40,7 @@ func TestCreateTaskDefaultsJSONAndDetailArrays(t *testing.T) {
 	if task.Markings == nil || len(task.Markings) != 0 {
 		t.Fatalf("markings = %#v, want empty non-nil", task.Markings)
 	}
-	if task.ID <= 0 || task.CreatedAt.IsZero() || task.UpdatedAt.IsZero() {
+	if task.ID != "GILIR-1" || task.CreatedAt.IsZero() || task.UpdatedAt.IsZero() {
 		t.Fatalf("task = %+v", task)
 	}
 
@@ -102,8 +101,8 @@ func TestCreateTaskDefaultsJSONAndDetailArrays(t *testing.T) {
 	second := mustCreateTask(t, s, CreateTaskParams{
 		ProjectID: project.ID, RepoID: repo.ID, Title: "second task",
 	})
-	if second.ID <= task.ID {
-		t.Fatalf("task IDs not FIFO: %d then %d", task.ID, second.ID)
+	if second.ID != "GILIR-2" {
+		t.Fatalf("task IDs not FIFO: %s then %s", task.ID, second.ID)
 	}
 }
 
@@ -141,15 +140,15 @@ func TestListTasksFilters(t *testing.T) {
 	cases := []struct {
 		name   string
 		filter TaskFilter
-		want   []int64
+		want   []string
 	}{
-		{"project", TaskFilter{ProjectID: projectA.ID}, []int64{backlog.ID, urgent.ID, progress.ID}},
-		{"repo", TaskFilter{RepoID: repoB.ID}, []int64{other.ID}},
-		{"status", TaskFilter{Status: StatusTodo}, []int64{urgent.ID, other.ID}},
-		{"priority urgent", TaskFilter{Priority: PriorityUrgent}, []int64{urgent.ID}},
-		{"marking normalized", TaskFilter{Marking: " docs "}, []int64{backlog.ID, other.ID}},
-		{"combined", TaskFilter{ProjectID: projectA.ID, Status: StatusTodo, Marking: "docs"}, []int64{}},
-		{"project and priority", TaskFilter{ProjectID: projectA.ID, Priority: PriorityLow}, []int64{backlog.ID}},
+		{"project", TaskFilter{ProjectID: projectA.ID}, []string{backlog.ID, urgent.ID, progress.ID}},
+		{"repo", TaskFilter{RepoID: repoB.ID}, []string{other.ID}},
+		{"status", TaskFilter{Status: StatusTodo}, []string{urgent.ID, other.ID}},
+		{"priority urgent", TaskFilter{Priority: PriorityUrgent}, []string{urgent.ID}},
+		{"marking normalized", TaskFilter{Marking: " docs "}, []string{backlog.ID, other.ID}},
+		{"combined", TaskFilter{ProjectID: projectA.ID, Status: StatusTodo, Marking: "docs"}, []string{}},
+		{"project and priority", TaskFilter{ProjectID: projectA.ID, Priority: PriorityLow}, []string{backlog.ID}},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -165,7 +164,7 @@ func TestListTasksFilters(t *testing.T) {
 			}
 			for i, id := range testCase.want {
 				if tasks[i].ID != id {
-					t.Fatalf("task[%d].ID = %d, want %d (tasks=%+v)", i, tasks[i].ID, id, tasks)
+					t.Fatalf("task[%d].ID = %s, want %s (tasks=%+v)", i, tasks[i].ID, id, tasks)
 				}
 			}
 		})
@@ -289,8 +288,8 @@ func TestDeleteTaskPreservesAuditAndRemovesTerminalHistory(t *testing.T) {
 	if err := s.DeleteTask(ctx, "again", task.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second DeleteTask error = %v, want ErrNotFound", err)
 	}
-	if err := s.DeleteTask(ctx, "again", 0); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("zero task DeleteTask error = %v, want ErrInvalid", err)
+	if err := s.DeleteTask(ctx, "again", "42"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unprefixed task DeleteTask error = %v, want ErrInvalid", err)
 	}
 	repeated, err := s.ActivityAfter(ctx, 0, 1000)
 	if err != nil {
@@ -368,14 +367,14 @@ func TestDeleteTaskConflictsPreserveData(t *testing.T) {
 			t.Fatalf("DeleteTask with incoming dependency error = %v, want ErrConflict", err)
 		}
 		if !strings.Contains(err.Error(), "incoming dependencies") ||
-			!strings.Contains(err.Error(), strconv.FormatInt(dependent.ID, 10)) {
+			!strings.Contains(err.Error(), dependent.ID) {
 			t.Fatalf("incoming conflict error = %v, want the dependent task ID", err)
 		}
 
 		mustShow(t, s, blocker.ID)
 		dependentDetail := mustShow(t, s, dependent.ID)
 		if len(dependentDetail.Blockers) != 1 || dependentDetail.Blockers[0] != blocker.ID {
-			t.Fatalf("blockers after refused delete = %+v, want [%d]",
+			t.Fatalf("blockers after refused delete = %+v, want [%s]",
 				dependentDetail.Blockers, blocker.ID)
 		}
 		after, err := s.ActivityAfter(ctx, 0, 1000)
@@ -504,7 +503,7 @@ func TestUpdateTaskPatchNoOpAndAudit(t *testing.T) {
 	if _, err := s.UpdateTask(ctx, "bob", task.ID, TaskPatch{Priority: &badPriority}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("bad priority error = %v, want ErrInvalid", err)
 	}
-	if _, err := s.UpdateTask(ctx, "bob", 99999, TaskPatch{}); !errors.Is(err, ErrNotFound) {
+	if _, err := s.UpdateTask(ctx, "bob", "GILIR-99999", TaskPatch{}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing task error = %v, want ErrNotFound", err)
 	}
 
@@ -573,7 +572,7 @@ func TestReviewAndReworkTransitions(t *testing.T) {
 	if _, err := s.Review(ctx, "  ", reviewTask.ID, ReviewApprove, ""); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("blank reviewer error = %v, want ErrInvalid", err)
 	}
-	if _, err := s.Review(ctx, "carol", 99999, ReviewApprove, ""); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Review(ctx, "carol", "GILIR-99999", ReviewApprove, ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing task error = %v, want ErrNotFound", err)
 	}
 
@@ -660,7 +659,7 @@ func TestMarkingCommentDependencyIdempotency(t *testing.T) {
 	if _, err := s.SetMarking(ctx, "alice", taskA.ID, "  ", true); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("blank marking error = %v, want ErrInvalid", err)
 	}
-	if _, err := s.SetMarking(ctx, "alice", 99999, "docs", true); !errors.Is(err, ErrNotFound) {
+	if _, err := s.SetMarking(ctx, "alice", "GILIR-99999", "docs", true); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing marking task error = %v, want ErrNotFound", err)
 	}
 	marked, err := s.SetMarking(ctx, "alice", taskA.ID, "docs", true)
@@ -706,7 +705,7 @@ func TestMarkingCommentDependencyIdempotency(t *testing.T) {
 	if _, err := s.Comment(ctx, "alice", taskA.ID, "  "); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("blank comment error = %v, want ErrInvalid", err)
 	}
-	if _, err := s.Comment(ctx, "alice", 99999, "hello"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Comment(ctx, "alice", "GILIR-99999", "hello"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing comment task error = %v, want ErrNotFound", err)
 	}
 	comment, err := s.Comment(ctx, "dave", taskA.ID, "please add a test")
@@ -721,10 +720,10 @@ func TestMarkingCommentDependencyIdempotency(t *testing.T) {
 	if err := s.SetDependency(ctx, "alice", taskA.ID, taskA.ID, true); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("self dependency error = %v, want ErrInvalid", err)
 	}
-	if err := s.SetDependency(ctx, "alice", 99999, taskB.ID, true); !errors.Is(err, ErrNotFound) {
+	if err := s.SetDependency(ctx, "alice", "GILIR-99999", taskB.ID, true); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing dependent error = %v, want ErrNotFound", err)
 	}
-	if err := s.SetDependency(ctx, "alice", taskA.ID, 99999, true); !errors.Is(err, ErrNotFound) {
+	if err := s.SetDependency(ctx, "alice", taskA.ID, "GILIR-99999", true); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing blocker error = %v, want ErrNotFound", err)
 	}
 
@@ -744,7 +743,7 @@ func TestMarkingCommentDependencyIdempotency(t *testing.T) {
 		t.Fatalf("duplicate dependency events = %v", activityTypes(duplicateShow.Activity))
 	}
 	if len(aShow.Blockers) != 1 || aShow.Blockers[0] != taskB.ID {
-		t.Fatalf("blockers = %+v, want [%d]", aShow.Blockers, taskB.ID)
+		t.Fatalf("blockers = %+v, want [%s]", aShow.Blockers, taskB.ID)
 	}
 
 	if err := s.SetDependency(ctx, "alice", taskB.ID, taskC.ID, true); err != nil {
@@ -810,7 +809,7 @@ func TestBlankActorsRejectedEverywhere(t *testing.T) {
 		}},
 		{"DeleteTask", func() error { return s.DeleteTask(ctx, " ", task.ID) }},
 		{"SetMarking", func() error { _, err := s.SetMarking(ctx, " ", task.ID, "x", true); return err }},
-		{"SetDependency", func() error { return s.SetDependency(ctx, " ", task.ID, task.ID+1, true) }},
+		{"SetDependency", func() error { return s.SetDependency(ctx, " ", task.ID, "GILIR-99999", true) }},
 		{"Comment", func() error { _, err := s.Comment(ctx, " ", task.ID, "x"); return err }},
 		{"EditComment", func() error { _, err := s.EditComment(ctx, " ", task.ID, 1, "x"); return err }},
 		{"RemoveComment", func() error { _, err := s.RemoveComment(ctx, " ", task.ID, 1); return err }},
@@ -877,5 +876,99 @@ func TestPriorityEnumIncludesUrgent(t *testing.T) {
 	}
 	if _, ok := jsonObject(t, Task{Priority: PriorityUrgent})["priority"]; !ok {
 		t.Fatal("task JSON missing priority")
+	}
+}
+
+func TestTaskIDsArePrefixedAndOrderedBySequence(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := context.Background()
+	project, repo := seedProjectRepo(t, s)
+
+	var ids []string
+	for i := 0; i < 12; i++ {
+		task := mustCreateTask(t, s, CreateTaskParams{
+			ProjectID: project.ID, RepoID: repo.ID, Title: "task",
+		})
+		ids = append(ids, task.ID)
+	}
+	if ids[0] != "GILIR-1" || ids[9] != "GILIR-10" || ids[11] != "GILIR-12" {
+		t.Fatalf("task IDs = %v, want GILIR-1 .. GILIR-12", ids)
+	}
+
+	listed, err := s.ListTasks(ctx, TaskFilter{ProjectID: project.ID})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(listed) != len(ids) {
+		t.Fatalf("listed %d tasks, want %d", len(listed), len(ids))
+	}
+	for i := range listed {
+		if listed[i].ID != ids[i] {
+			t.Fatalf("ListTasks[%d].ID = %s, want %s (creation order, not lexicographic)", i, listed[i].ID, ids[i])
+		}
+	}
+
+	// A deleted ID is never reused, so old references stay unambiguous.
+	if err := s.DeleteTask(ctx, "alice", "GILIR-12"); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+	next := mustCreateTask(t, s, CreateTaskParams{
+		ProjectID: project.ID, RepoID: repo.ID, Title: "after delete",
+	})
+	if next.ID != "GILIR-13" {
+		t.Fatalf("task ID after delete = %s, want GILIR-13", next.ID)
+	}
+
+	// Blockers and activity carry the same prefixed text ID.
+	dependent := mustCreateTask(t, s, CreateTaskParams{
+		ProjectID: project.ID, RepoID: repo.ID, Title: "dependent",
+	})
+	if err := s.SetDependency(ctx, "alice", dependent.ID, next.ID, true); err != nil {
+		t.Fatalf("SetDependency: %v", err)
+	}
+	detail := mustShow(t, s, dependent.ID)
+	if len(detail.Blockers) != 1 || detail.Blockers[0] != next.ID {
+		t.Fatalf("blockers = %v, want [%s]", detail.Blockers, next.ID)
+	}
+	for _, activity := range detail.Activity {
+		if activity.TaskID == nil || *activity.TaskID != dependent.ID {
+			t.Fatalf("activity task_id = %v, want %s", activity.TaskID, dependent.ID)
+		}
+	}
+
+	var stored string
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT id FROM tasks WHERE seq = 1`,
+	).Scan(&stored); err != nil {
+		t.Fatalf("read stored task id: %v", err)
+	}
+	if stored != "GILIR-1" {
+		t.Fatalf("stored task id = %q, want GILIR-1 (prefix must be persisted)", stored)
+	}
+}
+
+func TestTaskIDLookupsAreCaseInsensitiveAndRejectBareNumbers(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := context.Background()
+	project, repo := seedProjectRepo(t, s)
+	task := mustCreateTask(t, s, CreateTaskParams{
+		ProjectID: project.ID, RepoID: repo.ID, Title: "case",
+	})
+
+	detail, err := s.Show(ctx, "gilir-1")
+	if err != nil {
+		t.Fatalf("Show lower-case: %v", err)
+	}
+	if detail.Task.ID != task.ID {
+		t.Fatalf("lower-case Show returned %s, want %s", detail.Task.ID, task.ID)
+	}
+	if _, err := s.Show(ctx, "1"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("bare numeric Show error = %v, want ErrInvalid", err)
+	}
+	if _, err := s.Show(ctx, "GILIR-01"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("zero-padded Show error = %v, want ErrInvalid", err)
+	}
+	if err := s.SetDependency(ctx, "alice", "gilir-1", "gilir-1", true); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("lower-case self dependency error = %v, want ErrInvalid", err)
 	}
 }

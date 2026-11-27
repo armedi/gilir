@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/armedi/gilir/internal/taskid"
 )
 
 type commandKind int
@@ -201,11 +203,11 @@ var commandSpecs = []command{
 	{
 		path:        "show",
 		wire:        "task.show",
-		usage:       "gilir show <id>",
-		summary:     "Show a task.",
-		positionals: []string{"<id>"},
+		usage:       "gilir show <task-id>",
+		summary:     "Show a task by its GILIR- prefixed ID.",
+		positionals: []string{"<task-id>"},
 		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
-			id, err := parseID("task id", positionals[0])
+			id, err := parseTaskID(positionals[0])
 			if err != nil {
 				return nil, err
 			}
@@ -215,11 +217,11 @@ var commandSpecs = []command{
 	{
 		path:        "delete",
 		wire:        "task.delete",
-		usage:       "gilir delete <id>",
+		usage:       "gilir delete <task-id>",
 		summary:     "Delete a task and its terminal dispatch history.",
-		positionals: []string{"<id>"},
+		positionals: []string{"<task-id>"},
 		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
-			id, err := parseID("task id", positionals[0])
+			id, err := parseTaskID(positionals[0])
 			if err != nil {
 				return nil, err
 			}
@@ -229,12 +231,12 @@ var commandSpecs = []command{
 	{
 		path:        "update",
 		wire:        "task.update",
-		usage:       "gilir update <id> [--title <title>] [--description <markdown>] [--repo <id>] [--status <status>] [--priority <priority>] [--message <markdown>]",
+		usage:       "gilir update <task-id> [--title <title>] [--description <markdown>] [--repo <id>] [--status <status>] [--priority <priority>] [--message <markdown>]",
 		summary:     "Update task fields. Moving in-review back to todo requires --message.",
-		positionals: []string{"<id>"},
+		positionals: []string{"<task-id>"},
 		flags:       []string{"title", "description", "repo", "status", "priority", "message"},
 		build: func(positionals []string, flags map[string]string) (map[string]any, error) {
-			id, err := parseID("task id", positionals[0])
+			id, err := parseTaskID(positionals[0])
 			if err != nil {
 				return nil, err
 			}
@@ -253,9 +255,9 @@ var commandSpecs = []command{
 	{
 		path:        "mark",
 		wire:        "task.mark",
-		usage:       "gilir mark <id> <marking>",
+		usage:       "gilir mark <task-id> <marking>",
 		summary:     "Add a marking to a task.",
-		positionals: []string{"<id>", "<marking>"},
+		positionals: []string{"<task-id>", "<marking>"},
 		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
 			return buildMark(positionals, true)
 		},
@@ -263,9 +265,9 @@ var commandSpecs = []command{
 	{
 		path:        "unmark",
 		wire:        "task.mark",
-		usage:       "gilir unmark <id> <marking>",
+		usage:       "gilir unmark <task-id> <marking>",
 		summary:     "Remove a marking from a task.",
-		positionals: []string{"<id>", "<marking>"},
+		positionals: []string{"<task-id>", "<marking>"},
 		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
 			return buildMark(positionals, false)
 		},
@@ -273,9 +275,9 @@ var commandSpecs = []command{
 	{
 		path:        "depend",
 		wire:        "task.depend",
-		usage:       "gilir depend <id> <blocker-id>",
+		usage:       "gilir depend <task-id> <blocker-task-id>",
 		summary:     "Record that a task is blocked by another task.",
-		positionals: []string{"<id>", "<blocker-id>"},
+		positionals: []string{"<task-id>", "<blocker-task-id>"},
 		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
 			return buildDependency(positionals, true)
 		},
@@ -283,9 +285,9 @@ var commandSpecs = []command{
 	{
 		path:        "undepend",
 		wire:        "task.depend",
-		usage:       "gilir undepend <id> <blocker-id>",
+		usage:       "gilir undepend <task-id> <blocker-task-id>",
 		summary:     "Remove a task dependency.",
-		positionals: []string{"<id>", "<blocker-id>"},
+		positionals: []string{"<task-id>", "<blocker-task-id>"},
 		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
 			return buildDependency(positionals, false)
 		},
@@ -293,11 +295,11 @@ var commandSpecs = []command{
 	{
 		path:        "comment",
 		wire:        "task.comment",
-		usage:       "gilir comment <id> <markdown>",
+		usage:       "gilir comment <task-id> <markdown>",
 		summary:     "Add a comment to a task.",
-		positionals: []string{"<id>", "<markdown>"},
+		positionals: []string{"<task-id>", "<markdown>"},
 		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
-			id, err := parseID("task id", positionals[0])
+			id, err := parseTaskID(positionals[0])
 			if err != nil {
 				return nil, err
 			}
@@ -307,11 +309,11 @@ var commandSpecs = []command{
 	{
 		path:        "edit-comment",
 		wire:        "task.comment.edit",
-		usage:       "gilir edit-comment <id> <comment-id> <markdown>",
+		usage:       "gilir edit-comment <task-id> <comment-id> <markdown>",
 		summary:     "Edit one of your task comments.",
-		positionals: []string{"<id>", "<comment-id>", "<markdown>"},
+		positionals: []string{"<task-id>", "<comment-id>", "<markdown>"},
 		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
-			id, err := parseID("task id", positionals[0])
+			id, err := parseTaskID(positionals[0])
 			if err != nil {
 				return nil, err
 			}
@@ -325,11 +327,11 @@ var commandSpecs = []command{
 	{
 		path:        "remove-comment",
 		wire:        "task.comment.remove",
-		usage:       "gilir remove-comment <id> <comment-id>",
+		usage:       "gilir remove-comment <task-id> <comment-id>",
 		summary:     "Remove one of your task comments.",
-		positionals: []string{"<id>", "<comment-id>"},
+		positionals: []string{"<task-id>", "<comment-id>"},
 		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
-			id, err := parseID("task id", positionals[0])
+			id, err := parseTaskID(positionals[0])
 			if err != nil {
 				return nil, err
 			}
@@ -343,9 +345,9 @@ var commandSpecs = []command{
 	{
 		path:        "approve",
 		wire:        "task.review",
-		usage:       "gilir approve <id> [--message <markdown>]",
+		usage:       "gilir approve <task-id> [--message <markdown>]",
 		summary:     "Approve a task, optionally with a message.",
-		positionals: []string{"<id>"},
+		positionals: []string{"<task-id>"},
 		flags:       []string{"message"},
 		build: func(positionals []string, flags map[string]string) (map[string]any, error) {
 			return buildReview(positionals, flags, true)
@@ -354,9 +356,9 @@ var commandSpecs = []command{
 	{
 		path:        "request-changes",
 		wire:        "task.review",
-		usage:       "gilir request-changes <id> --message <markdown>",
+		usage:       "gilir request-changes <task-id> --message <markdown>",
 		summary:     "Request changes on a task with a required message.",
-		positionals: []string{"<id>"},
+		positionals: []string{"<task-id>"},
 		flags:       []string{"message"},
 		required:    []string{"message"},
 		build: func(positionals []string, flags map[string]string) (map[string]any, error) {
@@ -475,7 +477,7 @@ func (c *command) validate(positionals []string, inv *arguments) error {
 }
 
 func buildMark(positionals []string, present bool) (map[string]any, error) {
-	id, err := parseID("task id", positionals[0])
+	id, err := parseTaskID(positionals[0])
 	if err != nil {
 		return nil, err
 	}
@@ -483,11 +485,11 @@ func buildMark(positionals []string, present bool) (map[string]any, error) {
 }
 
 func buildDependency(positionals []string, present bool) (map[string]any, error) {
-	id, err := parseID("task id", positionals[0])
+	id, err := parseTaskID(positionals[0])
 	if err != nil {
 		return nil, err
 	}
-	blockerID, err := parseID("blocker id", positionals[1])
+	blockerID, err := parseTaskID(positionals[1])
 	if err != nil {
 		return nil, err
 	}
@@ -495,7 +497,7 @@ func buildDependency(positionals []string, present bool) (map[string]any, error)
 }
 
 func buildReview(positionals []string, flags map[string]string, approve bool) (map[string]any, error) {
-	id, err := parseID("task id", positionals[0])
+	id, err := parseTaskID(positionals[0])
 	if err != nil {
 		return nil, err
 	}
@@ -543,6 +545,17 @@ func addIDFlag(args map[string]any, flags map[string]string, flag, key, kind str
 	}
 	args[key] = id
 	return nil
+}
+
+// parseTaskID validates a task ID positional and returns its canonical
+// spelling, for example "GILIR-42". Bare numbers are rejected so every task
+// reference names the tool that owns it.
+func parseTaskID(value string) (string, error) {
+	id, err := taskid.Normalize(value)
+	if err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 func parseID(kind, value string) (int64, error) {

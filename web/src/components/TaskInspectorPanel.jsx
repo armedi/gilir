@@ -449,7 +449,7 @@ export default function TaskInspectorPanel(props) {
                         return (
                           <li class="flat-item">
                             <div class="blocker-main">
-                              <span class="blocker-id">#{blockerId}</span>
+                              <span class="blocker-id">{blockerId}</span>
                               <span class="blocker-title">
                                 {blocker()?.title || 'Unknown task'}
                               </span>
@@ -459,7 +459,7 @@ export default function TaskInspectorPanel(props) {
                               type="button"
                               onClick={() => removeBlocker(blockerId)}
                               disabled={blockerBusy() !== null}
-                              aria-label={`Remove blocker ${blocker()?.title || `#${blockerId}`}`}
+                              aria-label={`Remove blocker ${blocker()?.title || blockerId}`}
                             >
                               Remove
                             </button>
@@ -504,7 +504,7 @@ export default function TaskInspectorPanel(props) {
                         <For each={availableBlockers()}>
                           {(item) => (
                             <option value={String(item.id)}>
-                              #{item.id} · {item.title || 'Untitled task'}
+                              {item.id} · {item.title || 'Untitled task'}
                             </option>
                           )}
                         </For>

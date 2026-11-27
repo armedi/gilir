@@ -950,7 +950,7 @@ export default function App() {
                                     onClick={() => openTask(item.id)}
                                   >
                                     <span class="task-group-dot status-in-review" aria-hidden="true" />
-                                    <span class="task-id">#{item.id}</span>
+                                    <span class="task-id">{item.id}</span>
                                     <span class="overview-row-title">
                                       {item.title || 'Untitled task'}
                                     </span>

@@ -143,7 +143,7 @@ func (s *Store) Reserve(ctx context.Context, serverURL string, serverPID int64) 
 		}
 
 		var (
-			taskID   int64
+			taskID   string
 			repoPath string
 		)
 		err = tx.QueryRowContext(ctx, `
@@ -180,7 +180,7 @@ func (s *Store) Reserve(ctx context.Context, serverURL string, serverPID int64) 
 					JOIN tasks b ON b.id = d.depends_on_id
 					WHERE d.task_id = t.id AND b.status = 'in-review'
 				),
-				t.id
+				t.seq
 			LIMIT 1`,
 		).Scan(&taskID, &repoPath)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -219,7 +219,7 @@ func (s *Store) Reserve(ctx context.Context, serverURL string, serverPID int64) 
 			`UPDATE tasks SET status = 'in-progress', updated_at = ? WHERE id = ?`,
 			formatTime(now), taskID,
 		); err != nil {
-			return fmt.Errorf("store: mark task %d in progress: %w", taskID, err)
+			return fmt.Errorf("store: mark task %s in progress: %w", taskID, err)
 		}
 
 		projectID, err := requireTask(ctx, tx, taskID)
@@ -229,7 +229,7 @@ func (s *Store) Reserve(ctx context.Context, serverURL string, serverPID int64) 
 		if _, err := appendActivity(ctx, tx, activityInput{
 			Type:      ActivityTaskClaimed,
 			Actor:     actor,
-			TaskID:    int64Pointer(taskID),
+			TaskID:    stringPointer(taskID),
 			ProjectID: int64Pointer(projectID),
 			Timestamp: now,
 			Data: map[string]any{
@@ -242,7 +242,7 @@ func (s *Store) Reserve(ctx context.Context, serverURL string, serverPID int64) 
 		if _, err := appendActivity(ctx, tx, activityInput{
 			Type:      ActivityTaskStatusChanged,
 			Actor:     actor,
-			TaskID:    int64Pointer(taskID),
+			TaskID:    stringPointer(taskID),
 			ProjectID: int64Pointer(projectID),
 			Timestamp: now,
 			Data: map[string]any{
@@ -449,7 +449,7 @@ func (s *Store) LinkSession(ctx context.Context, attemptID, sessionID, url strin
 		_, err = appendActivity(ctx, tx, activityInput{
 			Type:      ActivitySessionLinked,
 			Actor:     actor,
-			TaskID:    int64Pointer(attempt.TaskID),
+			TaskID:    stringPointer(attempt.TaskID),
 			ProjectID: int64Pointer(projectID),
 			Timestamp: now,
 			Data: map[string]any{
@@ -530,12 +530,12 @@ func (s *Store) FinishAttempt(ctx context.Context, attemptID string, outcome Att
 					`UPDATE tasks SET status = 'in-review', updated_at = ? WHERE id = ?`,
 					formatTime(now), task.ID,
 				); err != nil {
-					return fmt.Errorf("store: complete task %d: %w", task.ID, err)
+					return fmt.Errorf("store: complete task %s: %w", task.ID, err)
 				}
 				if _, err := appendActivity(ctx, tx, activityInput{
 					Type:      ActivityTaskStatusChanged,
 					Actor:     actor,
-					TaskID:    int64Pointer(task.ID),
+					TaskID:    stringPointer(task.ID),
 					ProjectID: int64Pointer(task.ProjectID),
 					Timestamp: now,
 					Data: map[string]any{
@@ -584,7 +584,7 @@ func (s *Store) FinishAttempt(ctx context.Context, attemptID string, outcome Att
 		_, err = appendActivity(ctx, tx, activityInput{
 			Type:      ActivitySessionOutcome,
 			Actor:     actor,
-			TaskID:    int64Pointer(task.ID),
+			TaskID:    stringPointer(task.ID),
 			ProjectID: int64Pointer(task.ProjectID),
 			Timestamp: now,
 			Data: map[string]any{

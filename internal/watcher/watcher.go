@@ -160,7 +160,7 @@ func (w *Watcher) tick(ctx context.Context) (int, error) {
 	}
 	for _, a := range attempts {
 		if a.ServerURL != serverURL {
-			return 0, fmt.Errorf("watcher: attempt %s for task %d belongs to OpenCode server %s, not %s", a.ID, a.TaskID, a.ServerURL, serverURL)
+			return 0, fmt.Errorf("watcher: attempt %s for task %s belongs to OpenCode server %s, not %s", a.ID, a.TaskID, a.ServerURL, serverURL)
 		}
 	}
 
@@ -221,9 +221,10 @@ func SessionID(attemptID string) string { return "ses_gilir_" + attemptID }
 // MessageID is the deterministic bootstrap prompt ID for an attempt.
 func MessageID(attemptID string) string { return "msg_gilir_" + attemptID }
 
-// Prompt is the exact bootstrap text for a task. It carries no task content.
-func Prompt(taskID int64) string {
-	return fmt.Sprintf("Read task %d with `gilir show %d --json`.", taskID, taskID)
+// Prompt is the exact bootstrap text for a task. It carries no task content,
+// only the self-describing task ID so the agent knows where the task lives.
+func Prompt(taskID string) string {
+	return fmt.Sprintf("Read task %s with `gilir show %s --json`.", taskID, taskID)
 }
 
 // observe classifies one open attempt and terminalizes it when OpenCode shows
@@ -323,7 +324,7 @@ func (w *Watcher) bootstrap(ctx context.Context, oc *opencode.Client, a store.Di
 	if proceed, done, err := w.ready(ctx, a, others); !proceed {
 		return done, err
 	}
-	if _, err := oc.Create(ctx, sid, fmt.Sprintf("Gilir task %d", a.TaskID), a.RepoPath); err != nil {
+	if _, err := oc.Create(ctx, sid, fmt.Sprintf("Gilir task %s", a.TaskID), a.RepoPath); err != nil {
 		return w.rejected(ctx, a, "create session", err)
 	}
 	if err := w.store.LinkSession(ctx, a.ID, sid, oc.Link(sid)); err != nil {

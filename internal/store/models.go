@@ -68,7 +68,7 @@ type Repo struct {
 
 // Task is the task representation exposed by the store.
 type Task struct {
-	ID          int64     `json:"id"`
+	ID          string    `json:"id"`
 	ProjectID   int64     `json:"project_id"`
 	RepoID      int64     `json:"repo_id"`
 	Title       string    `json:"title"`
@@ -95,7 +95,7 @@ type Activity struct {
 	ID        int64          `json:"id"`
 	Type      string         `json:"type"`
 	Actor     string         `json:"actor"`
-	TaskID    *int64         `json:"task_id"`
+	TaskID    *string        `json:"task_id"`
 	ProjectID *int64         `json:"project_id"`
 	Timestamp time.Time      `json:"timestamp"`
 	Data      map[string]any `json:"data"`
@@ -104,7 +104,7 @@ type Activity struct {
 // TaskDetail is the complete view of a task returned by Show.
 type TaskDetail struct {
 	Task     Task       `json:"task"`
-	Blockers []int64    `json:"blockers"`
+	Blockers []string   `json:"blockers"`
 	Sessions []Session  `json:"sessions"`
 	Activity []Activity `json:"activity"`
 }
@@ -213,7 +213,7 @@ func (o AttemptOutcome) Valid() bool {
 // it from the session table so watchers need not load TaskDetail.
 type DispatchAttempt struct {
 	ID         string         `json:"id"`
-	TaskID     int64          `json:"task_id"`
+	TaskID     string         `json:"task_id"`
 	RepoPath   string         `json:"repo_path"`
 	ServerURL  string         `json:"server_url"`
 	ServerPID  int64          `json:"server_pid"`

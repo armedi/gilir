@@ -45,91 +45,91 @@ func TestRunFlagPlacementAndActorPrecedence(t *testing.T) {
 	}{
 		{
 			name:        "global flags before command",
-			argv:        []string{"--actor", "agent:before", "--json", "show", "7"},
+			argv:        []string{"--actor", "agent:before", "--json", "show", "GILIR-7"},
 			wantActor:   "agent:before",
 			wantCommand: "task.show",
-			wantArgs:    map[string]any{"id": int64(7)},
+			wantArgs:    map[string]any{"id": "GILIR-7"},
 			wantJSON:    true,
 		},
 		{
 			name:        "global flags after positionals",
-			argv:        []string{"show", "7", "--json", "--actor=agent:after"},
+			argv:        []string{"show", "GILIR-7", "--json", "--actor=agent:after"},
 			wantActor:   "agent:after",
 			wantCommand: "task.show",
-			wantArgs:    map[string]any{"id": int64(7)},
+			wantArgs:    map[string]any{"id": "GILIR-7"},
 			wantJSON:    true,
 		},
 		{
 			name:        "empty default actor falls back",
-			argv:        []string{"show", "7"},
+			argv:        []string{"show", "GILIR-7"},
 			wantActor:   "user",
 			wantCommand: "task.show",
-			wantArgs:    map[string]any{"id": int64(7)},
+			wantArgs:    map[string]any{"id": "GILIR-7"},
 		},
 		{
 			name:         "default actor from main",
-			argv:         []string{"show", "7"},
+			argv:         []string{"show", "GILIR-7"},
 			defaultActor: "agent:environment",
 			wantActor:    "agent:environment",
 			wantCommand:  "task.show",
-			wantArgs:     map[string]any{"id": int64(7)},
+			wantArgs:     map[string]any{"id": "GILIR-7"},
 		},
 		{
 			name:         "explicit actor overrides default",
-			argv:         []string{"show", "7", "--actor", "agent:explicit"},
+			argv:         []string{"show", "GILIR-7", "--actor", "agent:explicit"},
 			defaultActor: "agent:environment",
 			wantActor:    "agent:explicit",
 			wantCommand:  "task.show",
-			wantArgs:     map[string]any{"id": int64(7)},
+			wantArgs:     map[string]any{"id": "GILIR-7"},
 		},
 		{
 			name:        "terminator protects flag-like body",
-			argv:        []string{"comment", "7", "--", "--json"},
+			argv:        []string{"comment", "GILIR-7", "--", "--json"},
 			wantActor:   "user",
 			wantCommand: "task.comment",
-			wantArgs:    map[string]any{"id": int64(7), "body": "--json"},
+			wantArgs:    map[string]any{"id": "GILIR-7", "body": "--json"},
 		},
 		{
 			name:        "edit comment",
-			argv:        []string{"edit-comment", "7", "9", "new body"},
+			argv:        []string{"edit-comment", "GILIR-7", "9", "new body"},
 			wantActor:   "user",
 			wantCommand: "task.comment.edit",
-			wantArgs:    map[string]any{"id": int64(7), "comment_id": int64(9), "body": "new body"},
+			wantArgs:    map[string]any{"id": "GILIR-7", "comment_id": int64(9), "body": "new body"},
 		},
 		{
 			name:        "remove comment",
-			argv:        []string{"remove-comment", "7", "9"},
+			argv:        []string{"remove-comment", "GILIR-7", "9"},
 			wantActor:   "user",
 			wantCommand: "task.comment.remove",
-			wantArgs:    map[string]any{"id": int64(7), "comment_id": int64(9)},
+			wantArgs:    map[string]any{"id": "GILIR-7", "comment_id": int64(9)},
 		},
 		{
 			name:        "delete task",
-			argv:        []string{"delete", "7"},
+			argv:        []string{"delete", "GILIR-7"},
 			wantActor:   "user",
 			wantCommand: "task.delete",
-			wantArgs:    map[string]any{"id": int64(7)},
+			wantArgs:    map[string]any{"id": "GILIR-7"},
 		},
 		{
 			name:        "approve without message",
-			argv:        []string{"approve", "7"},
+			argv:        []string{"approve", "GILIR-7"},
 			wantActor:   "user",
 			wantCommand: "task.review",
-			wantArgs:    map[string]any{"id": int64(7), "approve": true},
+			wantArgs:    map[string]any{"id": "GILIR-7", "approve": true},
 		},
 		{
 			name:        "approve carries optional message",
-			argv:        []string{"approve", "7", "--message", "looks good"},
+			argv:        []string{"approve", "GILIR-7", "--message", "looks good"},
 			wantActor:   "user",
 			wantCommand: "task.review",
-			wantArgs:    map[string]any{"id": int64(7), "approve": true, "message": "looks good"},
+			wantArgs:    map[string]any{"id": "GILIR-7", "approve": true, "message": "looks good"},
 		},
 		{
 			name:        "request changes carries message flag",
-			argv:        []string{"request-changes", "7", "--message", "add tests"},
+			argv:        []string{"request-changes", "GILIR-7", "--message", "add tests"},
 			wantActor:   "user",
 			wantCommand: "task.review",
-			wantArgs:    map[string]any{"id": int64(7), "approve": false, "message": "add tests"},
+			wantArgs:    map[string]any{"id": "GILIR-7", "approve": false, "message": "add tests"},
 		},
 		{
 			name:        "daemon run without port",
@@ -359,21 +359,23 @@ func TestRunRejectsRequiredAndInvalidArguments(t *testing.T) {
 	}{
 		{name: "missing required flag", argv: []string{"create", "Title", "--project", "1"}, want: "missing required flag --repo"},
 		{name: "show invalid task id", argv: []string{"show", "nope"}, want: "invalid task id"},
+		{name: "show bare numeric task id", argv: []string{"show", "7"}, want: "invalid task id"},
 		{name: "delete invalid task id", argv: []string{"delete", "nope"}, want: "invalid task id"},
+		{name: "delete lowercase prefix", argv: []string{"delete", "gilir-"}, want: "invalid task id"},
 		{name: "invalid optional repo id", argv: []string{"list", "--project", "1", "--repo", "nope"}, want: "invalid repo id"},
 		{name: "invalid concurrency", argv: []string{"daemon", "concurrency", "0"}, want: "invalid concurrency"},
 		{name: "invalid port", argv: []string{"daemon", "run", "--port", "0"}, want: "invalid port"},
 		{name: "out of range port", argv: []string{"daemon", "run", "--port", "65536"}, want: "invalid port"},
 		{name: "non-numeric port", argv: []string{"daemon", "run", "--port", "nope"}, want: "invalid port"},
 		{name: "port on status", argv: []string{"daemon", "status", "--port", "9000"}, want: "flag --port is not valid"},
-		{name: "whitespace actor", argv: []string{"show", "1", "--actor", "   "}, want: "non-empty value"},
-		{name: "unknown flag", argv: []string{"show", "1", "--bogus"}, want: "unknown flag"},
-		{name: "duplicate flag", argv: []string{"show", "1", "--json", "--json"}, want: "duplicate flag --json"},
-		{name: "extra argument", argv: []string{"show", "1", "extra"}, want: "unexpected argument"},
-		{name: "request changes missing message", argv: []string{"request-changes", "1"}, want: "missing required flag --message"},
-		{name: "request changes blank message", argv: []string{"request-changes", "1", "--message", "   "}, want: "a message is required"},
-		{name: "edit comment invalid comment id", argv: []string{"edit-comment", "1", "nope", "body"}, want: "invalid comment id"},
-		{name: "remove comment missing comment id", argv: []string{"remove-comment", "1"}, want: "missing <comment-id>"},
+		{name: "whitespace actor", argv: []string{"show", "GILIR-1", "--actor", "   "}, want: "non-empty value"},
+		{name: "unknown flag", argv: []string{"show", "GILIR-1", "--bogus"}, want: "unknown flag"},
+		{name: "duplicate flag", argv: []string{"show", "GILIR-1", "--json", "--json"}, want: "duplicate flag --json"},
+		{name: "extra argument", argv: []string{"show", "GILIR-1", "extra"}, want: "unexpected argument"},
+		{name: "request changes missing message", argv: []string{"request-changes", "GILIR-1"}, want: "missing required flag --message"},
+		{name: "request changes blank message", argv: []string{"request-changes", "GILIR-1", "--message", "   "}, want: "a message is required"},
+		{name: "edit comment invalid comment id", argv: []string{"edit-comment", "GILIR-1", "nope", "body"}, want: "invalid comment id"},
+		{name: "remove comment missing comment id", argv: []string{"remove-comment", "GILIR-1"}, want: "missing <comment-id>"},
 	}
 
 	for _, test := range tests {
@@ -400,7 +402,7 @@ func TestRunRejectsRequiredAndInvalidArguments(t *testing.T) {
 func TestRunJSONSemantics(t *testing.T) {
 	t.Run("success is bare data", func(t *testing.T) {
 		executor := &recordingExecutor{result: map[string]any{"id": int64(7), "name": "Demo"}}
-		code, stdout, stderr := runCLI([]string{"show", "7", "--json"}, "", executor)
+		code, stdout, stderr := runCLI([]string{"show", "GILIR-7", "--json"}, "", executor)
 
 		if code != 0 {
 			t.Fatalf("exit code = %d, want 0 (stderr %q)", code, stderr)
@@ -420,7 +422,7 @@ func TestRunJSONSemantics(t *testing.T) {
 
 	t.Run("command failure", func(t *testing.T) {
 		executor := &recordingExecutor{err: errors.New("store offline")}
-		code, stdout, stderr := runCLI([]string{"show", "7", "--json"}, "", executor)
+		code, stdout, stderr := runCLI([]string{"show", "GILIR-7", "--json"}, "", executor)
 
 		if code != 1 {
 			t.Fatalf("exit code = %d, want 1", code)
@@ -533,7 +535,7 @@ func TestRunHelpReflectsRepoFirstCommands(t *testing.T) {
 				"repo unlink <repo-id> <project-id>",
 				"list [--project <id>] [--repo <id>]",
 				"create <title> --repo <id> [--project <id>]",
-				"delete <id>",
+				"delete <task-id>",
 			},
 		},
 		{

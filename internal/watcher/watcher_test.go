@@ -220,7 +220,7 @@ type env struct {
 	client *opencode.Client
 	url    string
 	repo   string
-	tasks  []int64
+	tasks  []string
 }
 
 func setup(t *testing.T, tasks, maxConcurrency int) *env {
@@ -291,7 +291,7 @@ func (e *env) sessionOf(t *testing.T, i int) string {
 	t.Helper()
 	d := e.task(t, i)
 	if len(d.Sessions) != 1 {
-		t.Fatalf("task %d sessions = %+v, want one", e.tasks[i], d.Sessions)
+		t.Fatalf("task %s sessions = %+v, want one", e.tasks[i], d.Sessions)
 	}
 	return d.Sessions[0].ID
 }
@@ -344,12 +344,12 @@ func TestCapCountsExternalParentsIgnoresChildrenAndLinksBeforePrompt(t *testing.
 		t.Fatalf("prompts = %v, want one", prompts)
 	}
 	attemptID := strings.TrimPrefix(sid, "ses_gilir_")
-	if want := map[string]any{"id": "msg_gilir_" + attemptID, "text": fmt.Sprintf("Read task %d with gilir show %d --json.", e.tasks[0], e.tasks[0])}; fmt.Sprint(prompts[0]) != fmt.Sprint(want) {
+	if want := map[string]any{"id": "msg_gilir_" + attemptID, "text": fmt.Sprintf("Read task %s with `gilir show %s --json`.", e.tasks[0], e.tasks[0])}; fmt.Sprint(prompts[0]) != fmt.Sprint(want) {
 		t.Fatalf("prompt = %v, want %v", prompts[0], want)
 	}
 	var create map[string]any
 	e.oc.set(func(f *fakeOC) { create = f.creates[0] })
-	if create["title"] != fmt.Sprintf("Gilir task %d", e.tasks[0]) || create["location"].(map[string]any)["directory"] != e.repo {
+	if create["title"] != fmt.Sprintf("Gilir task %s", e.tasks[0]) || create["location"].(map[string]any)["directory"] != e.repo {
 		t.Fatalf("create = %v", create)
 	}
 	if len(linkedAtPrompt) != 1 || linkedAtPrompt[0].ID != sid || linkedAtPrompt[0].URL != e.client.Link(sid) {

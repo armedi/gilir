@@ -23,8 +23,8 @@ when `NODE_ENV=production`. Run the CLI from that install as `pnpm exec vp` in
 `web` when you need it directly.
 
 Put `gilir` on your `PATH`. The daemon prompts each agent to run `gilir show
-<id> --json`, so the binary and the same `GILIR_DB` must also be available in
-the environment where the OpenCode server runs its agents.
+GILIR-<n> --json`, so the binary and the same `GILIR_DB` must also be available
+in the environment where the OpenCode server runs its agents.
 
 ## Run
 
@@ -35,6 +35,10 @@ gilir daemon run --port 9000   # override the default port for this run
 
 Open <http://127.0.0.1:44547>. Startup details go to stderr. One daemon runs per
 database: a second `daemon run` on the same database exits with an error.
+
+The schema version changed when task IDs gained their `GILIR-` prefix. A
+database created by an older Gilir is rejected with an error; delete the file
+and restart the daemon to recreate it (task history is not migrated).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -83,29 +87,35 @@ gilir repo add ~/src/ledger                      # -> auto-creates project "ledg
 gilir repo list                                  # every repo with its project_ids
 gilir repo link 2 1                              # share repo 2 with project 1
 gilir repo unlink 2 1                            # remove that link
-gilir create "Fix rounding" --repo 1 --status todo --priority high
-gilir create "Ship release notes" --repo 1 --project 1 --status todo   # -> id 2
+gilir create "Fix rounding" --repo 1 --status todo --priority high   # -> GILIR-1
+gilir create "Ship release notes" --repo 1 --project 1 --status todo   # -> GILIR-2
 gilir list --status todo                         # tasks across all projects
 gilir list --project 1 --status todo
-gilir show 1 --json
-gilir depend 2 1                                 # task 2 waits for task 1
-gilir comment 1 "Repro in **ledger_test.go**" --actor agent:me
-gilir edit-comment 1 12 "Narrowed to **rounding**" --actor agent:me
-gilir remove-comment 1 12 --actor agent:me
-gilir approve 1                                  # or: gilir request-changes 1 --message "Add tests"
+gilir show GILIR-1 --json
+gilir depend GILIR-2 GILIR-1                     # GILIR-2 waits for GILIR-1
+gilir comment GILIR-1 "Repro in **ledger_test.go**" --actor agent:me
+gilir edit-comment GILIR-1 12 "Narrowed to **rounding**" --actor agent:me
+gilir remove-comment GILIR-1 12 --actor agent:me
+gilir approve GILIR-1                            # or: gilir request-changes GILIR-1 --message "Add tests"
 gilir daemon status
 gilir daemon pause
 gilir daemon resume
 gilir daemon concurrency 2
-gilir delete 1                                   # keep the audit history
+gilir delete GILIR-1                             # keep the audit history
 gilir --help
 gilir skill                                      # agent workflow instructions
 ```
 
-`gilir delete <id>` removes the task, its terminal dispatch attempts and local
-sessions, and its outgoing dependencies. The append-only activity history is
-preserved. Deletion is refused while a dispatch attempt is reserved or another
-task still depends on the task.
+Task IDs carry a `GILIR-` prefix, for example `GILIR-1`. The prefix is stored
+with the task, appears in JSON and the dashboard, and is used verbatim in the
+agent prompt, so a `GILIR-` reference always identifies Gilir task management.
+Task commands accept only that form; `gilir show 1` is an error. Project,
+repository, and comment IDs stay bare positive integers.
+
+`gilir delete GILIR-<n>` removes the task, its terminal dispatch attempts and
+local sessions, and its outgoing dependencies. The append-only activity history
+is preserved. Deletion is refused while a dispatch attempt is reserved or
+another task still depends on the task.
 
 ## Queue semantics
 
@@ -128,7 +138,7 @@ task still depends on the task.
 - `approve` moves an `in-review` task to `done`. `request-changes` requires a
   message, moves the task to `todo`, marks it `changes-requested`, and records
   the message as a comment. The same message requirement applies to
-  `gilir update <id> --status todo --message "..."` from `in-review`, because it
+  `gilir update GILIR-<n> --status todo --message "..."` from `in-review`, because it
   applies the same marking. The store enforces both paths, so CLI and HTTP
   callers cannot request changes without a message.
 

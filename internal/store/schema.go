@@ -22,7 +22,8 @@ var schemaStatements = []string{
 	) STRICT`,
 
 	`CREATE TABLE tasks (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		seq INTEGER PRIMARY KEY AUTOINCREMENT,
+		id TEXT NOT NULL UNIQUE GENERATED ALWAYS AS ('GILIR-' || seq) STORED,
 		project_id INTEGER NOT NULL,
 		repo_id INTEGER NOT NULL,
 		title TEXT NOT NULL CHECK (length(trim(title)) > 0),
@@ -39,7 +40,7 @@ var schemaStatements = []string{
 	) STRICT`,
 
 	`CREATE TABLE task_markings (
-		task_id INTEGER NOT NULL,
+		task_id TEXT NOT NULL,
 		marking TEXT NOT NULL CHECK (length(trim(marking)) > 0),
 		created_at TEXT NOT NULL,
 		PRIMARY KEY (task_id, marking),
@@ -47,8 +48,8 @@ var schemaStatements = []string{
 	) STRICT`,
 
 	`CREATE TABLE task_dependencies (
-		task_id INTEGER NOT NULL,
-		depends_on_id INTEGER NOT NULL,
+		task_id TEXT NOT NULL,
+		depends_on_id TEXT NOT NULL,
 		project_id INTEGER NOT NULL,
 		created_at TEXT NOT NULL,
 		PRIMARY KEY (task_id, depends_on_id),
@@ -60,7 +61,7 @@ var schemaStatements = []string{
 	`CREATE TABLE dispatch_attempts (
 		seq INTEGER PRIMARY KEY AUTOINCREMENT,
 		id TEXT NOT NULL UNIQUE CHECK (length(trim(id)) > 0),
-		task_id INTEGER NOT NULL,
+		task_id TEXT NOT NULL,
 		repo_path TEXT NOT NULL CHECK (length(trim(repo_path)) > 0),
 		server_url TEXT NOT NULL CHECK (length(trim(server_url)) > 0),
 		server_pid INTEGER NOT NULL CHECK (server_pid > 0),
@@ -88,7 +89,7 @@ var schemaStatements = []string{
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		type TEXT NOT NULL,
 		actor TEXT NOT NULL CHECK (length(trim(actor)) > 0),
-		task_id INTEGER,
+		task_id TEXT,
 		project_id INTEGER,
 		timestamp TEXT NOT NULL,
 		data TEXT NOT NULL DEFAULT '{}'

@@ -11,13 +11,19 @@
 //
 //	file:<absolute-path>?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate
 //
-// Projects, repositories, and tasks use AUTOINCREMENT integer primary keys, so
-// IDs are positive and allocated in insertion order. A repository is a
+// Projects and repositories use AUTOINCREMENT integer primary keys, so their
+// IDs are positive and allocated in insertion order. Tasks use a hidden
+// AUTOINCREMENT "seq" as their true key and expose the derived text id
+// "GILIR-<seq>" as the task ID. The prefix is stored with every task row and is
+// what agents see in prompts and what callers pass back, so a task reference
+// always identifies Gilir task management. Because the text ID embeds a
+// variable-length number, ordering uses seq, never the text key. A repository is a
 // canonical Git root registered once globally and linked to one or more
 // projects through project_repos. Tasks target a linked (project, repository)
 // pair through a composite foreign key, so every task's repository belongs to
 // its project, while task dependencies use composite foreign keys to prove both
-// ends belong to the same project. Self-dependencies and dependency cycles are
+// ends belong to the same project. Referencing tables (markings, dependencies,
+// attempts, activity) store the text task ID. Self-dependencies and dependency cycles are
 // rejected inside the writing transaction using a recursive CTE.
 //
 // All domain mutations execute in one transaction and append an immutable

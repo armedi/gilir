@@ -42,12 +42,12 @@ func TestReservePriorityOrderingWithUrgent(t *testing.T) {
 		Status: StatusTodo, Priority: PriorityLow,
 	})
 
-	wantOrder := []int64{urgent.ID, highChanges.ID, mediumChanges.ID, medium.ID, low.ID}
+	wantOrder := []string{urgent.ID, highChanges.ID, mediumChanges.ID, medium.ID, low.ID}
 	attemptIDs := map[string]bool{}
 	for index, wantTaskID := range wantOrder {
 		attempt := mustReserve(t, s, "http://127.0.0.1:4096", int64(1000+index))
 		if attempt.TaskID != wantTaskID {
-			t.Fatalf("reservation %d selected task %d, want %d", index, attempt.TaskID, wantTaskID)
+			t.Fatalf("reservation %d selected task %s, want %s", index, attempt.TaskID, wantTaskID)
 		}
 		if attempt.State != AttemptStateReserved {
 			t.Fatalf("attempt state = %q, want reserved", attempt.State)
@@ -85,7 +85,7 @@ func TestReservePriorityOrderingWithUrgent(t *testing.T) {
 	for _, wantTaskID := range wantOrder {
 		task := mustShow(t, s, wantTaskID).Task
 		if task.Status != StatusInReview {
-			t.Fatalf("task %d status = %q, want in-review", task.ID, task.Status)
+			t.Fatalf("task %s status = %q, want in-review", task.ID, task.Status)
 		}
 	}
 }
@@ -107,7 +107,7 @@ func TestReserveChangesRequestedBeforeTaskID(t *testing.T) {
 	}
 	attempt := mustReserve(t, s, "http://127.0.0.1:4096", 100)
 	if attempt.TaskID != changes.ID {
-		t.Fatalf("selected task %d, want changes task %d ahead of older plain %d", attempt.TaskID, changes.ID, plain.ID)
+		t.Fatalf("selected task %s, want changes task %s ahead of older plain %s", attempt.TaskID, changes.ID, plain.ID)
 	}
 }
 
@@ -133,14 +133,14 @@ func TestReserveTieBreaksOnFewerInReviewBlockersThenTaskID(t *testing.T) {
 	})
 	first := mustReserve(t, s, "http://127.0.0.1:4096", 100)
 	if first.TaskID != plain.ID {
-		t.Fatalf("selected task %d, want plain %d (zero in-review blockers) over %d (one)", first.TaskID, plain.ID, blocked.ID)
+		t.Fatalf("selected task %s, want plain %s (zero in-review blockers) over %s (one)", first.TaskID, plain.ID, blocked.ID)
 	}
 	if err := s.FinishAttempt(ctx, first.ID, OutcomeSuccess, ""); err != nil {
 		t.Fatalf("finish plain: %v", err)
 	}
 	second := mustReserve(t, s, "http://127.0.0.1:4096", 100)
 	if second.TaskID != blocked.ID {
-		t.Fatalf("selected task %d, want blocked task %d", second.TaskID, blocked.ID)
+		t.Fatalf("selected task %s, want blocked task %s", second.TaskID, blocked.ID)
 	}
 	if err := s.FinishAttempt(ctx, second.ID, OutcomeSuccess, ""); err != nil {
 		t.Fatalf("finish blocked: %v", err)
@@ -156,7 +156,7 @@ func TestReserveTieBreaksOnFewerInReviewBlockersThenTaskID(t *testing.T) {
 	})
 	third := mustReserve(t, s, "http://127.0.0.1:4096", 100)
 	if third.TaskID != older.ID {
-		t.Fatalf("selected task %d, want lower ID %d over %d", third.TaskID, older.ID, newer.ID)
+		t.Fatalf("selected task %s, want lower ID %s over %s", third.TaskID, older.ID, newer.ID)
 	}
 }
 
@@ -183,7 +183,7 @@ func TestReserveDependencyEligibilityAndReblock(t *testing.T) {
 
 	first := mustReserve(t, s, "http://127.0.0.1:4096", 100)
 	if first.TaskID != normal.ID {
-		t.Fatalf("blocked high task was reserved: selected %d, want normal %d", first.TaskID, normal.ID)
+		t.Fatalf("blocked high task was reserved: selected %s, want normal %s", first.TaskID, normal.ID)
 	}
 	if err := s.FinishAttempt(ctx, first.ID, OutcomeSuccess, ""); err != nil {
 		t.Fatalf("finish normal: %v", err)
@@ -195,7 +195,7 @@ func TestReserveDependencyEligibilityAndReblock(t *testing.T) {
 	}
 	second := mustReserve(t, s, "http://127.0.0.1:4096", 100)
 	if second.TaskID != dependent.ID {
-		t.Fatalf("in-review blocker did not unblock high task: selected %d, want %d", second.TaskID, dependent.ID)
+		t.Fatalf("in-review blocker did not unblock high task: selected %s, want %s", second.TaskID, dependent.ID)
 	}
 	if err := s.FinishAttempt(ctx, second.ID, OutcomeSuccess, ""); err != nil {
 		t.Fatalf("finish dependent: %v", err)
@@ -223,21 +223,21 @@ func TestReserveDependencyEligibilityAndReblock(t *testing.T) {
 	}
 	third := mustReserve(t, s, "http://127.0.0.1:4096", 100)
 	if third.TaskID != normal2.ID {
-		t.Fatalf("reblocked high task was reserved: selected %d, want normal2 %d", third.TaskID, normal2.ID)
+		t.Fatalf("reblocked high task was reserved: selected %s, want normal2 %s", third.TaskID, normal2.ID)
 	}
 	if err := s.FinishAttempt(ctx, third.ID, OutcomeSuccess, ""); err != nil {
 		t.Fatalf("finish normal2: %v", err)
 	}
 	fourth := mustReserve(t, s, "http://127.0.0.1:4096", 100)
 	if fourth.TaskID != blocker.ID {
-		t.Fatalf("selected %d, want changes-requested blocker %d", fourth.TaskID, blocker.ID)
+		t.Fatalf("selected %s, want changes-requested blocker %s", fourth.TaskID, blocker.ID)
 	}
 	if err := s.FinishAttempt(ctx, fourth.ID, OutcomeSuccess, ""); err != nil {
 		t.Fatalf("finish blocker: %v", err)
 	}
 	fifth := mustReserve(t, s, "http://127.0.0.1:4096", 100)
 	if fifth.TaskID != dependent2.ID {
-		t.Fatalf("done blocker did not unblock second dependent: selected %d, want %d", fifth.TaskID, dependent2.ID)
+		t.Fatalf("done blocker did not unblock second dependent: selected %s, want %s", fifth.TaskID, dependent2.ID)
 	}
 }
 
@@ -297,7 +297,7 @@ func TestReservePausedQueueAndNoCandidate(t *testing.T) {
 	}
 	attempt = mustReserve(t, s, "http://127.0.0.1:4096", 100)
 	if attempt.TaskID != task.ID {
-		t.Fatalf("resumed reserve task = %d, want %d", attempt.TaskID, task.ID)
+		t.Fatalf("resumed reserve task = %s, want %s", attempt.TaskID, task.ID)
 	}
 	var queueEvents int
 	if err := s.db.QueryRowContext(ctx,
@@ -483,7 +483,7 @@ func TestReservePreventsSecondUnresolvedAttemptEvenWhenTodo(t *testing.T) {
 		t.Fatalf("attempt ID reused: %s", third.ID)
 	}
 	if third.TaskID != task.ID {
-		t.Fatalf("second reservation task = %d, want %d", third.TaskID, task.ID)
+		t.Fatalf("second reservation task = %s, want %s", third.TaskID, task.ID)
 	}
 }
 
@@ -640,7 +640,7 @@ func TestFinishFailureAndReworkHistory(t *testing.T) {
 	}
 	second := mustReserve(t, s, "http://127.0.0.1:4096", 100)
 	if second.TaskID != task.ID {
-		t.Fatalf("retry task = %d, want %d", second.TaskID, task.ID)
+		t.Fatalf("retry task = %s, want %s", second.TaskID, task.ID)
 	}
 	retried := mustShow(t, s, task.ID)
 	if len(retried.Task.Markings) != 0 {
@@ -662,7 +662,7 @@ func TestFinishFailureAndReworkHistory(t *testing.T) {
 	}
 	third := mustReserve(t, s, "http://127.0.0.1:4096", 100)
 	if third.TaskID != task.ID {
-		t.Fatalf("rework reservation task = %d, want %d", third.TaskID, task.ID)
+		t.Fatalf("rework reservation task = %s, want %s", third.TaskID, task.ID)
 	}
 	if err := s.FinishAttempt(ctx, third.ID, OutcomeSuccess, "addressed"); err != nil {
 		t.Fatalf("finish rework: %v", err)
@@ -719,7 +719,7 @@ func TestFinishAfterManualEditsAndAbandoned(t *testing.T) {
 
 	second := mustReserve(t, s, "http://127.0.0.1:4096", 101)
 	if second.TaskID != task.ID {
-		t.Fatalf("task not reservable after terminal attempt: %d", second.TaskID)
+		t.Fatalf("task not reservable after terminal attempt: %s", second.TaskID)
 	}
 	if _, err := s.SetMarking(ctx, "alice", task.ID, "keep", true); err != nil {
 		t.Fatalf("set keep marking: %v", err)
@@ -753,7 +753,7 @@ func TestFinishAfterManualEditsAndAbandoned(t *testing.T) {
 
 	third := mustReserve(t, s, "http://127.0.0.1:4096", 102)
 	if third.TaskID != task.ID {
-		t.Fatalf("reserve after abandoned = %d", third.TaskID)
+		t.Fatalf("reserve after abandoned = %s", third.TaskID)
 	}
 	if _, err := s.UpdateTask(ctx, "alice", task.ID, TaskPatch{Status: &todo}); err != nil {
 		t.Fatalf("manual return before failed outcome: %v", err)
@@ -807,7 +807,7 @@ func TestConcurrentReserveSerializesWriters(t *testing.T) {
 	}
 
 	nonNil := 0
-	taskIDs := map[int64]bool{}
+	taskIDs := map[string]bool{}
 	attemptIDs := map[string]bool{}
 	for attempt := range attempts {
 		if attempt == nil {
@@ -815,7 +815,7 @@ func TestConcurrentReserveSerializesWriters(t *testing.T) {
 		}
 		nonNil++
 		if taskIDs[attempt.TaskID] {
-			t.Fatalf("task %d reserved twice", attempt.TaskID)
+			t.Fatalf("task %s reserved twice", attempt.TaskID)
 		}
 		taskIDs[attempt.TaskID] = true
 		if attemptIDs[attempt.ID] {

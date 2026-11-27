@@ -119,11 +119,11 @@ func mustCreateTask(t *testing.T, s *Store, in CreateTaskParams) Task {
 	return task
 }
 
-func mustShow(t *testing.T, s *Store, taskID int64) TaskDetail {
+func mustShow(t *testing.T, s *Store, taskID string) TaskDetail {
 	t.Helper()
 	detail, err := s.Show(context.Background(), taskID)
 	if err != nil {
-		t.Fatalf("Show(%d): %v", taskID, err)
+		t.Fatalf("Show(%s): %v", taskID, err)
 	}
 	return detail
 }

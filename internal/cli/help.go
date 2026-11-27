@@ -88,7 +88,9 @@ func generalHelp() string {
 	builder.WriteString("  --actor <actor>  Audit identity (default: GILIR_ACTOR or \"user\")\n")
 	builder.WriteString("  --json           Machine-readable JSON output\n")
 	builder.WriteString("  --help           Show help\n")
-	builder.WriteString("\nIDs are positive integers. Use -- to pass values that begin with --.\n")
+	builder.WriteString("\nProject, repository, and comment IDs are positive integers. Task IDs\n")
+	builder.WriteString("carry the GILIR- prefix, for example GILIR-42. Use -- to pass values that\n")
+	builder.WriteString("begin with --.\n")
 	return builder.String()
 }
 

@@ -5,10 +5,12 @@ description: Work a Gilir task through its audited lifecycle: inspect it, record
 
 # Gilir task bootstrap
 
-Work in the shared Gilir task, not local notes. Set these first:
+Work in the shared Gilir task, not local notes. `task_id` is the prefixed task
+ID (`GILIR-<number>`) that names this task and marks it as Gilir work. Set these
+first:
 
 ```sh
-task_id=42
+task_id=GILIR-42
 session_id=ses_your_session_id
 ```
 
@@ -61,10 +63,12 @@ gilir repo unlink 1 4                                            # unlink; refus
 A task always targets a repository. When the repo belongs to exactly one project, `--project` can be omitted and the project is inferred; a repo linked to several projects requires `--project`:
 
 ```sh
-gilir create "Fix rounding" --repo 1 --status todo --priority high
+gilir create "Fix rounding" --repo 1 --status todo --priority high   # prints GILIR-7
 gilir create "Fix rounding" --repo 1 --project 3
 gilir list --repo 1 --status todo                                # tasks across all projects
 gilir list --project 3                                           # tasks in one project
 ```
 
-Use `gilir --help` or `gilir <command> --help` for exact syntax.
+Task commands take the prefixed ID printed by `create`, for example
+`gilir show GILIR-7`. Bare numbers are rejected. Use `gilir --help` or
+`gilir <command> --help` for exact syntax.

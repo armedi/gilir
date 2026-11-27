@@ -461,7 +461,7 @@ export default function TaskDetailPane(props) {
               fallback={
                 <Show
                   when={task()}
-                  fallback={<h2 class="center-title">Task #{props.taskId ?? ''}</h2>}
+                  fallback={<h2 class="center-title">Task {props.taskId ?? ''}</h2>}
                 >
                   {(current) => (
                     <button
@@ -505,7 +505,7 @@ export default function TaskDetailPane(props) {
             <Show when={task()}>
               {(current) => (
                 <div class="center-meta">
-                  <span class="center-id">#{props.taskId}</span>
+                  <span class="center-id">{props.taskId}</span>
                   <StatusBadge value={current().status} />
                   <PriorityBadge value={current().priority} />
                   <Show when={projectName()}>
@@ -531,7 +531,7 @@ export default function TaskDetailPane(props) {
                 ref={deleteButton}
                 class="btn btn-ghost btn-sm"
                 type="button"
-                aria-label={`Delete task #${props.taskId}`}
+                aria-label={`Delete task ${props.taskId}`}
                 onClick={startDelete}
                 disabled={deleteBusy()}
               >
@@ -563,15 +563,15 @@ export default function TaskDetailPane(props) {
             <div
               class="confirm-inline"
               role="group"
-              aria-label={`Confirm deletion of task #${props.taskId}`}
+              aria-label={`Confirm deletion of task ${props.taskId}`}
               onKeyDown={handleConfirmDeleteKeyDown}
             >
-              <span class="confirm-text">Delete task #{props.taskId}?</span>
+              <span class="confirm-text">Delete task {props.taskId}?</span>
               <button
                 ref={confirmDeleteButton}
                 class="btn btn-danger btn-sm"
                 type="button"
-                aria-label={`Confirm deletion of task #${props.taskId}`}
+                aria-label={`Confirm deletion of task ${props.taskId}`}
                 onClick={removeTask}
                 disabled={deleteBusy()}
               >

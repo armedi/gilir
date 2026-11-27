@@ -112,10 +112,17 @@ function renderSummary(event) {
     );
   }
 
-  if (type === 'task.dependency_added' || type === 'task.dependency_removed') {
-    const blockerId = data.blocker_id ?? data.id;
+  // The store emits "dependency.added"/"dependency.removed"; older dashboards
+  // used "task.dependency_*". Accept both so the blocker's GILIR- ID shows.
+  if (
+    type === 'task.dependency_added' ||
+    type === 'task.dependency_removed' ||
+    type === 'dependency.added' ||
+    type === 'dependency.removed'
+  ) {
+    const blockerId = data.blocker_id ?? data.depends_on_id ?? data.id;
     if (blockerId != null) {
-      return <span class="activity-inline-mono">#{String(blockerId)}</span>;
+      return <span class="activity-inline-mono">{String(blockerId)}</span>;
     }
   }
 
