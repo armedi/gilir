@@ -26,6 +26,9 @@ importers:
       '@fontsource-variable/jetbrains-mono':
         specifier: ^5.3.0
         version: 5.3.0
+      '@solidjs/router':
+        specifier: 2.0.1
+        version: 2.0.1(@solidjs/web@2.0.4(solid-js@2.0.4))(solid-js@2.0.4)
       '@solidjs/web':
         specifier: 2.0.4
         version: 2.0.4(solid-js@2.0.4)
@@ -396,6 +399,16 @@ packages:
 
   '@solidjs/compiler@2.0.3':
     resolution: {integrity: sha512-05CTYXgogEf1Ww7AXFRKbIhmev5RrEyEumBjqyubTD0015l26f6DySW8/pbkEcWIaSRzTtbE4usuMIOOugig/Q==}
+
+  '@solidjs/router@2.0.1':
+    resolution: {integrity: sha512-XFmb2A08mcvSnhKoM4x16Kt6olZMlnDUlzHA3w8nX3gpxPxOs40YP07rH2uNuTliTU7lavkcKIlpQzWzRi4yDw==}
+    peerDependencies:
+      '@solidjs/web': ^2.0.0
+      filesystem-routing: '>=0.4.0'
+      solid-js: ^2.0.0
+    peerDependenciesMeta:
+      filesystem-routing:
+        optional: true
 
   '@solidjs/signals@2.0.4':
     resolution: {integrity: sha512-U/Z0DOsoJO18Wsw/5piSrJhtj85nMOOD/ldn8ZP+CCA5RVcu4GDheNTOECOZwxCS+l7BVIzIakToJC91Q6lMXQ==}
@@ -1333,6 +1346,11 @@ snapshots:
       '@solidjs/compiler-linux-x64-gnu': 2.0.3
       '@solidjs/compiler-wasm32-wasi': 2.0.3
       '@solidjs/compiler-win32-x64-msvc': 2.0.3
+
+  '@solidjs/router@2.0.1(@solidjs/web@2.0.4(solid-js@2.0.4))(solid-js@2.0.4)':
+    dependencies:
+      '@solidjs/web': 2.0.4(solid-js@2.0.4)
+      solid-js: 2.0.4
 
   '@solidjs/signals@2.0.4': {}
 

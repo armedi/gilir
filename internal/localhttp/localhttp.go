@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/armedi/gilir/internal/taskid"
 )
 
 const (
@@ -215,13 +217,8 @@ func (h *handler) serveStatic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name, ok := staticName(r.URL.Path)
+	name, ok := h.staticFile(r.URL.Path)
 	if !ok {
-		writeStaticNotFound(w, r)
-		return
-	}
-	info, err := fs.Stat(h.web, name)
-	if err != nil || !info.Mode().IsRegular() {
 		writeStaticNotFound(w, r)
 		return
 	}
@@ -425,6 +422,67 @@ func staticName(urlPath string) (string, bool) {
 	return name, true
 }
 
+// staticFile resolves a request path to a bundle file. Page routes are
+// client-side destinations: a direct load or refresh asks for the route's
+// path, which is not a file in the bundle, so the entry point answers and the
+// router renders the view. Unknown assets still 404: only recognized page
+// shapes fall back, never arbitrary paths, directories, or files with an
+// extension.
+func (h *handler) staticFile(urlPath string) (string, bool) {
+	name, ok := staticName(urlPath)
+	if ok && h.hasRegularFile(name) {
+		return name, true
+	}
+	if !staticPagePath(urlPath) || !h.hasRegularFile("index.html") {
+		return "", false
+	}
+	return "index.html", true
+}
+
+// staticPagePath reports whether urlPath is a client-side page destination
+// rather than a bundle file. Only the shapes the dashboard routes own are
+// recognized so a request for a missing asset (anything with an extension,
+// anything under a bundle directory) still 404s instead of answering with the
+// entry point. A trailing slash is accepted because the browser may add one,
+// and fixed segments are matched case-insensitively to mirror the client
+// router.
+func staticPagePath(urlPath string) bool {
+	// The client matcher rejects empty interior segments, so `//` (or any
+	// doubled slash) must not become an HTML response.
+	if strings.Contains(urlPath, "//") {
+		return false
+	}
+	for len(urlPath) > 1 && strings.HasSuffix(urlPath, "/") {
+		urlPath = strings.TrimSuffix(urlPath, "/")
+	}
+	switch strings.ToLower(urlPath) {
+	case "/", "/tasks/new", "/projects", "/projects/repos/new":
+		return true
+	}
+	// /tasks/:taskId — only canonical IDs (case-insensitive prefix, positive
+	// decimal, int64 range) are pages. Anything else is an unknown path, so a
+	// direct load cannot turn an arbitrary segment into an HTML response.
+	// taskid.Parse trims surrounding space; the client rejects it, so require
+	// the literal segment to match too.
+	id := ""
+	switch {
+	case len(urlPath) >= len("/tasks/") && strings.EqualFold(urlPath[:len("/tasks/")], "/tasks/"):
+		id = urlPath[len("/tasks/"):]
+	default:
+		return false
+	}
+	if id != strings.TrimSpace(id) {
+		return false
+	}
+	_, err := taskid.Parse(id)
+	return err == nil
+}
+
+func (h *handler) hasRegularFile(name string) bool {
+	info, err := fs.Stat(h.web, name)
+	return err == nil && info.Mode().IsRegular()
+}
+
 func setStaticHeaders(header http.Header) {
 	header.Set("Content-Security-Policy", staticContentSecurityPolicy)
 	header.Set("X-Frame-Options", "DENY")
@@ -435,7 +493,7 @@ func setStaticHeaders(header http.Header) {
 
 func writeStaticNotFound(w http.ResponseWriter, r *http.Request) {
 	message := "not found"
-	if r.URL.Path == "" || r.URL.Path == "/" {
+	if r.URL.Path == "" || r.URL.Path == "/" || staticPagePath(r.URL.Path) {
 		message = "web interface not available"
 	}
 	writePlainError(w, r, http.StatusNotFound, message)

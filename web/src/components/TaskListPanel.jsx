@@ -1,4 +1,5 @@
 import { Show, createMemo } from 'solid-js';
+import { PATHS } from '../shell';
 import TaskList from './TaskList';
 
 export default function TaskListPanel(props) {
@@ -37,7 +38,6 @@ export default function TaskListPanel(props) {
           projects={props.projects}
           selectedTaskId={props.selectedTaskId}
           statusFilter={props.statusFilter}
-          onOpen={props.onOpen}
         />
       </Show>
 
@@ -49,9 +49,9 @@ export default function TaskListPanel(props) {
               <>
                 <h3>No repositories connected</h3>
                 <p>Connect a local Git repository to start queuing work.</p>
-                <button class="btn btn-primary btn-sm" type="button" onClick={props.onAddRepo}>
+                <a class="btn btn-primary btn-sm" href={PATHS.addRepo}>
                   Add repository
-                </button>
+                </a>
               </>
             }
           >
@@ -61,9 +61,9 @@ export default function TaskListPanel(props) {
                 <>
                   <h3>Queue is clear</h3>
                   <p>Create a task to place work in the local dispatch queue.</p>
-                  <button class="btn btn-primary btn-sm" type="button" onClick={props.onNewTask}>
+                  <a class="btn btn-primary btn-sm" href={PATHS.newTask}>
                     New task
-                  </button>
+                  </a>
                 </>
               }
             >

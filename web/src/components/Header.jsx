@@ -220,9 +220,9 @@ export default function Header(props) {
             </button>
           </div>
 
-          <button class="btn btn-primary header-cta" type="button" onClick={props.onPrimaryAction}>
+          <a class="btn btn-primary header-cta" href={props.primaryHref}>
             {props.hasRepos ? 'New task' : 'Add repository'}
-          </button>
+          </a>
 
           <Show when={props.canShowRight}>
             <span class="header-divider" aria-hidden="true" />

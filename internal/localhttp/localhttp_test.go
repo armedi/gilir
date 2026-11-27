@@ -838,6 +838,170 @@ func TestStaticServing(t *testing.T) {
 	})
 }
 
+func TestStaticPageFallback(t *testing.T) {
+	web := fstest.MapFS{
+		"index.html":       &fstest.MapFile{Data: []byte("<!doctype html><title>gilir app</title>")},
+		"app.js":           &fstest.MapFile{Data: []byte("console.log('gilir')")},
+		"assets/style.css": &fstest.MapFile{Data: []byte("body { color: black; }")},
+	}
+	handler := Handler(testPort, web, unexpectedExecute(t), nil)
+
+	pages := []string{
+		"/tasks/GILIR-42",
+		"/tasks/GILIR-42/",
+		"/tasks/gilir-7",
+		"/tasks/new",
+		"/tasks/new/",
+		"/projects",
+		"/projects/",
+		"/projects/repos/new",
+		"/projects/repos/new/",
+		"/Projects",
+		"/TASKS/NEW",
+		"/Tasks/GILIR-1",
+	}
+	for _, target := range pages {
+		t.Run("page "+target, func(t *testing.T) {
+			recorder := serveRequest(handler, pageRequest(http.MethodGet, target))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+			}
+			assertStaticHeaders(t, recorder)
+			if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+				t.Errorf("Content-Type = %q, want text/html", got)
+			}
+			if !strings.Contains(recorder.Body.String(), "gilir app") {
+				t.Errorf("body = %q, want index content", recorder.Body.String())
+			}
+		})
+	}
+
+	t.Run("page head", func(t *testing.T) {
+		recorder := serveRequest(handler, pageRequest(http.MethodHead, "/tasks/GILIR-42"))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+		}
+		if recorder.Body.Len() != 0 {
+			t.Errorf("HEAD body = %q, want empty", recorder.Body.String())
+		}
+	})
+
+	unknown := []string{
+		"/missing",
+		"/tasks",
+		"/tasks/",
+		"/tasks/not-a-task",
+		"/tasks/GILIR-0",
+		"/tasks/GILIR-042",
+		"/tasks/42",
+		"/tasks/GILIR-42/extra",
+		"/tasks/missing.js",
+		"/tasks/GILIR-9223372036854775808",
+		"/tasks/GILIR-42%20",
+		"/projects/missing",
+		"/projects/repos",
+		"/projects/repos/new/extra",
+		"//",
+		"//projects",
+		"/assets/missing.js",
+		"/api/other",
+	}
+	for _, target := range unknown {
+		t.Run("not page "+target, func(t *testing.T) {
+			recorder := serveRequest(handler, pageRequest(http.MethodGet, target))
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+			}
+			assertStaticHeaders(t, recorder)
+			if strings.Contains(recorder.Body.String(), "gilir app") {
+				t.Errorf("non-page path served the entry point: %q", recorder.Body.String())
+			}
+			if got := recorder.Body.String(); !strings.Contains(got, "not found") {
+				t.Errorf("body = %q, want a not found message", got)
+			}
+		})
+	}
+}
+
+func TestStaticPageFallbackWithoutIndex(t *testing.T) {
+	web := fstest.MapFS{
+		"app.js": &fstest.MapFile{Data: []byte("console.log('gilir')")},
+	}
+	handler := Handler(testPort, web, unexpectedExecute(t), nil)
+
+	t.Run("page path", func(t *testing.T) {
+		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/tasks/GILIR-42"))
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+		}
+		assertStaticHeaders(t, recorder)
+		if strings.Contains(recorder.Body.String(), "console.log") {
+			t.Errorf("missing index fell back to an asset: %q", recorder.Body.String())
+		}
+		if !strings.Contains(recorder.Body.String(), "web interface not available") {
+			t.Errorf("body = %q, want unavailable message", recorder.Body.String())
+		}
+	})
+
+	t.Run("nil web", func(t *testing.T) {
+		recorder := serveRequest(
+			Handler(testPort, nil, unexpectedExecute(t), nil),
+			pageRequest(http.MethodGet, "/projects"),
+		)
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+		}
+		if !strings.Contains(recorder.Body.String(), "web interface not available") {
+			t.Errorf("body = %q, want unavailable message", recorder.Body.String())
+		}
+	})
+}
+
+func TestStaticPageFallbackPrefersRealFile(t *testing.T) {
+	web := fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("entry point")},
+		"projects":   &fstest.MapFile{Data: []byte("real projects file")},
+	}
+	handler := Handler(testPort, web, unexpectedExecute(t), nil)
+
+	recorder := serveRequest(handler, pageRequest(http.MethodGet, "/projects"))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if got := recorder.Body.String(); got != "real projects file" {
+		t.Errorf("body = %q, want the real file to win over the page fallback", got)
+	}
+}
+
+func TestStaticPageFallbackKeepsMethodAndHostGuards(t *testing.T) {
+	web := fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("<!doctype html><title>gilir app</title>")},
+	}
+	handler := Handler(testPort, web, unexpectedExecute(t), nil)
+
+	t.Run("post page path", func(t *testing.T) {
+		recorder := serveRequest(handler, pageRequest(http.MethodPost, "/projects"))
+		if recorder.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusMethodNotAllowed)
+		}
+		if got := recorder.Header().Get("Allow"); got != "GET, HEAD" {
+			t.Errorf("Allow = %q, want GET, HEAD", got)
+		}
+	})
+
+	t.Run("unexpected host", func(t *testing.T) {
+		request := pageRequest(http.MethodGet, "/tasks/GILIR-42")
+		request.Host = "example.com:8080"
+		recorder := serveRequest(handler, request)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusForbidden)
+		}
+		if strings.Contains(recorder.Body.String(), "gilir app") {
+			t.Errorf("page served for an unexpected Host: %q", recorder.Body.String())
+		}
+	})
+}
+
 func TestStaticRejectsNonRegularFiles(t *testing.T) {
 	tests := []struct {
 		name string
