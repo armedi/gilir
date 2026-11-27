@@ -6,6 +6,18 @@ serves a web dashboard on loopback. Each dispatch gets its own new session.
 A task that goes through several review cycles keeps every earlier session in
 its history.
 
+## Install
+
+```sh
+npm install -g gilir
+```
+
+The npm launcher requires Node.js 22 or newer. `npm install` downloads and
+verifies the matching binary from GitHub Releases. If install scripts are
+disabled or the download fails, the launcher tries on first run. The binary
+includes the dashboard and is cached for offline use. Supported platforms are
+macOS, Linux, and Windows on x64 and arm64.
+
 ## Build
 
 Requirements: Go 1.24+, Node.js `^22.18.0 || ^24.11.0 || >=26.0.0`, and pnpm
@@ -15,8 +27,11 @@ development dependency.
 
 ```sh
 (cd web && pnpm install --frozen-lockfile --prod=false && pnpm build)   # writes web/dist
-go build -o gilir ./cmd/gilir
+go build -tags=embedweb -o gilir ./cmd/gilir
 ```
+
+For a Go-only install, `go install github.com/armedi/gilir/cmd/gilir@latest`
+builds without an embedded dashboard.
 
 The explicit `--prod=false` keeps the Vite+ development dependencies installed
 when `NODE_ENV=production`. Run the CLI from that install as `pnpm exec vp` in
@@ -25,6 +40,24 @@ when `NODE_ENV=production`. Run the CLI from that install as `pnpm exec vp` in
 Put `gilir` on your `PATH`. The daemon prompts each agent to run `gilir show
 GILIR-<n> --json`, so the binary and the same `GILIR_DB` must also be available
 in the environment where the OpenCode server runs its agents.
+
+### Publish to npm
+
+Set the version in the root `package.json`, then tag that commit as
+`v<version>` and push the tag. From macOS or Linux, build the assets, upload
+them to GitHub Releases, and publish the npm launcher from the same checkout:
+
+```sh
+tag="v$(node -p 'require("./package.json").version')"
+npm run build:release
+gh release create "$tag" --verify-tag --generate-notes npm/dist/"$tag"/gilir-*
+npm publish
+```
+
+`npm run build:release` embeds the dashboard in the six binaries and records
+their SHA-256 checksums in `npm/release.json`. Publish from that same build so
+the npm checksums match the uploaded binaries. Use `npm pack` to inspect
+the launcher package locally without publishing.
 
 ## Run
 
@@ -44,7 +77,7 @@ and restart the daemon to recreate it (task history is not migrated).
 | --- | --- | --- |
 | `GILIR_DB` | `${XDG_DATA_HOME:-$HOME/.local/share}/gilir/gilir.sqlite` (Windows: `%LOCALAPPDATA%\gilir\gilir.sqlite`) | Database file. If missing, it is created with mode 0600 in a 0700 directory. An existing file keeps its mode. |
 | `GILIR_LISTEN` | `127.0.0.1:44547` | HTTP address. The host must be `127.0.0.1` or `[::1]`. `gilir daemon run --port` overrides only the port. |
-| `GILIR_WEB_DIR` | `web/dist` | Static web bundle. Gilir serves only the API if `index.html` is absent. |
+| `GILIR_WEB_DIR` | Embedded dashboard, or `web/dist` for Go-only builds | Override the static web bundle. If the selected directory has no `index.html`, Gilir serves only the API. |
 | `GILIR_OPENCODE_URL` | discovered from `opencode service status` | OpenCode V2 server. It must be on loopback. Set it to pin an explicit server. |
 | `OPENCODE_PASSWORD` | discovered from `opencode service get password` | Sent as HTTP Basic auth (user `opencode`). Set it to pin an explicit password. |
 | `GILIR_HOOKS` | unset | Path to a hook config file (see below). |

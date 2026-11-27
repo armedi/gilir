@@ -117,9 +117,21 @@ func runDaemon(parent context.Context, port string) (any, error) {
 		return nil, err
 	}
 
-	webDir := envOr("GILIR_WEB_DIR", defaultWebDir)
-	web, closeWeb := openWeb(webDir)
-	defer closeWeb()
+	web := embeddedWeb()
+	webNote := "embedded web UI"
+	webDir := os.Getenv("GILIR_WEB_DIR")
+	if webDir != "" || web == nil {
+		if webDir == "" {
+			webDir = defaultWebDir
+		}
+		diskWeb, closeWeb := openWeb(webDir)
+		defer closeWeb()
+		web = diskWeb
+		webNote = "web UI from " + webDir
+		if web == nil {
+			webNote = "no web UI (" + webDir + "/index.html not found)"
+		}
+	}
 
 	ln, err := net.Listen("tcp", listen)
 	if err != nil {
@@ -163,10 +175,6 @@ func runDaemon(parent context.Context, port string) (any, error) {
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(ln) }()
 
-	webNote := "web UI from " + webDir
-	if web == nil {
-		webNote = "no web UI (" + webDir + "/index.html not found)"
-	}
 	fmt.Fprintf(os.Stderr, "gilir: daemon listening on http://%s (database %s, OpenCode %s, %s, %d hooks)\n",
 		net.JoinHostPort(host, boundPort), dbPath, opencodeEndpoint(overrides), webNote, len(hookConfigs))
 

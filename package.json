@@ -1,0 +1,25 @@
+{
+  "name": "gilir",
+  "version": "0.1.0",
+  "description": "Local task queue and dashboard for coding agents",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/armedi/gilir.git"
+  },
+  "bin": {
+    "gilir": "npm/gilir.cjs"
+  },
+  "files": [
+    "npm/gilir.cjs",
+    "npm/download.cjs",
+    "npm/release.json"
+  ],
+  "scripts": {
+    "build:release": "node npm/build.mjs",
+    "prepack": "node npm/build.mjs --check",
+    "postinstall": "node npm/download.cjs"
+  },
+  "engines": { "node": ">=22" },
+  "os": ["darwin", "linux", "win32"],
+  "cpu": ["arm64", "x64"]
+}
