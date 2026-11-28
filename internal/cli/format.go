@@ -156,53 +156,6 @@ func isInlineValue(value any) bool {
 	}
 }
 
-// detailFieldIndex lists the sections in reading order. The generic formatter
-// sorts keys alphabetically, which buries the task below its activity.
-var detailFieldIndex = map[string]int{
-	"task":     0,
-	"blockers": 1,
-	"sessions": 2,
-	"activity": 3,
-}
-
-// writeTaskDetail prints a TaskDetail in reading order: the task, then its
-// blockers, sessions (including each session's worktree) and activity. The
-// JSON form is unchanged and remains the machine-readable contract.
-func writeTaskDetail(w io.Writer, value any) error {
-	normalized := normalize(value)
-	detail, ok := normalized.(map[string]any)
-	if !ok {
-		return writeHumanErr(w, value)
-	}
-
-	sections := make([]string, 0, len(detail))
-	for key := range detail {
-		if _, known := detailFieldIndex[key]; known {
-			sections = append(sections, key)
-		}
-	}
-	sort.Slice(sections, func(i, j int) bool { return detailFieldIndex[sections[i]] < detailFieldIndex[sections[j]] })
-	for _, key := range sections {
-		for _, line := range formatValue(map[string]any{key: detail[key]}, 0) {
-			fmt.Fprintln(w, line)
-		}
-	}
-
-	// Any unexpected field still prints, after the known sections.
-	rest := map[string]any{}
-	for key, item := range detail {
-		if _, known := detailFieldIndex[key]; !known {
-			rest[key] = item
-		}
-	}
-	if len(rest) > 0 {
-		for _, line := range formatValue(rest, 0) {
-			fmt.Fprintln(w, line)
-		}
-	}
-	return nil
-}
-
 // writeHumanErr falls back to the generic renderer for an unexpected shape.
 func writeHumanErr(w io.Writer, value any) error {
 	writeHuman(w, value)

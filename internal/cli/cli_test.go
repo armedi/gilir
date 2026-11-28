@@ -36,14 +36,17 @@ func runCLI(argv []string, defaultActor string, executor *recordingExecutor) (in
 func taskDetailFixture() map[string]any {
 	return map[string]any{
 		"activity": []any{
-			map[string]any{"id": 2, "type": "task.commented", "actor": "agent:ses_1", "data": map[string]any{"message": "Progress"}},
+			map[string]any{"type": "task.claimed", "actor": "scheduler"},
+			map[string]any{"type": "task.status_changed", "actor": "scheduler", "timestamp": "2026-11-28T11:12:33Z", "data": map[string]any{"new": "in-review", "reason": "dispatch_success"}},
+			map[string]any{"type": "session.outcome", "actor": "scheduler", "timestamp": "2026-11-28T11:12:33Z", "data": map[string]any{"outcome": "success"}},
+			map[string]any{"id": 2, "type": "task.commented", "actor": "agent:ses_1", "data": map[string]any{"message": "Progress\n\n- Ready for review"}},
 		},
 		"sessions": []any{
 			map[string]any{"id": "ses_gilir_1", "state": "linked", "attempt_id": "abc", "worktree": "/work/gilir-1", "url": "http://127.0.0.1:4096/session/x"},
 		},
 		"blockers": []any{"GILIR-1"},
 		"task": map[string]any{
-			"id": "GILIR-2", "title": "Ship", "status": "in-progress", "priority": "high",
+			"id": "GILIR-2", "title": "Ship", "body": "## Requirements\n\n- Run checks", "status": "in-progress", "priority": "high",
 			"markings": []any{"blocked"}, "worktree": "/work/gilir-2", "repo_id": 1, "project_id": 1,
 		},
 	}
@@ -55,7 +58,7 @@ func (d detailExecutor) execute(_ context.Context, command, actor string, args m
 	return d.detail, nil
 }
 
-func TestRunShowPrintsSectionsInReadingOrder(t *testing.T) {
+func TestRunShowPrintsIssuePage(t *testing.T) {
 	detail := taskDetailFixture()
 	var stdout, stderr bytes.Buffer
 	code := Run(context.Background(), []string{"show", "GILIR-2"}, &stdout, &stderr, "", detailExecutor{detail}.execute)
@@ -63,7 +66,10 @@ func TestRunShowPrintsSectionsInReadingOrder(t *testing.T) {
 		t.Fatalf("exit code = %d (stderr %q)", code, stderr.String())
 	}
 	out := stdout.String()
-	order := []string{"task:", "blockers:", "sessions:", "activity:"}
+	if !strings.HasPrefix(out, "GILIR-2 · In progress · High priority · Blocked\nShip\n") {
+		t.Fatalf("show output does not start with the task summary:\n%s", out)
+	}
+	order := []string{"\n## Requirements\n\n- Run checks\n", "\nBlockers\n", "\nSessions\n", "\nActivity\n"}
 	last := -1
 	for _, section := range order {
 		index := strings.Index(out, section)
@@ -72,13 +78,13 @@ func TestRunShowPrintsSectionsInReadingOrder(t *testing.T) {
 		}
 		last = index
 	}
-	for _, want := range []string{"id: GILIR-2", "worktree: /work/gilir-2", "- GILIR-1", "sessions:\n  - attempt_id", "ses_gilir_1", "task.commented"} {
+	for _, want := range []string{"/work/gilir-2", "GILIR-1", "ses_gilir_1", "/work/gilir-1", "http://127.0.0.1:4096/session/x", "Session succeeded; moved to In review", "Comment #2 · agent:ses_1", "\nProgress\n\n- Ready for review\n"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("show output missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "error") {
-		t.Fatalf("show output reports an error:\n%s", out)
+	if strings.Count(out, "Session succeeded") != 1 || strings.Contains(out, "task.claimed") {
+		t.Fatalf("show output includes redundant scheduler activity:\n%s", out)
 	}
 
 	var jsonOut, jsonErr bytes.Buffer
@@ -86,15 +92,16 @@ func TestRunShowPrintsSectionsInReadingOrder(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("json exit code = %d (stderr %q)", code, jsonErr.String())
 	}
-	var decoded map[string]any
-	if err := json.Unmarshal(jsonOut.Bytes(), &decoded); err != nil {
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, jsonOut.Bytes()); err != nil {
 		t.Fatalf("--json output is not JSON: %v", err)
 	}
-	if _, ok := decoded["task"]; !ok {
-		t.Fatalf("--json output lost the task section: %s", jsonOut.String())
+	wantJSON, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.HasPrefix(strings.TrimSpace(jsonOut.String()), "{") {
-		t.Fatalf("--json output is not a single object: %s", jsonOut.String())
+	if !bytes.Equal(compact.Bytes(), wantJSON) {
+		t.Fatalf("--json output changed the task detail: %s", jsonOut.String())
 	}
 }
 
