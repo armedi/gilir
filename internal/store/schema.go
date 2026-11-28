@@ -32,6 +32,7 @@ var schemaStatements = []string{
 			CHECK (status IN ('backlog', 'todo', 'in-progress', 'in-review', 'done')),
 		priority TEXT NOT NULL DEFAULT 'medium'
 			CHECK (priority IN ('low', 'medium', 'high', 'urgent')),
+		worktree TEXT CHECK (worktree IS NULL OR length(trim(worktree)) > 0),
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL,
 		UNIQUE (id, project_id),
@@ -81,6 +82,7 @@ var schemaStatements = []string{
 		url TEXT NOT NULL CHECK (length(trim(url)) > 0),
 		state TEXT NOT NULL,
 		attempt_id TEXT NOT NULL,
+		worktree TEXT CHECK (worktree IS NULL OR length(trim(worktree)) > 0),
 		created_at TEXT NOT NULL,
 		FOREIGN KEY (attempt_id) REFERENCES dispatch_attempts(id) ON DELETE RESTRICT
 	) STRICT`,

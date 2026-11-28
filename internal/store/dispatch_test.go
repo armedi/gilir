@@ -474,35 +474,51 @@ func TestLinkSessionAndFinishOutcome(t *testing.T) {
 	})
 	attempt := mustReserve(t, s, "http://127.0.0.1:4096", 777)
 
+	// A session cannot be linked before the task's worktree is recorded, so a
+	// retry can never create a session in an unrecorded directory.
+	if err := s.LinkSession(ctx, attempt.ID, "ses_early", "http://early", "/work/early"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("link before worktree error = %v, want ErrConflict", err)
+	}
+	worktree := mustRecordWorktree(t, s, attempt.ID)
+
 	for name, call := range map[string]func() error{
-		"blank attempt": func() error { return s.LinkSession(ctx, "", "session", "http://session") },
-		"blank session": func() error { return s.LinkSession(ctx, attempt.ID, " ", "http://session") },
-		"blank URL":     func() error { return s.LinkSession(ctx, attempt.ID, "session", " ") },
-		"unknown":       func() error { return s.LinkSession(ctx, "missing", "session", "http://session") },
+		"blank attempt":  func() error { return s.LinkSession(ctx, "", "session", "http://session", worktree) },
+		"blank session":  func() error { return s.LinkSession(ctx, attempt.ID, " ", "http://session", worktree) },
+		"blank URL":      func() error { return s.LinkSession(ctx, attempt.ID, "session", " ", worktree) },
+		"blank worktree": func() error { return s.LinkSession(ctx, attempt.ID, "session", "http://session", " ") },
+		"relative tree":  func() error { return s.LinkSession(ctx, attempt.ID, "session", "http://session", "relative/tree") },
+		"unknown":        func() error { return s.LinkSession(ctx, "missing", "session", "http://session", worktree) },
+		"other tree":     func() error { return s.LinkSession(ctx, attempt.ID, "session", "http://session", "/work/other") },
 	} {
-		if err := call(); !errors.Is(err, ErrInvalid) && !errors.Is(err, ErrNotFound) {
-			t.Fatalf("%s error = %v, want ErrInvalid or ErrNotFound", name, err)
+		if err := call(); !errors.Is(err, ErrInvalid) && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrConflict) {
+			t.Fatalf("%s error = %v, want ErrInvalid, ErrNotFound or ErrConflict", name, err)
 		}
 	}
 
 	sessionOne := "ses_gilir_" + attempt.ID
 	sessionTwo := "ses_gilir_alt_" + attempt.ID
-	if err := s.LinkSession(ctx, attempt.ID, sessionOne, "http://127.0.0.1:4096/session/one"); err != nil {
+	if err := s.LinkSession(ctx, attempt.ID, sessionOne, "http://127.0.0.1:4096/session/one", worktree); err != nil {
 		t.Fatalf("link session one: %v", err)
 	}
-	if err := s.LinkSession(ctx, attempt.ID, sessionOne, "http://127.0.0.1:4096/session/one"); err != nil {
+	if err := s.LinkSession(ctx, attempt.ID, sessionOne, "http://127.0.0.1:4096/session/one", worktree); err != nil {
 		t.Fatalf("idempotent link: %v", err)
 	}
-	if err := s.LinkSession(ctx, attempt.ID, sessionOne, "http://127.0.0.1:4096/session/other"); !errors.Is(err, ErrConflict) {
+	if err := s.LinkSession(ctx, attempt.ID, sessionOne, "http://127.0.0.1:4096/session/other", worktree); !errors.Is(err, ErrConflict) {
 		t.Fatalf("rewrite session URL error = %v, want ErrConflict", err)
 	}
-	if err := s.LinkSession(ctx, attempt.ID, sessionTwo, "http://127.0.0.1:4096/session/two"); err != nil {
+	if err := s.LinkSession(ctx, attempt.ID, sessionTwo, "http://127.0.0.1:4096/session/two", worktree); err != nil {
 		t.Fatalf("link session two: %v", err)
 	}
 
 	detail := mustShow(t, s, task.ID)
+	if detail.Task.Worktree == nil || *detail.Task.Worktree != worktree {
+		t.Fatalf("task worktree = %v, want %q", detail.Task.Worktree, worktree)
+	}
 	if countActivityType(detail.Activity, ActivitySessionLinked) != 2 {
 		t.Fatalf("session.linked events = %v", activityTypes(detail.Activity))
+	}
+	if countActivityType(detail.Activity, ActivityTaskWorktree) != 1 {
+		t.Fatalf("task.worktree_recorded events = %v", activityTypes(detail.Activity))
 	}
 	if len(detail.Sessions) != 2 || detail.Sessions[0].ID != sessionOne || detail.Sessions[1].ID != sessionTwo {
 		t.Fatalf("sessions = %+v, want ordered one then two", detail.Sessions)
@@ -511,11 +527,17 @@ func TestLinkSessionAndFinishOutcome(t *testing.T) {
 		if session.State != "linked" || session.AttemptID != attempt.ID || session.CreatedAt.Location() != time.UTC {
 			t.Fatalf("session = %+v", session)
 		}
+		if session.Worktree == nil || *session.Worktree != worktree {
+			t.Fatalf("session %s worktree = %v, want %q", session.ID, session.Worktree, worktree)
+		}
 	}
 
 	open := mustListOpen(t, s)
 	if len(open) != 1 || open[0].SessionID == nil || *open[0].SessionID != sessionOne {
 		t.Fatalf("open attempt with session = %+v", open)
+	}
+	if open[0].Worktree != worktree {
+		t.Fatalf("open attempt worktree = %q, want %q", open[0].Worktree, worktree)
 	}
 	encoded, err := json.Marshal(open[0])
 	if err != nil {
@@ -525,7 +547,7 @@ func TestLinkSessionAndFinishOutcome(t *testing.T) {
 	if err := json.Unmarshal(encoded, &attemptJSON); err != nil {
 		t.Fatalf("unmarshal linked attempt: %v", err)
 	}
-	if attemptJSON["session_id"] != sessionOne {
+	if attemptJSON["session_id"] != sessionOne || attemptJSON["worktree"] != worktree {
 		t.Fatalf("linked attempt JSON = %s", encoded)
 	}
 
@@ -565,10 +587,10 @@ func TestLinkSessionAndFinishOutcome(t *testing.T) {
 	if after := mustShow(t, s, task.ID); countActivityType(after.Activity, ActivitySessionOutcome) != 1 {
 		t.Fatalf("second finish wrote another outcome: %v", activityTypes(after.Activity))
 	}
-	if err := s.LinkSession(ctx, attempt.ID, "late", "http://late"); !errors.Is(err, ErrConflict) {
+	if err := s.LinkSession(ctx, attempt.ID, "late", "http://late", worktree); !errors.Is(err, ErrConflict) {
 		t.Fatalf("late session link error = %v, want ErrConflict", err)
 	}
-	if err := s.LinkSession(ctx, attempt.ID, sessionOne, "http://127.0.0.1:4096/session/one"); err != nil {
+	if err := s.LinkSession(ctx, attempt.ID, sessionOne, "http://127.0.0.1:4096/session/one", worktree); err != nil {
 		t.Fatalf("idempotent retry of existing link after finish: %v", err)
 	}
 
@@ -577,6 +599,43 @@ func TestLinkSessionAndFinishOutcome(t *testing.T) {
 	}
 	if err := s.FinishAttempt(ctx, attempt.ID, AttemptOutcome("cancelled"), ""); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("invalid outcome error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestSetTaskWorktreeIsWriteOnce(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := context.Background()
+	project, repo := seedProjectRepo(t, s)
+	mustCreateTask(t, s, CreateTaskParams{
+		ProjectID: project.ID, RepoID: repo.ID, Title: "worktree", Status: StatusTodo,
+	})
+	attempt := mustReserve(t, s, "http://127.0.0.1:4096", 100)
+
+	first := mustRecordWorktree(t, s, attempt.ID)
+	if again, err := s.SetTaskWorktree(ctx, attempt.ID, first); err != nil || again != first {
+		t.Fatalf("repeat SetTaskWorktree = (%q, %v), want (%q, nil)", again, err, first)
+	}
+	detail := mustShow(t, s, attempt.TaskID)
+	if countActivityType(detail.Activity, ActivityTaskWorktree) != 1 {
+		t.Fatalf("repeated worktree wrote another event: %v", activityTypes(detail.Activity))
+	}
+
+	for name, call := range map[string]func() error{
+		"blank attempt":  func() error { _, err := s.SetTaskWorktree(ctx, "", first); return err },
+		"blank tree":     func() error { _, err := s.SetTaskWorktree(ctx, attempt.ID, "  "); return err },
+		"relative tree":  func() error { _, err := s.SetTaskWorktree(ctx, attempt.ID, "tree"); return err },
+		"different tree": func() error { _, err := s.SetTaskWorktree(ctx, attempt.ID, "/work/other"); return err },
+	} {
+		if err := call(); !errors.Is(err, ErrInvalid) && !errors.Is(err, ErrConflict) {
+			t.Fatalf("%s error = %v, want ErrInvalid or ErrConflict", name, err)
+		}
+	}
+
+	if err := s.FinishAttempt(ctx, attempt.ID, OutcomeAbandoned, ""); err != nil {
+		t.Fatalf("finish abandoned: %v", err)
+	}
+	if _, err := s.SetTaskWorktree(ctx, attempt.ID, first); !errors.Is(err, ErrConflict) {
+		t.Fatalf("SetTaskWorktree on finished attempt error = %v, want ErrConflict", err)
 	}
 }
 

@@ -24,10 +24,24 @@ var (
 	ErrConflict = errors.New("store: conflict")
 )
 
-// schemaVersion 3 stores task IDs as the self-describing "GILIR-<n>" text key.
-// Version 2 and earlier used bare integers and are not migrated: an older
-// database is rejected at Open so the caller recreates it.
-const schemaVersion = 3
+// schemaVersion 4 adds the per-task OpenCode worktree directory and the
+// per-session copy of the directory the session actually ran in. Version 3
+// stores task IDs as the self-describing "GILIR-<n>" text key. Version 2 and
+// earlier used bare integers and are not migrated: an older database is
+// rejected at Open so the caller recreates it.
+const schemaVersion = 4
+
+// schemaMigrations upgrades a database from the map key version to
+// schemaVersion. They run inside the same transaction that records the new
+// version, so a failed migration leaves the database untouched.
+var schemaMigrations = map[int][]string{
+	3: {
+		`ALTER TABLE tasks ADD COLUMN worktree TEXT
+			CHECK (worktree IS NULL OR length(trim(worktree)) > 0)`,
+		`ALTER TABLE sessions ADD COLUMN worktree TEXT
+			CHECK (worktree IS NULL OR length(trim(worktree)) > 0)`,
+	},
+}
 
 const databaseBusyTimeout = "5000"
 
@@ -154,7 +168,18 @@ func (s *Store) initialize(ctx context.Context) error {
 	case version > schemaVersion:
 		return fmt.Errorf("store: database schema version %d is newer than supported version %d", version, schemaVersion)
 	default:
-		return fmt.Errorf("store: database schema version %d is not supported; delete the database file and restart to recreate it with prefixed task IDs", version)
+		statements, ok := schemaMigrations[version]
+		if !ok {
+			return fmt.Errorf("store: database schema version %d is not supported; delete the database file and restart to recreate it", version)
+		}
+		for _, statement := range statements {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("store: migrate schema from version %d: %w", version, err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+			return fmt.Errorf("store: set schema version: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

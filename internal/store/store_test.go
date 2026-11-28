@@ -139,6 +139,29 @@ func mustReserve(t *testing.T, s *Store, url string, pid int64) *DispatchAttempt
 	return attempt
 }
 
+// mustRecordWorktree records a deterministic test worktree for an attempt and
+// returns it, standing in for the watcher's OpenCode worktree creation.
+func mustRecordWorktree(t *testing.T, s *Store, attemptID string) string {
+	t.Helper()
+	directory := filepath.Join(t.TempDir(), "worktree-"+attemptID)
+	recorded, err := s.SetTaskWorktree(context.Background(), attemptID, directory)
+	if err != nil {
+		t.Fatalf("SetTaskWorktree(%s): %v", attemptID, err)
+	}
+	return recorded
+}
+
+func mustLinkSession(t *testing.T, s *Store, attemptID, sessionID, url string) {
+	t.Helper()
+	worktree, err := s.SetTaskWorktree(context.Background(), attemptID, filepath.Join(t.TempDir(), "worktree-"+attemptID))
+	if err != nil {
+		t.Fatalf("SetTaskWorktree(%s): %v", attemptID, err)
+	}
+	if err := s.LinkSession(context.Background(), attemptID, sessionID, url, worktree); err != nil {
+		t.Fatalf("LinkSession(%s): %v", attemptID, err)
+	}
+}
+
 func countActivityType(activities []Activity, activityType string) int {
 	count := 0
 	for _, activity := range activities {

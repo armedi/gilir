@@ -206,10 +206,11 @@ func TestDeleteTaskPreservesAuditAndRemovesTerminalHistory(t *testing.T) {
 	attempt := mustReserve(t, s, "http://127.0.0.1:4096", 4242)
 	sessionOne := "ses_gilir_" + attempt.ID
 	sessionTwo := "ses_gilir_alt_" + attempt.ID
-	if err := s.LinkSession(ctx, attempt.ID, sessionOne, "http://127.0.0.1:4096/session/one"); err != nil {
+	worktree := mustRecordWorktree(t, s, attempt.ID)
+	if err := s.LinkSession(ctx, attempt.ID, sessionOne, "http://127.0.0.1:4096/session/one", worktree); err != nil {
 		t.Fatalf("LinkSession one: %v", err)
 	}
-	if err := s.LinkSession(ctx, attempt.ID, sessionTwo, "http://127.0.0.1:4096/session/two"); err != nil {
+	if err := s.LinkSession(ctx, attempt.ID, sessionTwo, "http://127.0.0.1:4096/session/two", worktree); err != nil {
 		t.Fatalf("LinkSession two: %v", err)
 	}
 	if err := s.FinishAttempt(ctx, attempt.ID, OutcomeSuccess, "complete"); err != nil {
@@ -311,7 +312,8 @@ func TestDeleteTaskConflictsPreserveData(t *testing.T) {
 		})
 		attempt := mustReserve(t, s, "http://127.0.0.1:4096", 4242)
 		sessionID := "ses_gilir_" + attempt.ID
-		if err := s.LinkSession(ctx, attempt.ID, sessionID, "http://127.0.0.1:4096/session/running"); err != nil {
+		worktree := mustRecordWorktree(t, s, attempt.ID)
+		if err := s.LinkSession(ctx, attempt.ID, sessionID, "http://127.0.0.1:4096/session/running", worktree); err != nil {
 			t.Fatalf("LinkSession: %v", err)
 		}
 		before, err := s.ActivityAfter(ctx, 0, 1000)

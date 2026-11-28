@@ -13,19 +13,20 @@ import (
 	"github.com/armedi/gilir/internal/taskid"
 )
 
-const taskColumns = `id, project_id, repo_id, title, description, status, priority, created_at, updated_at`
+const taskColumns = `id, project_id, repo_id, title, description, status, priority, worktree, created_at, updated_at`
 
 func scanTask(sc scanner) (Task, error) {
 	var (
 		task      Task
 		status    string
 		priority  string
+		worktree  sql.NullString
 		createdAt string
 		updatedAt string
 	)
 	if err := sc.Scan(
 		&task.ID, &task.ProjectID, &task.RepoID, &task.Title, &task.Description,
-		&status, &priority, &createdAt, &updatedAt,
+		&status, &priority, &worktree, &createdAt, &updatedAt,
 	); err != nil {
 		return Task{}, err
 	}
@@ -37,6 +38,7 @@ func scanTask(sc scanner) (Task, error) {
 	if !task.Priority.Valid() {
 		return Task{}, fmt.Errorf("store: task %s has unsupported priority %q", task.ID, priority)
 	}
+	task.Worktree = nullableText(worktree)
 	var err error
 	task.CreatedAt, err = parseTime(createdAt)
 	if err != nil {
@@ -48,6 +50,15 @@ func scanTask(sc scanner) (Task, error) {
 	}
 	task.Markings = []string{}
 	return task, nil
+}
+
+// nullableText converts an optional text column to a pointer, treating an
+// empty value as absent.
+func nullableText(value sql.NullString) *string {
+	if !value.Valid || strings.TrimSpace(value.String) == "" {
+		return nil
+	}
+	return stringPointer(value.String)
 }
 
 func loadMarkings(ctx context.Context, tx *sql.Tx, taskID string) ([]string, error) {
@@ -427,6 +438,10 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID string, pat
 
 		repoChanged := newRepoID != old.RepoID
 		if repoChanged {
+			if old.Worktree != nil {
+				return fmt.Errorf("%w: task %s already has worktree %s; its repository cannot change",
+					ErrConflict, taskID, *old.Worktree)
+			}
 			var openAttempts int64
 			if err := tx.QueryRowContext(ctx,
 				`SELECT count(*) FROM dispatch_attempts WHERE task_id = ? AND state = 'reserved'`,
@@ -450,6 +465,13 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID string, pat
 		titleChanged := newTitle != old.Title
 		descriptionChanged := newDescription != old.Description
 		priorityChanged := newPriority != old.Priority
+
+		// A blocked task waits for a human decision, so it must not be moved to
+		// a state that would let it leave the queue or be reviewed.
+		if statusChanged && hasMarking(old.Markings, MarkingBlocked) && !blockable(newStatus) {
+			return fmt.Errorf("%w: task %s is blocked; unblock it before moving it to %s",
+				ErrConflict, taskID, newStatus)
+		}
 
 		requestingChanges := old.Status == StatusInReview && newStatus == StatusTodo
 		message := ""
@@ -552,8 +574,191 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID string, pat
 	return updated, nil
 }
 
+// hasMarking reports whether the loaded task carries marking.
+func hasMarking(markings []string, marking string) bool {
+	for _, candidate := range markings {
+		if candidate == marking {
+			return true
+		}
+	}
+	return false
+}
+
+// Block appends a required Markdown message as a comment and marks a task
+// blocked in one transaction. Blocked tasks are never reserved, and a
+// successful run leaves them in progress so dependents stay held until Unblock.
+// Only backlog, todo and in-progress tasks can be blocked; a task already
+// blocked is a conflict because the message would be an ordinary comment.
+func (s *Store) Block(ctx context.Context, actor string, taskID, message string) (Task, error) {
+	actor, err := normalizeActor(actor)
+	if err != nil {
+		return Task{}, err
+	}
+	if taskID, err = normalizeTaskID(taskID); err != nil {
+		return Task{}, err
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return Task{}, fmt.Errorf("%w: a message is required when blocking a task", ErrInvalid)
+	}
+
+	var task Task
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		current, err := taskByID(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		if !blockable(current.Status) {
+			return fmt.Errorf("%w: task %s is %s; only backlog, todo and in-progress tasks can be blocked",
+				ErrConflict, taskID, current.Status)
+		}
+		if hasMarking(current.Markings, MarkingBlocked) {
+			return fmt.Errorf("%w: task %s is already blocked; add an ordinary comment instead", ErrConflict, taskID)
+		}
+
+		now := nowUTC()
+		if _, err := appendActivity(ctx, tx, activityInput{
+			Type:      ActivityTaskCommented,
+			Actor:     actor,
+			TaskID:    stringPointer(taskID),
+			ProjectID: int64Pointer(current.ProjectID),
+			Timestamp: now,
+			Data:      map[string]any{"body": message},
+		}); err != nil {
+			return err
+		}
+		if _, err := setMarkingTx(ctx, tx, actor, taskID, MarkingBlocked, true, now); err != nil {
+			return err
+		}
+		// A block supersedes a pending dispatch boost: the task is not queued
+		// until it is unblocked again.
+		if _, err := setMarkingTx(ctx, tx, actor, taskID, MarkingUnblocked, false, now); err != nil {
+			return err
+		}
+		task, err = taskByID(ctx, tx, taskID)
+		return err
+	})
+	if err != nil {
+		return Task{}, err
+	}
+	return task, nil
+}
+
+// Unblock removes the blocked marking in one transaction, optionally recording
+// a Markdown message as a comment. An in-progress task with no open dispatch
+// attempt is moved back to todo and gets the transient dispatch boost so it
+// re-queues immediately. todo, backlog and actively running in-progress tasks
+// keep their status.
+func (s *Store) Unblock(ctx context.Context, actor string, taskID, message string) (Task, error) {
+	actor, err := normalizeActor(actor)
+	if err != nil {
+		return Task{}, err
+	}
+	if taskID, err = normalizeTaskID(taskID); err != nil {
+		return Task{}, err
+	}
+	message = strings.TrimSpace(message)
+
+	var task Task
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		current, err := taskByID(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		if !hasMarking(current.Markings, MarkingBlocked) {
+			return fmt.Errorf("%w: task %s is not blocked", ErrConflict, taskID)
+		}
+
+		now := nowUTC()
+		if message != "" {
+			if _, err := appendActivity(ctx, tx, activityInput{
+				Type:      ActivityTaskCommented,
+				Actor:     actor,
+				TaskID:    stringPointer(taskID),
+				ProjectID: int64Pointer(current.ProjectID),
+				Timestamp: now,
+				Data:      map[string]any{"body": message},
+			}); err != nil {
+				return err
+			}
+		}
+		if _, err := setMarkingTx(ctx, tx, actor, taskID, MarkingBlocked, false, now); err != nil {
+			return err
+		}
+
+		next := current.Status
+		if next == StatusInProgress {
+			open, err := hasOpenAttempt(ctx, tx, taskID)
+			if err != nil {
+				return err
+			}
+			if !open {
+				next = StatusTodo
+			}
+		}
+		if next != current.Status {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`,
+				string(next), formatTime(now), taskID,
+			); err != nil {
+				return fmt.Errorf("store: requeue unblocked task %s: %w", taskID, err)
+			}
+			if _, err := appendActivity(ctx, tx, activityInput{
+				Type:      ActivityTaskStatusChanged,
+				Actor:     actor,
+				TaskID:    stringPointer(taskID),
+				ProjectID: int64Pointer(current.ProjectID),
+				Timestamp: now,
+				Data: map[string]any{
+					"old":    string(current.Status),
+					"new":    string(next),
+					"reason": "unblocked",
+				},
+			}); err != nil {
+				return err
+			}
+		}
+		if next == StatusTodo {
+			if _, err := setMarkingTx(ctx, tx, actor, taskID, MarkingUnblocked, true, now); err != nil {
+				return err
+			}
+		}
+		task, err = taskByID(ctx, tx, taskID)
+		return err
+	})
+	if err != nil {
+		return Task{}, err
+	}
+	return task, nil
+}
+
+// blockable reports whether a status may carry the blocked marking.
+func blockable(status Status) bool {
+	switch status {
+	case StatusBacklog, StatusTodo, StatusInProgress:
+		return true
+	default:
+		return false
+	}
+}
+
+// hasOpenAttempt reports whether the task has a reserved dispatch attempt.
+func hasOpenAttempt(ctx context.Context, tx *sql.Tx, taskID string) (bool, error) {
+	var open bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM dispatch_attempts WHERE task_id = ? AND state = 'reserved'
+		)`, taskID,
+	).Scan(&open); err != nil {
+		return false, fmt.Errorf("store: check open task attempt: %w", err)
+	}
+	return open, nil
+}
+
 // SetMarking adds or removes a task marking. A duplicate add or remove is a
-// no-op without an audit event.
+// no-op without an audit event. The blocked marking is managed by Block and
+// Unblock, which also record the required message and re-queue the task, so it
+// cannot be toggled directly.
 func (s *Store) SetMarking(ctx context.Context, actor string, taskID string, marking string, present bool) (Task, error) {
 	actor, err := normalizeActor(actor)
 	if err != nil {
@@ -565,6 +770,9 @@ func (s *Store) SetMarking(ctx context.Context, actor string, taskID string, mar
 	marking, err = normalizeMarking(marking)
 	if err != nil {
 		return Task{}, err
+	}
+	if marking == MarkingBlocked {
+		return Task{}, fmt.Errorf("%w: use `gilir block` and `gilir unblock` to change the blocked marking", ErrInvalid)
 	}
 
 	var task Task
@@ -1111,7 +1319,7 @@ func (s *Store) Show(ctx context.Context, taskID string) (TaskDetail, error) {
 		blockerRows.Close()
 
 		sessionRows, err := tx.QueryContext(ctx, `
-			SELECT s.id, s.url, s.state, s.attempt_id, s.created_at
+			SELECT s.id, s.url, s.state, s.attempt_id, s.worktree, s.created_at
 			FROM sessions s
 			JOIN dispatch_attempts a ON a.id = s.attempt_id
 			WHERE a.task_id = ?
@@ -1123,12 +1331,14 @@ func (s *Store) Show(ctx context.Context, taskID string) (TaskDetail, error) {
 		for sessionRows.Next() {
 			var (
 				session   Session
+				worktree  sql.NullString
 				createdAt string
 			)
-			if err := sessionRows.Scan(&session.ID, &session.URL, &session.State, &session.AttemptID, &createdAt); err != nil {
+			if err := sessionRows.Scan(&session.ID, &session.URL, &session.State, &session.AttemptID, &worktree, &createdAt); err != nil {
 				sessionRows.Close()
 				return fmt.Errorf("store: scan task session: %w", err)
 			}
+			session.Worktree = nullableText(worktree)
 			session.CreatedAt, err = parseTime(createdAt)
 			if err != nil {
 				sessionRows.Close()
