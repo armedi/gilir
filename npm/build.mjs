@@ -25,13 +25,20 @@ function checksum(file) {
   return createHash('sha256').update(readFileSync(file)).digest('hex');
 }
 
+function checksumManifest(assets) {
+  return Object.values(assets)
+    .map(({ file, sha256 }) => `${sha256}  ${file}\n`)
+    .join('');
+}
+
 if (process.argv.includes('--check')) {
   const release = existsSync(metadataPath) && JSON.parse(readFileSync(metadataPath, 'utf8'));
+  const sums = join(assetsDir, 'SHA256SUMS');
   const ready = release?.version === manifest.version && targets.every(({ platform, file }) => {
     const asset = join(assetsDir, file);
     const entry = release.assets?.[platform];
     return entry?.file === file && existsSync(asset) && entry.sha256 === checksum(asset);
-  });
+  }) && existsSync(sums) && readFileSync(sums, 'utf8') === checksumManifest(release.assets);
   if (!ready) {
     console.error(`gilir: missing or stale ${tag} release assets; run npm run build:release`);
     process.exitCode = 1;
@@ -56,8 +63,6 @@ if (process.argv.includes('--check')) {
     });
     assets[platform] = { file, sha256: checksum(destination) };
   }
-  writeFileSync(join(assetsDir, 'SHA256SUMS'), Object.values(assets)
-    .map(({ file, sha256 }) => `${sha256}  ${file}\n`)
-    .join(''));
+  writeFileSync(join(assetsDir, 'SHA256SUMS'), checksumManifest(assets));
   writeFileSync(metadataPath, `${JSON.stringify({ version: manifest.version, assets }, null, 2)}\n`);
 }

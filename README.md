@@ -22,11 +22,11 @@ not required for this path:
 curl -fsSL https://raw.githubusercontent.com/armedi/gilir/main/install.sh | sh
 ```
 
-The script selects the matching release binary, verifies its SHA-256 against the
-release's `SHA256SUMS`, and installs `gilir` into `$XDG_BIN_HOME` or
-`~/.local/bin`. It replaces an existing copy atomically, needs no `sudo`, and
-prints a `PATH` hint when the directory is not on `PATH`. Choose a different
-version or directory with flags or environment variables:
+The script installs the matching release binary, verifies its SHA-256 against the
+release's `SHA256SUMS`, and replaces `<dir>/gilir` atomically. The default `<dir>`
+is `$XDG_BIN_HOME` or `~/.local/bin`; it needs no `sudo` and prints a `PATH` hint
+when the directory is not on `PATH`. Choose a different version or directory with
+flags or environment variables:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/armedi/gilir/main/install.sh |
@@ -36,9 +36,13 @@ GILIR_VERSION=0.3.0 GILIR_INSTALL_DIR="$HOME/bin" sh install.sh
 ```
 
 Re-run the command to upgrade, then `gilir service restart` if the service is
-running. Remove `$GILIR_INSTALL_DIR/gilir` to uninstall. Windows uses the npm
-path below, or download `gilir-win32-<arch>.exe` from Releases and compare
-`(Get-FileHash .\gilir-win32-x64.exe).Hash` with `SHA256SUMS`.
+running. To uninstall, delete `gilir` from that directory (`~/.local/bin/gilir`
+by default). Releases before `SHA256SUMS` existed are verified against the
+per-asset digest the GitHub API reports, so v0.3.0 installs too.
+
+Windows is not covered by this script. Use npm below, or download
+`gilir-win32-<arch>.exe` and `SHA256SUMS` from the release and compare
+`(Get-FileHash .\gilir-win32-x64.exe).Hash` with the file's line for that binary.
 
 Or install the npm launcher (macOS, Linux, and Windows):
 
@@ -106,11 +110,12 @@ npm publish
 
 `npm run build:release` embeds the dashboard in the six binaries, records their
 SHA-256 checksums in `npm/release.json` for the npm launcher, and writes the same
-checksums as `npm/dist/v<version>/SHA256SUMS` for `install.sh`. Upload both from
-the same build so every checksum matches the uploaded binaries; `install.sh`
-refuses a release that has no `SHA256SUMS`. Use `npm pack` to inspect the
-launcher package locally without publishing. The package ships the npm launcher,
-its downloader, and `release.json`; `install.sh` is served from `main`, so
+checksums as `npm/dist/v<version>/SHA256SUMS` for `install.sh`. Upload all of
+them from the same build so every checksum matches the uploaded binaries; the
+`--check` step and `install.sh` both refuse a build or release without a matching
+`SHA256SUMS`. Use `npm pack` to inspect the launcher package locally without
+publishing. The package ships the npm launcher, its downloader, and
+`release.json`; `install.sh` is served from `main`, so
 installer fixes do not need a release.
 
 ## Run
