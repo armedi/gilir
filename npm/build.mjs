@@ -38,6 +38,7 @@ if (process.argv.includes('--check')) {
   }
 } else {
   rmSync(metadataPath, { force: true });
+  rmSync(join(assetsDir, 'SHA256SUMS'), { force: true });
   execFileSync('pnpm', ['install', '--frozen-lockfile', '--prod=false'], { cwd: web, stdio: 'inherit' });
   execFileSync('pnpm', ['build'], { cwd: web, stdio: 'inherit' });
 
@@ -55,5 +56,8 @@ if (process.argv.includes('--check')) {
     });
     assets[platform] = { file, sha256: checksum(destination) };
   }
+  writeFileSync(join(assetsDir, 'SHA256SUMS'), Object.values(assets)
+    .map(({ file, sha256 }) => `${sha256}  ${file}\n`)
+    .join(''));
   writeFileSync(metadataPath, `${JSON.stringify({ version: manifest.version, assets }, null, 2)}\n`);
 }

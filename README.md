@@ -15,6 +15,33 @@ several review cycles keeps every earlier session in its history.
 
 ## Install
 
+Prebuilt binaries are available for macOS and Linux on x64 and arm64. Node.js is
+not required for this path:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/armedi/gilir/main/install.sh | sh
+```
+
+The script selects the matching release binary, verifies its SHA-256 against the
+release's `SHA256SUMS`, and installs `gilir` into `$XDG_BIN_HOME` or
+`~/.local/bin`. It replaces an existing copy atomically, needs no `sudo`, and
+prints a `PATH` hint when the directory is not on `PATH`. Choose a different
+version or directory with flags or environment variables:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/armedi/gilir/main/install.sh |
+  sh -s -- --version 0.3.0 --dir "$HOME/bin"
+
+GILIR_VERSION=0.3.0 GILIR_INSTALL_DIR="$HOME/bin" sh install.sh
+```
+
+Re-run the command to upgrade, then `gilir service restart` if the service is
+running. Remove `$GILIR_INSTALL_DIR/gilir` to uninstall. Windows uses the npm
+path below, or download `gilir-win32-<arch>.exe` from Releases and compare
+`(Get-FileHash .\gilir-win32-x64.exe).Hash` with `SHA256SUMS`.
+
+Or install the npm launcher (macOS, Linux, and Windows):
+
 ```sh
 npm install -g @armedi/gilir
 ```
@@ -24,6 +51,10 @@ downloads and verifies the matching binary from GitHub Releases. If install
 scripts are disabled or the download fails, the launcher tries on first run.
 The binary includes the dashboard and is cached for offline use. Supported
 platforms are macOS, Linux, and Windows on x64 and arm64.
+
+Both paths install the same binary. Do not keep both on `PATH`: the first
+`gilir` found wins, and the other copy goes stale. Uninstall the npm one with
+`npm uninstall -g @armedi/gilir` when switching to the script.
 
 ## Build
 
@@ -49,7 +80,7 @@ GILIR-<n>`, so the binary must also be available where the OpenCode
 server runs its agents, with `GILIR_URL` pointing at the service when it is not
 using the default address.
 
-### Publish to npm
+### Publish a release
 
 Set the version in the root `package.json`, then tag that commit as
 `v<version>` and push the tag. From macOS or Linux, build the assets, upload
@@ -57,14 +88,18 @@ them to GitHub Releases, and publish the npm launcher from the same checkout:
 
 ```sh
 npm run build:release
-tag="v$(node -p 'require("./package.json").version')" && gh release create "$tag" --verify-tag --generate-notes npm/dist/"$tag"/gilir-*
+tag="v$(node -p 'require("./package.json").version')" && gh release create "$tag" --verify-tag --generate-notes npm/dist/"$tag"/gilir-* npm/dist/"$tag"/SHA256SUMS
 npm publish
 ```
 
-`npm run build:release` embeds the dashboard in the six binaries and records
-their SHA-256 checksums in `npm/release.json`. Publish from that same build so
-the npm checksums match the uploaded binaries. Use `npm pack` to inspect
-the launcher package locally without publishing.
+`npm run build:release` embeds the dashboard in the six binaries, records their
+SHA-256 checksums in `npm/release.json` for the npm launcher, and writes the same
+checksums as `npm/dist/v<version>/SHA256SUMS` for `install.sh`. Upload both from
+the same build so every checksum matches the uploaded binaries; `install.sh`
+refuses a release that has no `SHA256SUMS`. Use `npm pack` to inspect the
+launcher package locally without publishing. The package ships the npm launcher,
+its downloader, and `release.json`; `install.sh` is served from `main`, so
+installer fixes do not need a release.
 
 ## Run
 

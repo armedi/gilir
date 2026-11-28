@@ -61,7 +61,9 @@ func helpFor(positionals []string) string {
 
 func generalHelp() string {
 	var builder strings.Builder
-	builder.WriteString("gilir tracks projects, repositories, and tasks for coding agents.\n\n")
+	builder.WriteString("gilir tracks projects, repositories, and tasks for coding agents.\n")
+	builder.WriteString("Agents: run `gilir skill` first; it prints the workflows and invariants\n")
+	builder.WriteString("this help omits.\n\n")
 	builder.WriteString("Usage:\n  gilir [--actor <actor>] [--json] <command> [arguments]\n\n")
 	builder.WriteString("Ordinary commands use GILIR_URL (default\n")
 	builder.WriteString("http://127.0.0.1:44547). `gilir serve` runs the service in the foreground;\n")

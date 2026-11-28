@@ -487,7 +487,7 @@ var commandSpecs = []command{
 		path:    "skill",
 		kind:    skillCommand,
 		usage:   "gilir skill",
-		summary: "Print the embedded agent skill.",
+		summary: "Print the agent manual: workflows and invariants --help omits.",
 	},
 }
 
