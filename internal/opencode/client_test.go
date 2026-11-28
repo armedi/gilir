@@ -191,8 +191,16 @@ func TestCreateSendsStableIDAndVerifiesResult(t *testing.T) {
 		"other directory": strings.Replace(sessionJSON("ses_new", "", ""), "/work/repo", "/elsewhere", 1),
 	} {
 		c, _, _ := fixture(t, "", map[string]reply{"POST /api/session": {200, body}})
-		if _, err := c.Create(context.Background(), "ses_new", "Task 1", "/work/repo"); err == nil {
+		_, err := c.Create(context.Background(), "ses_new", "Task 1", "/work/repo")
+		if err == nil {
 			t.Errorf("%s: Create succeeded, want error", name)
+		}
+		if name == "other directory" {
+			if got := SessionDirectoryMismatch(err); got != "/elsewhere" {
+				t.Errorf("SessionDirectoryMismatch = %q, want /elsewhere", got)
+			}
+		} else if got := SessionDirectoryMismatch(err); got != "" {
+			t.Errorf("%s: SessionDirectoryMismatch = %q, want empty", name, got)
 		}
 	}
 }
@@ -346,6 +354,24 @@ func TestCreateWorktreePassesNameAndReturnsDirectory(t *testing.T) {
 	}
 	if got, want := (*reqs)[0].Body, map[string]any{"projectID": "prj_1", "name": "gilir-1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("CreateWorktree body = %v, want %v", got, want)
+	}
+
+	// From names the starting checkout so a task on a linked worktree does not
+	// start from the project's canonical one.
+	c, reqs, _ = fixture(t, "", map[string]reply{
+		"POST /api/worktree": {200, `{"directory":"/work/gilir-1"}`},
+	})
+	if _, err := c.CreateWorktreeFrom(context.Background(), "prj_1", "/work/linked", "gilir-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := (*reqs)[0].Body, map[string]any{"projectID": "prj_1", "name": "gilir-1", "from": "/work/linked"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("CreateWorktreeFrom body = %v, want %v", got, want)
+	}
+	if _, err := c.CreateWorktreeFrom(context.Background(), "prj_1", "", "gilir-1"); err == nil {
+		t.Error("CreateWorktreeFrom accepted an empty source")
+	}
+	if _, err := c.CreateWorktreeFrom(context.Background(), "prj_1", "linked", "gilir-1"); err == nil {
+		t.Error("CreateWorktreeFrom accepted a relative source")
 	}
 
 	if _, err := c.CreateWorktree(context.Background(), "", "gilir-1"); err == nil {

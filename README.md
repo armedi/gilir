@@ -117,8 +117,9 @@ it. Any other port requires setting `GILIR_URL` to an address the service
 accepts. If the service binds `[::1]` specifically, set `GILIR_URL` to that
 address too, because the client default is IPv4 loopback.
 
-The schema is upgraded automatically. Version 4 adds the per-task worktree, so a
-version 3 database is migrated in place. Version 2 and earlier, which used bare
+The schema is upgraded automatically. Version 5 adds a durable per-database ID
+that namespaces worktrees; version 4 added the per-task worktree, so a version 3
+or 4 database is migrated in place. Version 2 and earlier, which used bare
 integer task IDs, are rejected instead: delete the file and restart the service
 to recreate it (task history is not migrated).
 
@@ -274,20 +275,25 @@ GILIR_URL=http://127.0.0.1:9000 gilir list
 ## Worktrees
 
 Each task owns one OpenCode worktree, created on its first dispatch through
-`POST /api/worktree` and passed to the session as its location. Gilir records
-the directory in SQLite before it creates the session, so a watcher restart or
-retry reuses the same worktree instead of leaking another one. Review cycles
-and retries reuse it too, and the agent picks its own branch inside it — Gilir
-does not create or track branches.
+`POST /api/worktree` and passed to the session as its location. The directory
+name includes this database's identifier, so a recreated database cannot adopt
+the previous one's retained worktrees. Gilir records the directory in SQLite
+before it creates the session, so a watcher restart or retry reuses the same
+worktree instead of leaking another one. Review cycles and retries reuse it
+too, and the agent picks its own branch inside it — Gilir does not create or
+track branches.
 
-If a recorded worktree has disappeared by the time the task resumes, the
-attempt fails with an error naming the missing path instead of silently
-creating a replacement. Restore it, or recreate the task. Gilir never deletes
-worktrees, not even when a task is `done` or deleted; clean them up yourself.
+If a recorded worktree has disappeared or is no longer a directory by the time
+the task resumes, the attempt fails with an error naming the path instead of
+silently creating a replacement. Restore it, or recreate the task. Gilir never
+deletes worktrees, not even when a task is `done` or deleted; clean them up
+yourself.
 
 Tasks that were already `in-progress` when the schema was upgraded have no
 worktree yet, so their next attempt creates one; uncommitted work in the main
-checkout is not carried over.
+checkout is not carried over. An existing OpenCode session under the next
+attempt's deterministic ID but in another directory also fails the attempt
+closed, so upgrade stalls stay visible instead of blocking the queue.
 
 ## Hooks
 

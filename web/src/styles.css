@@ -555,16 +555,6 @@ p {
   color: var(--warning);
 }
 
-.banner.blocked {
-  border-color: var(--blocked-border);
-  background: var(--blocked-soft);
-  color: var(--blocked);
-}
-
-.banner.blocked .btn {
-  flex: none;
-}
-
 .banner .btn {
   flex: none;
 }

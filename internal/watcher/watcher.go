@@ -9,10 +9,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -336,6 +336,13 @@ func (w *Watcher) bootstrap(ctx context.Context, oc *opencode.Client, a store.Di
 		return done, err
 	}
 	if _, err := oc.Create(ctx, sid, fmt.Sprintf("Gilir task %s", a.TaskID), worktree); err != nil {
+		if diff := opencode.SessionDirectoryMismatch(err); diff != "" {
+			// A pre-existing session from a different directory cannot serve
+			// this attempt. Fail it closed instead of stalling the queue.
+			return true, w.finish(ctx, a, store.OutcomeFailure,
+				fmt.Sprintf("OpenCode session %s exists in %q, not the task worktree %q; "+
+					"delete the session or recreate the task", sid, diff, worktree))
+		}
 		return w.rejected(ctx, a, "create session", err)
 	}
 	if err := w.store.LinkSession(ctx, a.ID, sid, oc.Link(sid), worktree); err != nil {
@@ -360,38 +367,47 @@ func (w *Watcher) bootstrap(ctx context.Context, oc *opencode.Client, a store.Di
 // worktree returns the directory the attempt must run in. A task that already
 // recorded a worktree reuses it and fails closed when it disappeared, because
 // silently creating another one would abandon whatever the agent left there.
-// Otherwise the directory is created once under a name derived from the
-// attempt's task, recorded before any session exists, and reused by any later
-// attempt.
+// Otherwise the directory is created once under a name derived from the task
+// and this database file, recorded before any session exists, and reused by any
+// later attempt.
 func (w *Watcher) worktree(ctx context.Context, oc *opencode.Client, a store.DispatchAttempt) (directory string, done bool, err error) {
 	if a.Worktree != "" {
-		info, err := os.Stat(a.Worktree)
-		switch {
+		switch info, err := os.Stat(a.Worktree); {
 		case err == nil && info.IsDir():
 			return a.Worktree, false, nil
-		case err == nil:
+		case err != nil:
+			// A recorded worktree that cannot be reached is a permanent,
+			// task-specific failure: fail it closed instead of holding the
+			// attempt (and its slot) forever.
 			return "", true, w.finish(ctx, a, store.OutcomeFailure,
-				"task worktree "+a.Worktree+" is no longer a directory; restore it or recreate the task")
-		case errors.Is(err, fs.ErrNotExist):
-			return "", true, w.finish(ctx, a, store.OutcomeFailure,
-				"task worktree "+a.Worktree+" no longer exists; restore it with "+
+				"task worktree "+a.Worktree+" is not accessible ("+err.Error()+"); restore it with "+
 					"`git -C "+a.RepoPath+" worktree add --detach "+a.Worktree+"` or recreate the task")
 		default:
-			return "", false, fmt.Errorf("watcher: inspect task worktree %s: %w", a.Worktree, err)
+			return "", true, w.finish(ctx, a, store.OutcomeFailure,
+				"task worktree "+a.Worktree+" is no longer a directory; restore it or recreate the task")
 		}
 	}
 
 	projectID, err := oc.ProjectID(ctx, a.RepoPath)
 	if err != nil {
+		// An unknown location is a permanent failure for this task: without a
+		// project there is no worktree to create.
+		if opencode.IsNotFound(err) {
+			return "", true, w.finish(ctx, a, store.OutcomeFailure,
+				"OpenCode does not know repository "+a.RepoPath+"; re-add it to a running OpenCode server")
+		}
 		return "", false, err
 	}
-	name := worktreeName(a.TaskID)
+	name, err := w.worktreeName(ctx, a)
+	if err != nil {
+		return "", false, err
+	}
 	worktrees, err := oc.ListWorktrees(ctx, projectID)
 	if err != nil {
 		return "", false, err
 	}
 	for _, candidate := range worktrees {
-		if filepath.Base(candidate.Directory) == name {
+		if ownedWorktree(filepath.Base(candidate.Directory), name) {
 			if _, err := w.store.SetTaskWorktree(ctx, a.ID, candidate.Directory); err != nil {
 				return "", false, err
 			}
@@ -399,7 +415,7 @@ func (w *Watcher) worktree(ctx context.Context, oc *opencode.Client, a store.Dis
 		}
 	}
 
-	created, err := oc.CreateWorktree(ctx, projectID, name)
+	created, err := oc.CreateWorktreeFrom(ctx, projectID, a.RepoPath, name)
 	if err != nil {
 		done, err := w.rejected(ctx, a, "create worktree", err)
 		return "", done, err
@@ -411,11 +427,34 @@ func (w *Watcher) worktree(ctx context.Context, oc *opencode.Client, a store.Dis
 	return created.Directory, false, nil
 }
 
-// worktreeName is the deterministic OpenCode worktree slug for a task. It is
-// stable across attempts and retries, and unique even after the database is
-// recreated and task IDs restart.
-func worktreeName(taskID string) string {
-	return "gilir-" + strings.ToLower(strings.ReplaceAll(taskID, "GILIR-", ""))
+// ownedWorktree reports whether an existing worktree directory belongs to this
+// task's creation. OpenCode appends -2, -3, ... when a name is taken, so a
+// retry after running the setup script twice still adopts the directory it
+// created rather than leaking another one.
+func ownedWorktree(base, name string) bool {
+	if base == name {
+		return true
+	}
+	suffix := strings.TrimPrefix(base, name+"-")
+	if suffix == base {
+		return false
+	}
+	_, err := strconv.Atoi(suffix)
+	return err == nil
+}
+
+// worktreeName is the deterministic OpenCode worktree slug for a task. It
+// includes this database's identifier so a recreated database, whose task IDs
+// restart, cannot adopt the previous database's retained worktrees.
+func (w *Watcher) worktreeName(ctx context.Context, a store.DispatchAttempt) (string, error) {
+	databaseID, err := w.store.DatabaseID(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(databaseID) > 8 {
+		databaseID = databaseID[:8]
+	}
+	return "gilir-" + databaseID + "-" + strings.ToLower(strings.ReplaceAll(a.TaskID, "GILIR-", "")), nil
 }
 
 // ready rereads state just before unprompted work. A task moved away from
@@ -432,24 +471,11 @@ func (w *Watcher) ready(ctx context.Context, a store.DispatchAttempt, others int
 }
 
 // abandonIfMoved finishes an unprompted attempt as abandoned when its task is
-// no longer in progress or was blocked before a prompt was sent. A blocked task
-// must not start a new run.
+// no longer in progress or was blocked before a prompt was sent, in one
+// transaction with that check so it cannot race an Unblock that is re-queueing
+// the task. A blocked task must not start a new run.
 func (w *Watcher) abandonIfMoved(ctx context.Context, a store.DispatchAttempt) (bool, error) {
-	d, err := w.store.Show(ctx, a.TaskID)
-	if err != nil {
-		return false, err
-	}
-	if d.Task.Status != store.StatusInProgress {
-		return true, w.finish(ctx, a, store.OutcomeAbandoned,
-			fmt.Sprintf("task moved to %s before the prompt was sent", d.Task.Status))
-	}
-	for _, marking := range d.Task.Markings {
-		if marking == store.MarkingBlocked {
-			return true, w.finish(ctx, a, store.OutcomeAbandoned,
-				"task was blocked before the prompt was sent")
-		}
-	}
-	return false, nil
+	return w.store.AbandonAttemptBeforePrompt(ctx, a.ID)
 }
 
 // rejected fails the attempt when OpenCode definitively refused a request

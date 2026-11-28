@@ -755,6 +755,90 @@ func hasOpenAttempt(ctx context.Context, tx *sql.Tx, taskID string) (bool, error
 	return open, nil
 }
 
+// AbandonAttemptBeforePrompt terminalizes a reserved attempt as abandoned when
+// its task is no longer in progress or is blocked, in one transaction with the
+// check. It reports whether the attempt was abandoned, so a watcher racing an
+// Unblock cannot abandon a task that is about to re-queue: an unblock leaves
+// the attempt open only while the task is still running, and this method reads
+// the same state it acts on.
+func (s *Store) AbandonAttemptBeforePrompt(ctx context.Context, attemptID string) (bool, error) {
+	attemptID = strings.TrimSpace(attemptID)
+	if attemptID == "" {
+		return false, fmt.Errorf("%w: attempt ID is required", ErrInvalid)
+	}
+
+	var abandoned bool
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		attempt, _, err := s.attemptByID(ctx, tx, attemptID)
+		if err != nil {
+			return err
+		}
+		if attempt.State != AttemptStateReserved {
+			return nil
+		}
+		task, err := taskByID(ctx, tx, attempt.TaskID)
+		if err != nil {
+			return err
+		}
+		reason := ""
+		switch {
+		case task.Status != StatusInProgress:
+			reason = fmt.Sprintf("task moved to %s before the prompt was sent", task.Status)
+		case hasMarking(task.Markings, MarkingBlocked):
+			reason = "task was blocked before the prompt was sent"
+		default:
+			return nil
+		}
+
+		// An abandoned outcome never changes task state or markings; only the
+		// attempt and its sessions settle.
+		now := nowUTC()
+		result, err := tx.ExecContext(ctx, `
+			UPDATE dispatch_attempts
+			SET state = 'abandoned', outcome = 'abandoned', detail = ?, finished_at = ?
+			WHERE id = ? AND state = 'reserved'`,
+			reason, formatTime(now), attemptID,
+		)
+		if err != nil {
+			return fmt.Errorf("store: abandon dispatch attempt %s: %w", attemptID, err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("store: abandon dispatch attempt %s: %w", attemptID, err)
+		}
+		if affected != 1 {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE sessions SET state = 'abandoned' WHERE attempt_id = ?`, attemptID,
+		); err != nil {
+			return fmt.Errorf("store: update session state: %w", err)
+		}
+		_, err = appendActivity(ctx, tx, activityInput{
+			Type:      ActivitySessionOutcome,
+			Actor:     ActorSystem,
+			TaskID:    stringPointer(task.ID),
+			ProjectID: int64Pointer(task.ProjectID),
+			Timestamp: now,
+			Data: map[string]any{
+				"attempt_id":  attemptID,
+				"outcome":     string(OutcomeAbandoned),
+				"detail":      reason,
+				"session_ids": []string{},
+			},
+		})
+		if err != nil {
+			return err
+		}
+		abandoned = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return abandoned, nil
+}
+
 // SetMarking adds or removes a task marking. A duplicate add or remove is a
 // no-op without an audit event. The blocked marking is managed by Block and
 // Unblock, which also record the required message and re-queue the task, so it

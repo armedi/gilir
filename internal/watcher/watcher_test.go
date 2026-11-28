@@ -29,9 +29,15 @@ type fakeOC struct {
 	active   map[string]bool
 	badState bool // report an unknown active state
 
-	// worktreeRoot holds the directories POST /api/worktree creates.
+	// worktreeRoot holds the directories POST /api/worktree creates, and
+	// inventory is what the server lists; like OpenCode, a directory can exist
+	// on disk before it is inventoried.
 	worktreeRoot string
 	projectRoot  string
+	inventory    []string
+	// hideCreated keeps a created worktree off the inventory, simulating an
+	// interruption between creation and inventorying.
+	hideCreated bool
 	// fault, when set, is consumed by the next worktree creation: "503" and
 	// "400" refuse it, "503-after" creates it and then answers with 503.
 	worktreeFault string
@@ -46,14 +52,17 @@ type fakeOC struct {
 }
 
 // worktreeDirectories lists the directory strings the fake returns for the
-// project, in OpenCode's order: created worktrees, then the main checkout.
+// project, in OpenCode's order: inventoried worktrees, then the main checkout.
 func (f *fakeOC) worktreeDirectories() []string {
-	entries, _ := os.ReadDir(f.worktreeRoot)
-	directories := make([]string, 0, len(entries)+1)
-	for _, entry := range entries {
-		directories = append(directories, filepath.Join(f.worktreeRoot, entry.Name()))
-	}
-	return append(directories, f.projectRoot)
+	return append(slices.Clone(f.inventory), f.projectRoot)
+}
+
+// revealed inventories a directory that exists on disk but was never listed,
+// as OpenCode would after finishing an interrupted creation.
+func (f *fakeOC) reveal(directory string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.inventory = append(f.inventory, directory)
 }
 
 type fakeSession struct {
@@ -127,6 +136,12 @@ func (f *fakeOC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			reply(400, map[string]any{"_tag": "InvalidRequestError", "message": "name required"})
 			return
 		}
+		// Like OpenCode, honor from as the checkout the worktree starts at and
+		// reject a source the project does not own.
+		if from, _ := body["from"].(string); from != "" && from != f.projectRoot {
+			reply(400, map[string]any{"_tag": "WorktreeError", "data": map[string]any{"message": "not a checkout of this project"}})
+			return
+		}
 		directory := filepath.Join(f.worktreeRoot, name)
 		for suffix := 2; ; suffix++ {
 			if _, err := os.Stat(directory); errors.Is(err, os.ErrNotExist) {
@@ -137,6 +152,9 @@ func (f *fakeOC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err := os.MkdirAll(filepath.Join(directory, ".git"), 0o755); err != nil {
 			reply(500, map[string]any{"message": err.Error()})
 			return
+		}
+		if !f.hideCreated {
+			f.inventory = append(f.inventory, directory)
 		}
 		if fault == "503-after" {
 			reply(503, map[string]any{"_tag": "Unavailable", "message": "connection lost"})
@@ -719,8 +737,16 @@ func TestWorktreeCreationIsPersistedBeforeSessionAndReusedOnResume(t *testing.T)
 	if len(creates) != 1 {
 		t.Fatalf("worktree creates = %d, want 1", len(creates))
 	}
-	if name := creates[0]["name"]; name != "gilir-"+strings.TrimPrefix(e.tasks[0], "GILIR-") {
-		t.Fatalf("worktree name = %v, want the deterministic task name", name)
+	databaseID, err := e.st.DatabaseID(e.ctx)
+	if err != nil {
+		t.Fatalf("DatabaseID: %v", err)
+	}
+	want := "gilir-" + databaseID[:8] + "-" + strings.TrimPrefix(e.tasks[0], "GILIR-")
+	if name := creates[0]["name"]; name != want {
+		t.Fatalf("worktree name = %v, want %q", name, want)
+	}
+	if source := creates[0]["from"]; source != e.repo {
+		t.Fatalf("worktree from = %v, want the task repository %q", source, e.repo)
 	}
 	if projectID := creates[0]["projectID"]; projectID != "prj_gilir" {
 		t.Fatalf("worktree projectID = %v", projectID)
@@ -763,7 +789,9 @@ func TestWorktreeCreationIsPersistedBeforeSessionAndReusedOnResume(t *testing.T)
 
 func TestLostWorktreeResponseIsReusedInsteadOfDuplicated(t *testing.T) {
 	e := setup(t, 1, 1)
-	e.oc.set(func(f *fakeOC) { f.worktreeFault = "503-after" })
+	// The checkout exists on disk but was never inventoried, as when OpenCode
+	// dies between creating it and saving it. The retry must still adopt it.
+	e.oc.set(func(f *fakeOC) { f.worktreeFault = "503-after"; f.hideCreated = true })
 	w := e.watcher()
 	if err := w.Tick(e.ctx); err == nil {
 		t.Fatal("Tick after a lost worktree response succeeded, want error")
@@ -775,6 +803,18 @@ func TestLostWorktreeResponseIsReusedInsteadOfDuplicated(t *testing.T) {
 		t.Fatalf("worktree recorded without a response: %v", d.Task.Worktree)
 	}
 
+	// Once the server recovers it lists the directory it created.
+	e.oc.set(func(f *fakeOC) {
+		f.hideCreated = false
+		entries, err := os.ReadDir(f.worktreeRoot)
+		if err != nil {
+			t.Errorf("read worktrees: %v", err)
+			return
+		}
+		for _, entry := range entries {
+			f.inventory = append(f.inventory, filepath.Join(f.worktreeRoot, entry.Name()))
+		}
+	})
 	e.tick(t, w)
 	if n := len(e.worktreeCreates()); n != 1 {
 		t.Fatalf("worktree creates = %d, want 1 (the retry must find the first)", n)
@@ -885,5 +925,146 @@ func TestBlockedTaskIsNeverDispatched(t *testing.T) {
 	}
 	if n := e.oc.createCount(); n != 1 {
 		t.Fatalf("sessions created = %d, want only the unblocked task's", n)
+	}
+}
+
+func TestInaccessibleRecordedWorktreeFailsClosed(t *testing.T) {
+	e := setup(t, 1, 1)
+	w := e.watcher()
+	e.tick(t, w)
+	sid := e.sessionOf(t, 0)
+	e.oc.deliver(sid)
+	e.oc.settle(sid, "succeeded")
+	e.tick(t, w)
+	if _, err := e.st.Review(e.ctx, "alice", e.tasks[0], store.ReviewRequestChanges, "again"); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	// Replace the worktree with a regular file so os.Stat reports ENOTDIR for
+	// the recorded path rather than a plain missing entry.
+	worktree := *e.task(t, 0).Task.Worktree
+	if err := os.RemoveAll(worktree); err != nil {
+		t.Fatalf("remove worktree: %v", err)
+	}
+	if err := os.WriteFile(worktree, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("replace worktree with a file: %v", err)
+	}
+
+	e.tick(t, w)
+	d := e.task(t, 0)
+	if d.Task.Status != store.StatusInProgress || !slices.Contains(d.Task.Markings, store.MarkingError) {
+		t.Fatalf("task = %s %v, want in-progress with error", d.Task.Status, d.Task.Markings)
+	}
+	if open, err := e.st.ListOpenAttempts(e.ctx); err != nil || len(open) != 0 {
+		t.Fatalf("open attempts = %v, %v; want settled", open, err)
+	}
+	if n := len(e.worktreeCreates()); n != 1 {
+		t.Fatalf("worktree creates = %d, want no replacement", n)
+	}
+}
+
+func TestUnknownRepositoryLocationFailsClosed(t *testing.T) {
+	e := setup(t, 1, 1)
+	// Make the recorded repository unknown to OpenCode after the task exists.
+	e.oc.set(func(f *fakeOC) { f.projectRoot = "/somewhere/else" })
+	e.tick(t, e.watcher())
+	d := e.task(t, 0)
+	if d.Task.Status != store.StatusInProgress || !slices.Contains(d.Task.Markings, store.MarkingError) {
+		t.Fatalf("task = %s %v, want in-progress with error", d.Task.Status, d.Task.Markings)
+	}
+	if open, err := e.st.ListOpenAttempts(e.ctx); err != nil || len(open) != 0 {
+		t.Fatalf("open attempts = %v, %v; want settled so the queue moves on", open, err)
+	}
+}
+
+func TestPreExistingSessionInAnotherDirectoryFailsClosed(t *testing.T) {
+	e := setup(t, 1, 1)
+	// After a database upgrade a task has no recorded worktree, but the
+	// deterministic session ID for its reserved attempt may already exist in
+	// OpenCode from a pre-upgrade run in the main checkout. OpenCode returns it
+	// unchanged and the mismatch must fail the attempt instead of stalling
+	// every later dispatch on the same error.
+	attempt, err := e.st.Reserve(e.ctx, e.url, 100)
+	if err != nil || attempt == nil {
+		t.Fatalf("Reserve = %+v, %v", attempt, err)
+	}
+	sid := SessionID(attempt.ID)
+	e.oc.set(func(f *fakeOC) {
+		f.sessions[sid] = &fakeSession{id: sid, title: "old", dir: "/somewhere/else", delivered: map[string]int64{}}
+	})
+
+	e.tick(t, e.watcher())
+	d := e.task(t, 0)
+	found := false
+	for _, activity := range d.Activity {
+		if activity.Type == store.ActivitySessionOutcome {
+			if detail, _ := activity.Data["detail"].(string); strings.Contains(detail, "exists in") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no directory-mismatch outcome recorded: %+v", d.Activity)
+	}
+	if open, err := e.st.ListOpenAttempts(e.ctx); err != nil || len(open) != 0 {
+		t.Fatalf("open attempts = %v, %v; want settled", open, err)
+	}
+}
+
+func statusPtr(status store.Status) *store.Status { return &status }
+
+func TestUnblockDuringWaitingDispatchLeavesTaskQueuedNotStranded(t *testing.T) {
+	e := setup(t, 2, 1)
+	// Reserve, block, then unblock while the reservation is still open. The
+	// atomic abandonment check must see the unblocked in-progress task as
+	// running and leave it alone, so the next tick does not abandon it.
+	stranded, err := e.st.Reserve(e.ctx, e.url, 100)
+	if err != nil || stranded == nil {
+		t.Fatalf("Reserve = %+v, %v", stranded, err)
+	}
+	if _, err := e.st.Block(e.ctx, "alice", stranded.TaskID, "hold"); err != nil {
+		t.Fatalf("Block: %v", err)
+	}
+	if _, err := e.st.Unblock(e.ctx, "alice", stranded.TaskID, "go"); err != nil {
+		t.Fatalf("Unblock: %v", err)
+	}
+	// OpenCode reports the same server PID, so the attempt is still its own.
+	e.tick(t, e.watcher())
+	if open, err := e.st.ListOpenAttempts(e.ctx); err != nil || len(open) != 1 || open[0].ID != stranded.ID {
+		t.Fatalf("open attempts = %v, %v; want the reserved attempt kept", open, err)
+	}
+	if got := e.status(t, 0); got != store.StatusInProgress {
+		t.Fatalf("task = %s, want in-progress", got)
+	}
+}
+
+func TestSuffixedWorktreeIsAdoptedNotDuplicated(t *testing.T) {
+	e := setup(t, 2, 1)
+	w := e.watcher()
+	// Give the first task an open attempt whose worktree was never recorded,
+	// as after an interrupted tick, and a suffixed directory on disk. A retry
+	// must adopt the suffixed directory instead of asking for another one.
+	attempt, err := e.st.Reserve(e.ctx, e.url, 100)
+	if err != nil || attempt == nil || attempt.TaskID != e.tasks[0] {
+		t.Fatalf("Reserve = %+v, %v; want %s", attempt, err, e.tasks[0])
+	}
+	name, err := w.worktreeName(e.ctx, *attempt)
+	if err != nil {
+		t.Fatalf("worktreeName: %v", err)
+	}
+	suffixed := filepath.Join(e.oc.worktreeRoot, name+"-2")
+	if err := os.MkdirAll(filepath.Join(suffixed, ".git"), 0o755); err != nil {
+		t.Fatalf("create suffixed worktree: %v", err)
+	}
+	e.oc.reveal(suffixed)
+
+	e.tick(t, w)
+	if n := len(e.worktreeCreates()); n != 0 {
+		t.Fatalf("worktree creates = %d, want none for an adopted worktree", n)
+	}
+	if got := e.task(t, 0).Task.Worktree; got == nil || *got != suffixed {
+		t.Fatalf("recorded worktree = %v, want %q", got, suffixed)
+	}
+	if directories := e.sessionDirectories(); len(directories) != 1 || directories[0] != suffixed {
+		t.Fatalf("session directories = %v, want %q", directories, suffixed)
 	}
 }

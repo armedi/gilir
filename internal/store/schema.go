@@ -110,6 +110,14 @@ var schemaStatements = []string{
 		updated_at TEXT NOT NULL
 	) STRICT`,
 
+	// store_meta holds durable facts about this database file. The database ID
+	// namespaces external resources such as OpenCode worktrees so a recreated
+	// database cannot adopt resources created by the one it replaced.
+	`CREATE TABLE store_meta (
+		key TEXT PRIMARY KEY CHECK (length(trim(key)) > 0),
+		value TEXT NOT NULL
+	) STRICT`,
+
 	`CREATE INDEX idx_project_repos_repo ON project_repos (repo_id)`,
 	`CREATE INDEX idx_tasks_project ON tasks (project_id)`,
 	`CREATE INDEX idx_tasks_repo ON tasks (repo_id)`,

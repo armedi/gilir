@@ -200,13 +200,16 @@ func TestReserveSkipsBlockedAndBoostsResumedTasks(t *testing.T) {
 		t.Fatal("Reserve cleared the blocked marking")
 	}
 
-	// Unblocking re-queues with a boost that beats a fresher same-priority task.
+	// Unblocking re-queues with a boost. The resumed task is created after an
+	// older same-priority peer, so only the boost can put it first; without it
+	// the older task would win on seq.
+	older := queuedTask(t, s, project, repo, "older low", PriorityLow)
 	resumed := queuedTask(t, s, project, repo, "resumed", PriorityLow)
 	if _, err := s.Block(ctx, "alice", resumed.ID, "wait"); err != nil {
 		t.Fatalf("Block resumed: %v", err)
 	}
 	fresher := queuedTask(t, s, project, repo, "fresher", PriorityLow)
-	if resumed.ID == fresher.ID {
+	if older.ID == resumed.ID || fresher.ID == resumed.ID {
 		t.Fatal("ids must differ")
 	}
 	unblocked, err := s.Unblock(ctx, "alice", resumed.ID, "")
@@ -224,8 +227,8 @@ func TestReserveSkipsBlockedAndBoostsResumedTasks(t *testing.T) {
 		if attempt == nil {
 			t.Fatalf("queue drained before %s", resumed.ID)
 		}
-		if attempt.TaskID == fresher.ID {
-			t.Fatalf("reserved fresher %s before resumed %s", fresher.ID, resumed.ID)
+		if attempt.TaskID == older.ID || attempt.TaskID == fresher.ID {
+			t.Fatalf("reserved %s before the boosted %s", attempt.TaskID, resumed.ID)
 		}
 		if attempt.TaskID == resumed.ID {
 			after := mustShow(t, s, resumed.ID)
@@ -291,6 +294,11 @@ func TestFinishAttemptBlockedSuccessKeepsInProgress(t *testing.T) {
 	if attempt == nil {
 		t.Fatalf("could not reserve %s", task.ID)
 	}
+	// Seed a stale error after reservation so the test proves blocked success
+	// clears it, not that Reserve once did.
+	if _, err := s.SetMarking(ctx, "alice", task.ID, MarkingError, true); err != nil {
+		t.Fatalf("SetMarking(error): %v", err)
+	}
 	if _, err := s.Block(ctx, "alice", task.ID, "hold"); err != nil {
 		t.Fatalf("Block: %v", err)
 	}
@@ -302,7 +310,13 @@ func TestFinishAttemptBlockedSuccessKeepsInProgress(t *testing.T) {
 		!hasMarking(after.Task.Markings, MarkingBlocked) {
 		t.Fatalf("blocked success = %+v, want in-progress, blocked, no error", after.Task)
 	}
+	if countActivityType(after.Activity, ActivitySessionOutcome) != 1 {
+		t.Fatalf("blocked success outcome audit = %v, want exactly one", activityTypes(after.Activity))
+	}
 	for _, activity := range after.Activity {
+		if activity.Type == ActivitySessionOutcome && activity.Data["outcome"] != "success" {
+			t.Fatalf("blocked success outcome = %+v, want success", activity)
+		}
 		if activity.Type == ActivityTaskStatusChanged && activity.Data["new"] == string(StatusInReview) {
 			t.Fatalf("blocked success wrote an in-review transition: %+v", activity)
 		}

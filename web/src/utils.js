@@ -120,6 +120,9 @@ export function normalizeDetail(data) {
     task: normalizeTask(data.task),
     blockers: asArray(data.blockers),
     sessions: asArray(data.sessions).filter(Boolean),
+    // attempt is the open dispatch attempt, if any. The blocked composer uses
+    // its absence to tell an idle in-progress task from a running one.
+    attempt: data.attempt && typeof data.attempt === 'object' ? data.attempt : null,
     activity: asArray(data.activity).filter(Boolean),
   };
 }

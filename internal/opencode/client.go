@@ -297,6 +297,23 @@ func (c *Client) ListWorktrees(ctx context.Context, projectID string) ([]Worktre
 // duplicate name. The call runs the project's setup script, so it may take
 // much longer than a plain request.
 func (c *Client) CreateWorktree(ctx context.Context, projectID, name string) (Worktree, error) {
+	return c.createWorktree(ctx, projectID, name, "")
+}
+
+// CreateWorktreeFrom creates a worktree whose starting point is the checkout at
+// from. OpenCode otherwise starts from the project's canonical checkout, which
+// is wrong when the task's repository is a linked worktree of that project.
+func (c *Client) CreateWorktreeFrom(ctx context.Context, projectID, from, name string) (Worktree, error) {
+	if from == "" {
+		return Worktree{}, errors.New("opencode: worktree creation requires a source checkout")
+	}
+	if !filepath.IsAbs(from) {
+		return Worktree{}, fmt.Errorf("opencode: worktree source %q is not absolute", from)
+	}
+	return c.createWorktree(ctx, projectID, name, filepath.Clean(from))
+}
+
+func (c *Client) createWorktree(ctx context.Context, projectID, name, from string) (Worktree, error) {
 	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {
 		return Worktree{}, errors.New("opencode: worktree creation requires a project ID")
@@ -308,7 +325,8 @@ func (c *Client) CreateWorktree(ctx context.Context, projectID, name string) (Wo
 	req := struct {
 		ProjectID string `json:"projectID"`
 		Name      string `json:"name"`
-	}{projectID, name}
+		From      string `json:"from,omitempty"`
+	}{projectID, name, from}
 	var body struct {
 		Directory *string `json:"directory"`
 		Strategy  string  `json:"strategy"`
@@ -377,6 +395,27 @@ func (c *Client) Get(ctx context.Context, id string) (Session, error) {
 	return s, nil
 }
 
+// SessionDirectoryMismatch reports the directory a POST /api/session response
+// reported when it did not match the requested one, or "" for other errors.
+// OpenCode returns an existing session with a caller-chosen ID unchanged, so a
+// reused ID from another directory fails this way rather than by status.
+func SessionDirectoryMismatch(err error) string {
+	var mismatch *sessionDirectoryError
+	if errors.As(err, &mismatch) {
+		return mismatch.got
+	}
+	return ""
+}
+
+type sessionDirectoryError struct {
+	got  string
+	want string
+}
+
+func (e *sessionDirectoryError) Error() string {
+	return fmt.Sprintf("opencode: POST /api/session: session is in %q, want %q", e.got, e.want)
+}
+
 // Create creates a root session with a caller-chosen ID in directory. The
 // server returns an existing session with the same ID unchanged, so retries
 // are safe; the result must match the request.
@@ -409,7 +448,7 @@ func (c *Client) Create(ctx context.Context, id, title, directory string) (Sessi
 	case s.ParentID != "":
 		return Session{}, fmt.Errorf("opencode: POST /api/session: session %s is a child of %s", id, s.ParentID)
 	case filepath.Clean(s.Directory) != directory:
-		return Session{}, fmt.Errorf("opencode: POST /api/session: session %s is in %q, want %q", id, s.Directory, directory)
+		return Session{}, &sessionDirectoryError{got: s.Directory, want: directory}
 	}
 	return s, nil
 }
@@ -581,12 +620,19 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 }
 
 // doLong sends one request with a longer timeout, for calls that run project
-// scripts. It shares the client's transport and redirect policy, and the
-// caller's context still bounds the request.
+// scripts. The standard client also bounds response headers at 30s, so this
+// builds a transport with the long budget for both phases. It keeps the same
+// dial guard and redirect policy, and the caller's context still applies.
 func (c *Client) doLong(ctx context.Context, method, path string, in, out any) error {
-	client := *c.http
-	client.Timeout = createWorktreeTimeout
-	return c.doWith(ctx, &client, method, path, in, out)
+	transport := c.http.Transport.(*http.Transport).Clone()
+	transport.TLSHandshakeTimeout = createWorktreeTimeout
+	transport.ResponseHeaderTimeout = createWorktreeTimeout
+	client := &http.Client{
+		Transport:     transport,
+		Timeout:       createWorktreeTimeout,
+		CheckRedirect: c.http.CheckRedirect,
+	}
+	return c.doWith(ctx, client, method, path, in, out)
 }
 
 func (c *Client) doWith(ctx context.Context, client *http.Client, method, path string, in, out any) error {
