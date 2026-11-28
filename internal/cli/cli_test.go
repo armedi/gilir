@@ -598,7 +598,8 @@ func TestRunSkillObservableContract(t *testing.T) {
 	}
 }
 
-func TestRunHelpReflectsRepoFirstCommands(t *testing.T) {	tests := []struct {
+func TestRunHelpReflectsRepoFirstCommands(t *testing.T) {
+	tests := []struct {
 		name string
 		argv []string
 		want []string

@@ -581,11 +581,9 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 }
 
 // doLong sends one request with a longer timeout, for calls that run project
-// scripts. It shares the client's transport and redirect policy.
+// scripts. It shares the client's transport and redirect policy, and the
+// caller's context still bounds the request.
 func (c *Client) doLong(ctx context.Context, method, path string, in, out any) error {
-	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) > createWorktreeTimeout {
-		return c.doWith(ctx, c.http, method, path, in, out)
-	}
 	client := *c.http
 	client.Timeout = createWorktreeTimeout
 	return c.doWith(ctx, &client, method, path, in, out)
