@@ -96,6 +96,12 @@ func runServiceWorker(ctx context.Context) error {
 // selects the detached-service behavior: publish service state under
 // <dataDir>/gilir and serve the private loopback stop endpoint.
 func serve(parent context.Context, listen listenConfig, dbPath string, managed bool) error {
+	// Install signal handling before any slow startup work. A SIGINT/SIGTERM
+	// during OpenCode discovery or store open must exit cleanly with status 0
+	// rather than killing the process through Go's default handler.
+	sigCtx, stopSignals := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
 	overrides := opencodeOverrides()
 	conn, err := opencode.NewConnector(opencode.NewCLI(), overrides)
 	if err != nil {
@@ -105,7 +111,7 @@ func serve(parent context.Context, listen listenConfig, dbPath string, managed b
 	// the first watcher tick reuses the cached client instead of running the
 	// discovery CLI again. Discovery failure never stops the service: the
 	// watcher keeps retrying with backoff once OpenCode is available.
-	if _, _, err := conn.Client(parent); err != nil {
+	if _, _, err := conn.Client(sigCtx); err != nil {
 		fmt.Fprintf(os.Stderr, "gilir: warning: %s\n", conn.Redact(opencode.Describe(err)))
 	}
 
@@ -132,7 +138,7 @@ func serve(parent context.Context, listen listenConfig, dbPath string, managed b
 	defer st.Close()
 
 	source := storeSource{st}
-	if err := initHookCursors(parent, source, hookConfigs); err != nil {
+	if err := initHookCursors(sigCtx, source, hookConfigs); err != nil {
 		return err
 	}
 
@@ -150,6 +156,13 @@ func serve(parent context.Context, listen listenConfig, dbPath string, managed b
 		if web == nil {
 			webNote = "no web UI (" + webDir + "/index.html not found)"
 		}
+	}
+
+	// A signal that arrived while the store was opening has no listeners to
+	// shut down yet, so stop before binding rather than serving a doomed
+	// process.
+	if sigCtx.Err() != nil {
+		return nil
 	}
 
 	ln, err := net.Listen("tcp", listen.address())
@@ -213,7 +226,7 @@ func serve(parent context.Context, listen listenConfig, dbPath string, managed b
 			controlLn.Close()
 			return err
 		}
-		defer removeServiceState(paths)
+		defer removeServiceStateIf(paths, instance)
 
 		controlServer = &http.Server{
 			Handler:           &controlHandler{token: token, stop: stopRequests},
@@ -241,8 +254,6 @@ func serve(parent context.Context, listen listenConfig, dbPath string, managed b
 		ErrorLog:          log.New(os.Stderr, "gilir: http: ", 0),
 	}
 
-	sigCtx, stopSignals := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
-	defer stopSignals()
 	ctx, cancel := context.WithCancel(sigCtx)
 	defer cancel()
 

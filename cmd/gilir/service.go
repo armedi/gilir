@@ -281,6 +281,24 @@ func removeServiceState(paths servicePaths) {
 	_ = os.Remove(paths.State)
 }
 
+// removeServiceStateIf deletes the record only when it still names instance, so
+// an exiting worker never discards another worker's state after its own record
+// was lost and replaced.
+func removeServiceStateIf(paths servicePaths, instance string) {
+	state, ok := readServiceState(paths)
+	if ok && state.Instance != instance {
+		return
+	}
+	if !ok {
+		// Without a readable record there is nothing to protect; an unreadable
+		// file must not keep a dead service's record forever.
+		if _, err := os.Stat(paths.State); errors.Is(err, os.ErrNotExist) {
+			return
+		}
+	}
+	removeServiceState(paths)
+}
+
 // serviceLockHeld reports whether a service currently owns dbPath. The lock
 // file is probed, never unlinked; the kernel releases the lock when the
 // process exits.
@@ -334,11 +352,11 @@ func startServiceLocked(ctx context.Context, paths servicePaths, dbPath string, 
 			return nil, fmt.Errorf("gilir service is already running at %s for %s; run \"gilir service stop\" first", state.URL, state.DBPath)
 		}
 		if serviceLockHeld(state.DBPath) {
-			return nil, fmt.Errorf("gilir service is running but not responding at %s (see %s)", state.URL, state.LogPath)
+			return nil, fmt.Errorf("%s is in use by another gilir process (not the managed service at %s); stop it or run \"gilir service stop\" to clear the stale record %s", state.DBPath, state.URL, paths.State)
 		}
 		removeServiceState(paths)
 	} else if serviceLockHeld(dbPath) {
-		return nil, fmt.Errorf("gilir service is already running for %s but its state file %s is missing or invalid", dbPath, paths.State)
+		return nil, fmt.Errorf("%s is in use by another gilir process (not the managed service recorded in %s); stop it first", dbPath, paths.State)
 	} else {
 		removeServiceState(paths)
 	}
@@ -531,6 +549,17 @@ func stopServiceLocked(ctx context.Context, paths servicePaths) (any, error) {
 	}
 
 	controlErr := requestStop(ctx, state)
+	if controlErr != nil {
+		// A stale record (the worker was killed, then a foreground serve took
+		// the database) cannot answer, and its lock will never be released by
+		// this record's owner. Verify the instance before waiting the full
+		// timeout: if the URL does not answer as this record's instance, drop
+		// the record instead of blocking on an unrelated process.
+		if live, probeErr := serviceStatusAt(ctx, state.URL); probeErr != nil || live.Instance != state.Instance {
+			removeServiceState(paths)
+			return serviceStopped{Stopped: false}, nil
+		}
+	}
 	// The listener is closed before watcher, hook, and store cleanup, so wait
 	// for the database lock to be released rather than for HTTP to fail.
 	if err := waitServiceLockFree(ctx, state.DBPath, serviceStopTimeout); err != nil {
@@ -616,7 +645,6 @@ func queryServiceStatus(ctx context.Context) (any, error) {
 	if !ok {
 		return out, nil
 	}
-	out.DBPath = state.DBPath
 	live, err := serviceStatusAt(ctx, state.URL)
 	if err != nil {
 		if serviceLockHeld(state.DBPath) {

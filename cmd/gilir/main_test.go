@@ -566,39 +566,65 @@ func TestServiceStartRejectsMismatchedHostPortAndDatabase(t *testing.T) {
 }
 
 func TestServiceRestartPreservesAndOverridesDatabase(t *testing.T) {
-	dir, dbPath := serveTestEnv(t)
+	dir, _ := serveTestEnv(t)
 	t.Setenv("GILIR_OPENCODE_URL", "http://127.0.0.1:"+freePort(t))
 	t.Setenv("GILIR_WEB_DIR", filepath.Join(dir, "missing"))
 	t.Cleanup(func() { _, _ = stopService(context.Background()) })
 
-	started, err := startService(context.Background(), "127.0.0.1", "0", "")
+	// Start on a database that GILIR_DB does not name, so a restart that
+	// ignored the stored record would be visible in db_path.
+	firstDB, err := prepareDatabase(filepath.Join(dir, "first.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := startService(context.Background(), "127.0.0.1", "0", firstDB)
 	if err != nil {
 		t.Fatalf("start service: %v", err)
 	}
 	first := started.(serviceStatus)
+	if first.DBPath != firstDB {
+		t.Fatalf("start db_path = %q, want %q", first.DBPath, firstDB)
+	}
 
-	// A restart without flags keeps the running address and database.
+	// Point GILIR_DB somewhere else, then restart without flags: it must keep
+	// the running database and host, not fall back to the environment.
+	t.Setenv("GILIR_DB", filepath.Join(dir, "env.sqlite"))
 	restarted, err := restartService(context.Background(), "", "", "")
 	if err != nil {
 		t.Fatalf("restart service: %v", err)
 	}
 	second := restarted.(serviceStatus)
-	if second.DBPath != dbPath || second.Host != first.Host || second.Port == first.Port {
+	if second.DBPath != firstDB || second.Host != first.Host || second.Port == first.Port {
 		t.Fatalf("restart = %+v, want the same db_path and host on a new port", second)
 	}
 
 	// An explicit --db overrides the stored database.
-	other := filepath.Join(dir, "other.sqlite")
+	other, err := prepareDatabase(filepath.Join(dir, "other.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	restarted, err = restartService(context.Background(), "", "", other)
 	if err != nil {
 		t.Fatalf("restart with --db: %v", err)
 	}
-	want, err := filepath.EvalSymlinks(other)
+	if got := restarted.(serviceStatus).DBPath; got != other {
+		t.Fatalf("restart --db path = %q, want %q", got, other)
+	}
+
+	// Once stopped, a restart with no flags uses GILIR_DB again.
+	if stopped, err := stopService(context.Background()); err != nil || !stopped.(serviceStopped).Stopped {
+		t.Fatalf("stop service = %+v, %v", stopped, err)
+	}
+	envDB, err := prepareDatabase("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := restarted.(serviceStatus).DBPath; got != want {
-		t.Fatalf("restart --db path = %q, want %q", got, want)
+	restarted, err = restartService(context.Background(), "", "", "")
+	if err != nil {
+		t.Fatalf("restart while stopped: %v", err)
+	}
+	if got := restarted.(serviceStatus).DBPath; got != envDB {
+		t.Fatalf("stopped restart db_path = %q, want GILIR_DB %q", got, envDB)
 	}
 }
 
@@ -636,7 +662,7 @@ func TestServiceStartWildcardRoutesCommandsViaGILIRURL(t *testing.T) {
 		t.Fatalf("created project = %+v", project)
 	}
 	if _, err := execute(context.Background(), "service.update", "user", map[string]any{"paused": true}); err != nil {
-		t.Fatalf("queue control via GILIR_URL: %v", err)
+		t.Fatalf("service.update wire command via GILIR_URL: %v", err)
 	}
 	statusResult, err := queryServiceStatus(context.Background())
 	if err != nil {
@@ -929,8 +955,30 @@ func TestServeCommandExitsCleanlyOnSignalWithNoStdout(t *testing.T) {
 	}
 }
 
+func TestServeStopsBeforeBindingOnACancelledContext(t *testing.T) {
+	dir, dbPath := serveTestEnv(t)
+	t.Setenv("GILIR_OPENCODE_URL", "http://127.0.0.1:"+freePort(t))
+	t.Setenv("GILIR_WEB_DIR", filepath.Join(dir, "missing"))
+
+	// A signal that arrives during startup must end the process cleanly, not
+	// leave it bound or holding the database. A cancelled parent context is
+	// the same condition without a racy subprocess signal.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := serve(ctx, listenFor("127.0.0.1", freePort(t)), dbPath, false); err != nil {
+		t.Fatalf("serve on a cancelled context = %v, want a clean nil exit", err)
+	}
+	if serviceLockHeld(dbPath) {
+		t.Fatal("serve left the database lock held after an early stop")
+	}
+}
+
 func TestServeCommandRejectsJSON(t *testing.T) {
-	proc := startServeSubprocess(t, nil, "serve", "--json")
+	dir := t.TempDir()
+	proc := startServeSubprocess(t, []string{
+		"XDG_DATA_HOME=" + filepath.Join(dir, "data"),
+		"LOCALAPPDATA=" + filepath.Join(dir, "data"),
+	}, "serve", "--json", "--db", filepath.Join(dir, "gilir.sqlite"), "--port", freePort(t))
 	if err := proc.wait(t, 10*time.Second); err == nil {
 		t.Fatal("serve --json exited 0")
 	}
@@ -1052,8 +1100,14 @@ func TestStopWaitsForDatabaseLockRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dbLock.Close()
-	// A dead control port makes requestStop fail; stop must still wait for the
-	// database lock rather than trust HTTP alone.
+	// A dead control port makes requestStop fail. A live worker of ours still
+	// answers service.status, so stop must wait for the database lock rather
+	// than trust the failed control request.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":{"running":true,"paused":false,"max_concurrency":1,"instance":"inst-1","active_parents":0}}`)
+	}))
+	defer server.Close()
 	if err := writeServiceState(paths, serviceState{
 		Version:       serviceVersion,
 		Instance:      "inst-1",
@@ -1062,7 +1116,7 @@ func TestStopWaitsForDatabaseLockRelease(t *testing.T) {
 		RequestedPort: 44547,
 		Host:          "127.0.0.1",
 		Port:          44547,
-		URL:           "http://127.0.0.1:1",
+		URL:           server.URL,
 		ControlPort:   1,
 		Token:         "token",
 		DBPath:        dbPath,
@@ -1096,6 +1150,92 @@ func TestStopWaitsForDatabaseLockRelease(t *testing.T) {
 	}
 }
 
+func TestStopClearsStaleStateWithoutWaiting(t *testing.T) {
+	dir := t.TempDir()
+	isolateDataDir(t)
+	paths := dataServicePaths(t)
+	dbPath := filepath.Join(dir, "gilir.sqlite")
+
+	// A foreground `gilir serve` (or any process) holds the database, while a
+	// killed worker's service.json still names a dead URL. Stop must not wait
+	// the full timeout on a process it does not own.
+	dbLock, err := lockFile(dbPath + ".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbLock.Close()
+	if err := writeServiceState(paths, serviceState{
+		Version:       serviceVersion,
+		Instance:      "dead-worker",
+		PID:           1,
+		RequestedHost: "127.0.0.1",
+		RequestedPort: 44547,
+		Host:          "127.0.0.1",
+		Port:          44547,
+		URL:           "http://127.0.0.1:1",
+		ControlPort:   1,
+		Token:         "token",
+		DBPath:        dbPath,
+		LogPath:       paths.Log,
+		StartedAt:     time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	stopped, err := stopService(context.Background())
+	if err != nil {
+		t.Fatalf("stop service: %v", err)
+	}
+	if stopped.(serviceStopped).Stopped {
+		t.Fatal("stop reported a stale record as stopped")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("stop waited %s on a stale record", elapsed)
+	}
+	if _, err := os.Stat(paths.State); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale service state survived: %v", err)
+	}
+
+	// The same record must not block a start on that database either.
+	if _, err := startService(context.Background(), "127.0.0.1", "0", dbPath); err == nil {
+		t.Fatal("start accepted a database held by another process")
+	} else if !strings.Contains(err.Error(), "not the managed service") {
+		t.Fatalf("start error = %v, want an unrelated-holder message", err)
+	}
+}
+
+func TestRemoveServiceStateIsInstanceAware(t *testing.T) {
+	isolateDataDir(t)
+	paths := dataServicePaths(t)
+	write := func(instance string) {
+		if err := writeServiceState(paths, serviceState{
+			Version:     serviceVersion,
+			Instance:    instance,
+			URL:         "http://127.0.0.1:44547",
+			Token:       "token",
+			DBPath:      "/tmp/gilir.sqlite",
+			LogPath:     paths.Log,
+			Port:        44547,
+			ControlPort: 44548,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A worker that lost its record must not delete the replacement another
+	// worker published.
+	write("worker-b")
+	removeServiceStateIf(paths, "worker-a")
+	if state, ok := readServiceState(paths); !ok || state.Instance != "worker-b" {
+		t.Fatalf("state after foreign cleanup = %+v, %v", state, ok)
+	}
+	removeServiceStateIf(paths, "worker-b")
+	if _, ok := readServiceState(paths); ok {
+		t.Fatal("own record survived cleanup")
+	}
+}
+
 func TestServiceStartRefusesDatabaseHeldByForegroundServe(t *testing.T) {
 	dir, dbPath := serveTestEnv(t)
 	t.Setenv("GILIR_OPENCODE_URL", "http://127.0.0.1:"+freePort(t))
@@ -1107,7 +1247,7 @@ func TestServiceStartRefusesDatabaseHeldByForegroundServe(t *testing.T) {
 	defer lock.Close()
 
 	if _, err := startService(context.Background(), "127.0.0.1", "0", ""); err == nil ||
-		!strings.Contains(err.Error(), "already running") {
+		!strings.Contains(err.Error(), "in use by another gilir process") {
 		t.Fatalf("start service on a served database = %v, want a lock conflict", err)
 	}
 	if _, err := os.Stat(dataServicePaths(t).State); !errors.Is(err, os.ErrNotExist) {
