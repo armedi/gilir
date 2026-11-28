@@ -352,13 +352,12 @@ GILIR_URL=http://127.0.0.1:9000 gilir list
 ## Worktrees
 
 Each task owns one OpenCode worktree, created on its first dispatch through
-`POST /api/worktree` and passed to the session as its location. The directory
-name includes this database's identifier, so a recreated database cannot adopt
-the previous one's retained worktrees. Gilir records the directory in SQLite
-before it creates the session, so a watcher restart or retry reuses the same
-worktree instead of leaking another one. Review cycles and retries reuse it
-too, and the agent picks its own branch inside it — Gilir does not create or
-track branches.
+`POST /api/worktree` and passed to the session as its location. Gilir reserves
+a short name from the task title before creation, adding `-2`, `-3`, and so on
+if the name is taken. It records the directory in SQLite before it creates
+the session. Title edits, review cycles, and retries preserve the worktree,
+and the agent picks its own branch inside it — Gilir does not create or track
+branches.
 
 If a recorded worktree has disappeared or is no longer a directory by the time
 the task resumes, the attempt fails with an error naming the path instead of

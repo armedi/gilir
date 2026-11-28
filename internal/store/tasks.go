@@ -365,6 +365,9 @@ func (s *Store) DeleteTask(ctx context.Context, actor string, taskID string) err
 		); err != nil {
 			return fmt.Errorf("store: delete task %s: %w", taskID, err)
 		}
+		if err := clearWorktreeName(ctx, tx, taskID); err != nil {
+			return err
+		}
 
 		_, err = appendActivity(ctx, tx, activityInput{
 			Type:      ActivityTaskDeleted,
@@ -457,6 +460,9 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID string, pat
 			}
 			if !linked {
 				return fmt.Errorf("%w: repository %d does not belong to project %d", ErrInvalid, newRepoID, old.ProjectID)
+			}
+			if err := clearWorktreeName(ctx, tx, taskID); err != nil {
+				return err
 			}
 		}
 
@@ -676,7 +682,7 @@ func (s *Store) Unblock(ctx context.Context, actor string, taskID, message strin
 				TaskID:    stringPointer(taskID),
 				ProjectID: int64Pointer(current.ProjectID),
 				Timestamp: now,
-				Data:      map[string]any{"message": message},
+				Data:      map[string]any{"message": message, "purpose": CommentPurposeUnblock},
 			}); err != nil {
 				return err
 			}

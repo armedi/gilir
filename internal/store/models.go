@@ -112,6 +112,9 @@ type Activity struct {
 	Data      map[string]any `json:"data"`
 }
 
+// CommentPurposeUnblock identifies an optional comment written by Unblock.
+const CommentPurposeUnblock = "unblock"
+
 // TaskDetail is the complete view of a task returned by Show. Attempt is the
 // task's open dispatch attempt, when one exists, so clients can tell a running
 // task from an idle in-progress one without loading the queue.

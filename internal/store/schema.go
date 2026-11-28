@@ -110,9 +110,7 @@ var schemaStatements = []string{
 		updated_at TEXT NOT NULL
 	) STRICT`,
 
-	// store_meta holds durable facts about this database file. The database ID
-	// namespaces external resources such as OpenCode worktrees so a recreated
-	// database cannot adopt resources created by the one it replaced.
+	// store_meta holds the database ID and pending worktree name reservations.
 	`CREATE TABLE store_meta (
 		key TEXT PRIMARY KEY CHECK (length(trim(key)) > 0),
 		value TEXT NOT NULL

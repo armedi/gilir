@@ -466,6 +466,9 @@ func (s *Store) SetTaskWorktree(ctx context.Context, attemptID, directory string
 		); err != nil {
 			return fmt.Errorf("store: record task %s worktree: %w", attempt.TaskID, err)
 		}
+		if err := clearWorktreeName(ctx, tx, attempt.TaskID); err != nil {
+			return err
+		}
 		projectID, err := requireTask(ctx, tx, attempt.TaskID)
 		if err != nil {
 			return err

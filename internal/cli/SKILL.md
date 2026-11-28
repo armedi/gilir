@@ -4,39 +4,39 @@ Gilir is a task queue for coding agents. This manual carries the workflows and
 invariants; for flags and arguments, run `gilir --help` or
 `gilir <command> --help`.
 
-Set these first:
-
-```sh
-task_id=GILIR-42                      # the prefixed task ID, never a bare number
-session_id=ses_your_opencode_session  # your own OpenCode session
-```
-
-A dispatched parent reads its `session_id` from the `sessions` section of
-`gilir show`; a subagent uses its own.
-
 ## IDs
 
-Task IDs are accepted only with the `GILIR-` prefix: `gilir show GILIR-42`
-works, `gilir show 42` is an error. Project, repository and comment IDs are bare
-positive integers.
+`<task_id>` is the full task ID, including the `GILIR-` prefix. Project,
+repository and comment IDs are bare positive integers.
 
 ## Seeing a task
 
-Read a task with `gilir show GILIR-42`. On a resumed or review cycle, read its
-`sessions` and `activity` sections before starting: earlier attempts left their
-sessions, worktree, comments and any review message there.
+Run `gilir show <task_id>` to read a task, its blockers, sessions, and activity.
 
 ## Working a task
+
+### Dispatched tasks
+
+Use the task brief in your opening message when it’s included. Run
+`gilir show <task_id>` if the brief is missing or you need current details or
+comments. When resuming a prior attempt, use `gilir show` to read `sessions`
+and `activity` before editing.
 
 Work in the OpenCode worktree listed on the task's latest session, not in the
 repository's main checkout. Gilir neither creates nor tracks branches. The
 worktree is reused for every attempt, and Gilir never deletes it, even when the
 task is done or deleted.
 
+### Updating a task
+
 Tag every write with your own actor so the audit trail is attributable. Comment
-edit and removal require the actor that wrote the comment.
+edit and removal require the actor that wrote the comment. If you’re the
+dispatched parent and need your session ID, read it from `sessions` in
+`gilir show <task_id>`. A subagent uses its own session ID.
 
 ```sh
+task_id='<task_id>'
+session_id=ses_your_opencode_session
 gilir comment "$task_id" "Progress: parser and tests are in place." --actor "agent:$session_id"
 ```
 
@@ -75,8 +75,8 @@ gilir repo add /srv/payments                 # auto-creates project "payments"
 gilir repo add /srv/payments --project 3     # links an existing project
 gilir repo list                              # every repo with its project_ids
 gilir create "Fix rounding" --repo 1 --status todo --priority high
-gilir depend GILIR-7 GILIR-5                 # GILIR-7 waits for GILIR-5
-gilir delete GILIR-7
+gilir depend '<task_id>' '<blocker_task_id>' # the first task waits for the second
+gilir delete '<task_id>'
 ```
 
 - Repository paths resolve on the service host, not yours. A repository shared
@@ -100,6 +100,6 @@ message, returns the task to `todo`, marks it `changes-requested`, and records
 the message as a comment:
 
 ```sh
-gilir approve GILIR-7 --actor "agent:$session_id"
-gilir request-changes GILIR-7 --message "Add a rounding test." --actor "agent:$session_id"
+gilir approve '<task_id>' --actor "agent:$session_id"
+gilir request-changes '<task_id>' --message "Add a rounding test." --actor "agent:$session_id"
 ```

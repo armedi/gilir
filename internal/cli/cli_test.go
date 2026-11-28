@@ -628,7 +628,7 @@ func TestRunSkillObservableContract(t *testing.T) {
 	}
 	normalized := strings.Join(strings.Fields(plain), " ")
 	for _, want := range []string{
-		`gilir show GILIR-42`,
+		`gilir show <task_id>`,
 		`gilir comment "$task_id"`,
 		`--actor "agent:$session_id"`,
 		`Progress:`,
@@ -638,10 +638,10 @@ func TestRunSkillObservableContract(t *testing.T) {
 		"gilir repo add /srv/payments --project 3",
 		"gilir repo list",
 		"gilir create \"Fix rounding\" --repo 1 --status todo --priority high",
-		"gilir depend GILIR-7 GILIR-5",
+		"gilir depend '<task_id>' '<blocker_task_id>'",
 		"gilir block \"$task_id\" --message",
 		"gilir unblock \"$task_id\"",
-		"gilir request-changes GILIR-7 --message",
+		"gilir request-changes '<task_id>' --message",
 		"never approve a task you worked on",
 		"worktree",
 	} {

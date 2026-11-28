@@ -442,7 +442,8 @@ func TestCapCountsExternalParentsIgnoresChildrenAndLinksBeforePrompt(t *testing.
 		t.Fatalf("prompts = %v, want one", prompts)
 	}
 	attemptID := strings.TrimPrefix(sid, "ses_gilir_")
-	if want := map[string]any{"id": "msg_gilir_" + attemptID, "text": fmt.Sprintf("Read task %s with `gilir show %s`.", e.tasks[0], e.tasks[0])}; fmt.Sprint(prompts[0]) != fmt.Sprint(want) {
+	wantText := fmt.Sprintf("Work on %s. Run `gilir skill` before starting.\n\n<task id=%q>\n<title>secret title 0</title>\n<body>\nsecret body\n</body>\n</task>", e.tasks[0], e.tasks[0])
+	if want := map[string]any{"id": "msg_gilir_" + attemptID, "text": wantText}; fmt.Sprint(prompts[0]) != fmt.Sprint(want) {
 		t.Fatalf("prompt = %v, want %v", prompts[0], want)
 	}
 	var create map[string]any
@@ -737,13 +738,8 @@ func TestWorktreeCreationIsPersistedBeforeSessionAndReusedOnResume(t *testing.T)
 	if len(creates) != 1 {
 		t.Fatalf("worktree creates = %d, want 1", len(creates))
 	}
-	databaseID, err := e.st.DatabaseID(e.ctx)
-	if err != nil {
-		t.Fatalf("DatabaseID: %v", err)
-	}
-	want := "gilir-" + databaseID[:8] + "-" + strings.TrimPrefix(e.tasks[0], "GILIR-")
-	if name := creates[0]["name"]; name != want {
-		t.Fatalf("worktree name = %v, want %q", name, want)
+	if name := creates[0]["name"]; name != "secret-title-0" {
+		t.Fatalf("worktree name = %v, want secret-title-0", name)
 	}
 	if source := creates[0]["from"]; source != e.repo {
 		t.Fatalf("worktree from = %v, want the task repository %q", source, e.repo)
@@ -764,8 +760,19 @@ func TestWorktreeCreationIsPersistedBeforeSessionAndReusedOnResume(t *testing.T)
 	if _, err := e.st.Review(e.ctx, "alice", e.tasks[0], store.ReviewRequestChanges, "add tests"); err != nil {
 		t.Fatalf("Review: %v", err)
 	}
+	if _, err := e.st.Comment(e.ctx, "alice", e.tasks[0], "unrelated later comment"); err != nil {
+		t.Fatalf("Comment: %v", err)
+	}
 	e.tick(t, w)
 
+	prompts := e.oc.promptBodies()
+	if len(prompts) != 2 {
+		t.Fatalf("prompts = %v, want two", prompts)
+	}
+	if text := fmt.Sprint(prompts[1]["text"]); !strings.Contains(text, "<changes_requested>\nadd tests\n</changes_requested>") ||
+		!strings.Contains(text, "Continue from the existing work") || strings.Contains(text, "unrelated later comment") {
+		t.Fatalf("resumed prompt = %q, want the triggering review note and a handoff pointer", text)
+	}
 	if n := len(e.worktreeCreates()); n != 1 {
 		t.Fatalf("worktree creates after resume = %d, want 1", n)
 	}
@@ -789,6 +796,15 @@ func TestWorktreeCreationIsPersistedBeforeSessionAndReusedOnResume(t *testing.T)
 
 func TestLostWorktreeResponseIsReusedInsteadOfDuplicated(t *testing.T) {
 	e := setup(t, 1, 1)
+	title := "Migrate CLI to Commander!"
+	if _, err := e.st.UpdateTask(e.ctx, "alice", e.tasks[0], store.TaskPatch{Title: &title}); err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(e.oc.worktreeRoot, "migrate-cli-to-commander")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.oc.reveal(existing)
 	// The checkout exists on disk but was never inventoried, as when OpenCode
 	// dies between creating it and saving it. The retry must still adopt it.
 	e.oc.set(func(f *fakeOC) { f.worktreeFault = "503-after"; f.hideCreated = true })
@@ -803,31 +819,29 @@ func TestLostWorktreeResponseIsReusedInsteadOfDuplicated(t *testing.T) {
 		t.Fatalf("worktree recorded without a response: %v", d.Task.Worktree)
 	}
 
-	// Once the server recovers it lists the directory it created.
+	edited := "Port CLI to Commander"
+	if _, err := e.st.UpdateTask(e.ctx, "alice", e.tasks[0], store.TaskPatch{Title: &edited}); err != nil {
+		t.Fatal(err)
+	}
+	// A fresh watcher must recover the reserved name despite the title edit.
 	e.oc.set(func(f *fakeOC) {
 		f.hideCreated = false
-		entries, err := os.ReadDir(f.worktreeRoot)
-		if err != nil {
-			t.Errorf("read worktrees: %v", err)
-			return
-		}
-		for _, entry := range entries {
-			f.inventory = append(f.inventory, filepath.Join(f.worktreeRoot, entry.Name()))
-		}
+		f.inventory = append(f.inventory, filepath.Join(f.worktreeRoot, "migrate-cli-to-commander-2"))
 	})
-	e.tick(t, w)
-	if n := len(e.worktreeCreates()); n != 1 {
-		t.Fatalf("worktree creates = %d, want 1 (the retry must find the first)", n)
+	e.tick(t, e.watcher())
+	if creates := e.worktreeCreates(); len(creates) != 1 || creates[0]["name"] != "migrate-cli-to-commander-2" {
+		t.Fatalf("worktree creates = %v, want one creation with a numeric suffix", creates)
 	}
 	detail := e.task(t, 0)
 	if detail.Task.Worktree == nil {
 		t.Fatal("worktree not recorded after the retry")
 	}
 	entries, err := os.ReadDir(e.oc.worktreeRoot)
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("worktree directories = %v, %v; want exactly one", entries, err)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("worktree directories = %v, %v; want the old checkout and the new one", entries, err)
 	}
-	if directories := e.sessionDirectories(); len(directories) != 1 || directories[0] != *detail.Task.Worktree {
+	if directories := e.sessionDirectories(); len(directories) != 1 || directories[0] != *detail.Task.Worktree ||
+		filepath.Base(directories[0]) != "migrate-cli-to-commander-2" {
 		t.Fatalf("session directories = %v, want %q", directories, *detail.Task.Worktree)
 	}
 }
@@ -925,6 +939,42 @@ func TestBlockedTaskIsNeverDispatched(t *testing.T) {
 	}
 	if n := e.oc.createCount(); n != 1 {
 		t.Fatalf("sessions created = %d, want only the unblocked task's", n)
+	}
+}
+
+func TestDispatchAfterUnblockIncludesOnlyTheUnblockNote(t *testing.T) {
+	for _, note := range []string{"", "Use `<new-api>` & verify `</task>`."} {
+		t.Run(fmt.Sprintf("note=%t", note != ""), func(t *testing.T) {
+			e := setup(t, 1, 1)
+			taskID := e.tasks[0]
+			if _, err := e.st.Block(e.ctx, "alice", taskID, "outdated blocker"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := e.st.Comment(e.ctx, "alice", taskID, "read the API notes"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := e.st.Unblock(e.ctx, "alice", taskID, note); err != nil {
+				t.Fatal(err)
+			}
+
+			e.tick(t, e.watcher())
+			prompts := e.oc.promptBodies()
+			if len(prompts) != 1 {
+				t.Fatalf("prompts = %v, want one", prompts)
+			}
+			text := fmt.Sprint(prompts[0]["text"])
+			if !strings.Contains(text, "Read the task comments in `gilir show "+taskID+"` before editing.") ||
+				strings.Contains(text, "outdated blocker") || strings.Contains(text, "read the API notes") {
+				t.Fatalf("prompt = %q, want a pointer without inlining ordinary comments", text)
+			}
+			if note == "" {
+				if strings.Contains(text, "<unblock_note>") {
+					t.Fatalf("prompt = %q, want no unblock note", text)
+				}
+			} else if !strings.Contains(text, "<unblock_note>\nUse `&lt;new-api>` &amp; verify `&lt;/task>`.\n</unblock_note>") {
+				t.Fatalf("prompt = %q, want the escaped unblock note", text)
+			}
+		})
 	}
 }
 
@@ -1037,7 +1087,7 @@ func TestUnblockDuringWaitingDispatchLeavesTaskQueuedNotStranded(t *testing.T) {
 	}
 }
 
-func TestSuffixedWorktreeIsAdoptedNotDuplicated(t *testing.T) {
+func TestSuffixedLegacyWorktreeIsAdoptedNotDuplicated(t *testing.T) {
 	e := setup(t, 2, 1)
 	w := e.watcher()
 	// Give the first task an open attempt whose worktree was never recorded,
@@ -1047,10 +1097,11 @@ func TestSuffixedWorktreeIsAdoptedNotDuplicated(t *testing.T) {
 	if err != nil || attempt == nil || attempt.TaskID != e.tasks[0] {
 		t.Fatalf("Reserve = %+v, %v; want %s", attempt, err, e.tasks[0])
 	}
-	name, err := w.worktreeName(e.ctx, *attempt)
+	databaseID, err := e.st.DatabaseID(e.ctx)
 	if err != nil {
-		t.Fatalf("worktreeName: %v", err)
+		t.Fatal(err)
 	}
+	name := "gilir-" + databaseID[:8] + "-" + strings.TrimPrefix(attempt.TaskID, "GILIR-")
 	suffixed := filepath.Join(e.oc.worktreeRoot, name+"-2")
 	if err := os.MkdirAll(filepath.Join(suffixed, ".git"), 0o755); err != nil {
 		t.Fatalf("create suffixed worktree: %v", err)

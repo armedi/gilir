@@ -221,8 +221,7 @@ func (s *Store) initialize(ctx context.Context) error {
 }
 
 // DatabaseID returns the durable random identifier recorded for this database
-// file at creation. Callers namespace external resources with it so a recreated
-// database cannot adopt resources created by the one it replaced.
+// at creation. The watcher uses it to recover older worktrees.
 func (s *Store) DatabaseID(ctx context.Context) (string, error) {
 	var id string
 	err := s.db.QueryRowContext(ctx,
