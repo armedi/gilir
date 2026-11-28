@@ -33,30 +33,28 @@ func TestMain(m *testing.M) {
 
 func TestResolveListenAcceptsAddresses(t *testing.T) {
 	tests := []struct {
-		env  string
 		host string
 		port string
 		want string
 	}{
-		{env: "127.0.0.1:4718", want: "127.0.0.1:4718"},
-		{env: "[::1]:4718", want: "[::1]:4718"},
-		{env: "0.0.0.0:4718", want: "0.0.0.0:4718"},
-		{env: "[::]:4718", want: "[::]:4718"},
-		{env: "[::0]:4718", want: "[::]:4718"},
-		{env: "[0:0:0:0:0:0:0:0]:4718", want: "[::]:4718"},
-		{env: "[::ffff:0.0.0.0]:4718", want: "0.0.0.0:4718"},
-		{env: "192.168.1.2:4718", want: "192.168.1.2:4718"},
-		{env: "localhost:4718", want: "localhost:4718"},
-		{env: "127.0.0.1:0", want: "127.0.0.1:0"},
-		{env: "127.0.0.1:44547", host: "0.0.0.0", want: "0.0.0.0:44547"},
-		{env: "127.0.0.1:44547", port: "9000", want: "127.0.0.1:9000"},
-		{env: "127.0.0.1:44547", host: "[::1]", port: "9000", want: "[::1]:9000"},
+		{host: "127.0.0.1", port: "4718", want: "127.0.0.1:4718"},
+		{host: "[::1]", port: "4718", want: "[::1]:4718"},
+		{host: "0.0.0.0", port: "4718", want: "0.0.0.0:4718"},
+		{host: "[::]", port: "4718", want: "[::]:4718"},
+		{host: "[::0]", port: "4718", want: "[::]:4718"},
+		{host: "[0:0:0:0:0:0:0:0]", port: "4718", want: "[::]:4718"},
+		{host: "[::ffff:0.0.0.0]", port: "4718", want: "0.0.0.0:4718"},
+		{host: "192.168.1.2", port: "4718", want: "192.168.1.2:4718"},
+		{host: "localhost", port: "4718", want: "localhost:4718"},
+		{host: "127.0.0.1", port: "0", want: "127.0.0.1:0"},
+		{host: "0.0.0.0", port: "44547", want: "0.0.0.0:44547"},
+		{host: "127.0.0.1", port: "9000", want: "127.0.0.1:9000"},
+		{host: "[::1]", port: "9000", want: "[::1]:9000"},
 	}
 	for _, test := range tests {
-		t.Setenv("GILIR_LISTEN", test.env)
 		got, err := resolveListen(test.host, test.port)
 		if err != nil {
-			t.Errorf("%q/%q/%q rejected: %v", test.env, test.host, test.port, err)
+			t.Errorf("%q/%q rejected: %v", test.host, test.port, err)
 			continue
 		}
 		if got.address() != test.want {
@@ -67,33 +65,50 @@ func TestResolveListenAcceptsAddresses(t *testing.T) {
 
 func TestResolveListenRejectsBadAddresses(t *testing.T) {
 	for _, test := range []struct {
-		env  string
 		host string
+		port string
 	}{
-		{env: "example.com:4718"},
-		{env: ":4718"},
-		{env: "127.0.0.1"},
-		{env: "127.0.0.1:+80"},
-		{env: "127.0.0.1:080"},
-		{env: "127.0.0.1:65536"},
-		{env: "127.0.0.1:http"},
-		{env: "127.0.0.1:4718", host: "example.com"},
+		{host: "example.com", port: "4718"},
+		{host: "not-an-ip", port: "4718"},
+		{host: "127.0.0.1:4718"},
+		{host: "127.0.0.1", port: "+80"},
+		{host: "127.0.0.1", port: "080"},
+		{host: "127.0.0.1", port: "65536"},
+		{host: "127.0.0.1", port: "http"},
+		{host: "", port: "65536"},
 	} {
-		t.Setenv("GILIR_LISTEN", test.env)
-		if _, err := resolveListen(test.host, ""); err == nil {
-			t.Errorf("%q/%q accepted", test.env, test.host)
+		if _, err := resolveListen(test.host, test.port); err == nil {
+			t.Errorf("%q/%q accepted", test.host, test.port)
 		}
 	}
 }
 
 func TestResolveListenDefaultsTo44547(t *testing.T) {
-	t.Setenv("GILIR_LISTEN", "")
 	got, err := resolveListen("", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.address() != "127.0.0.1:44547" {
 		t.Fatalf("listen address = %q, want 127.0.0.1:44547", got.address())
+	}
+}
+
+func TestResolveWorkerListenUsesOnlyThePrivateAddress(t *testing.T) {
+	t.Setenv(serviceListenEnvName, "[::0]:4718")
+	t.Setenv("GILIR_URL", "http://127.0.0.1:1")
+	got, err := resolveWorkerListen("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.address() != "[::]:4718" {
+		t.Fatalf("worker listen address = %q, want [::]:4718", got.address())
+	}
+	got, err = resolveWorkerListen("127.0.0.1", "9000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.address() != "127.0.0.1:9000" {
+		t.Fatalf("explicit listen address = %q, want 127.0.0.1:9000", got.address())
 	}
 }
 
@@ -172,19 +187,27 @@ func TestDaemonServesStatusAndRejectsSecondInstance(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "gilir.sqlite")
 	hooksPath := filepath.Join(dir, "hooks.json")
-	// The hook is never delivered: no activity is written after startup.
+	// The audit hook uses the default event set, which does not include the
+	// project.created activity this test writes, so its command never runs.
 	if err := os.WriteFile(hooksPath, []byte(`[{"name":"audit","command":["false"]}]`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("GILIR_DB", dbPath)
-	t.Setenv("GILIR_LISTEN", "127.0.0.1:0")
-	t.Setenv("GILIR_OPENCODE_URL", "http://127.0.0.1:"+freePort(t)) // nothing listens
+	t.Setenv("GILIR_URL", "http://127.0.0.1:1") // reserved; nothing listens
+	t.Setenv("GILIR_OPENCODE_URL", "http://127.0.0.1:1")
 	t.Setenv("GILIR_WEB_DIR", filepath.Join(dir, "missing"))
 	t.Setenv("GILIR_HOOKS", hooksPath)
 	t.Setenv("OPENCODE_PASSWORD", "")
 
-	if _, err := execute(context.Background(), "project.create", "user", map[string]any{"name": "Before"}); err != nil {
-		t.Fatal(err)
+	// A stateful command before the service starts must fail at the target
+	// rather than create or open the database itself.
+	target := os.Getenv("GILIR_URL")
+	if _, err := execute(context.Background(), "project.create", "user", map[string]any{"name": "Before"}); err == nil ||
+		!strings.Contains(err.Error(), target) || !strings.Contains(err.Error(), "gilir service start") {
+		t.Fatalf("offline command error = %v", err)
+	}
+	if _, err := os.Stat(dbPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("client created the database: %v", err)
 	}
 	offline, err := queryServiceStatus(context.Background())
 	if err != nil {
@@ -194,10 +217,24 @@ func TestDaemonServesStatusAndRejectsSecondInstance(t *testing.T) {
 		t.Fatal("offline status reported a running service")
 	}
 
+	// Seed one activity as a fixture so startup cursor initialization has a
+	// real latest ID to skip.
+	seed, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.CreateProject(context.Background(), "fixture", "Before"); err != nil {
+		seed.Close()
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := runDaemon(ctx, "", "")
+		_, err := runDaemon(ctx, "127.0.0.1", "0")
 		done <- err
 	}()
 
@@ -220,6 +257,30 @@ func TestDaemonServesStatusAndRejectsSecondInstance(t *testing.T) {
 		t.Fatalf("status with unreachable OpenCode = %+v", status)
 	}
 
+	// Startup skips history: the cursor begins at the seeded event, before
+	// any later activity exists for the hook to consume.
+	if cursor := hookCursor(t, dbPath, "audit"); cursor != 1 {
+		t.Fatalf("startup hook cursor = %d, want 1", cursor)
+	}
+
+	// Ordinary commands follow GILIR_URL to the running service rather than
+	// opening the database or inferring the address from service state.
+	t.Setenv("GILIR_URL", status.URL)
+	created, err := execute(context.Background(), "project.create", "agent:test", map[string]any{"name": "Central"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var project struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(created.(json.RawMessage), &project); err != nil {
+		t.Fatal(err)
+	}
+	if project.ID != 2 || project.Name != "Central" {
+		t.Fatalf("created project = %+v", project)
+	}
+
 	// The public API must not expose process shutdown, even though it can
 	// change queue state.
 	if _, err := callDaemon(context.Background(), status.URL, "daemon.stop", json.RawMessage(`{}`), time.Second); err == nil {
@@ -229,7 +290,7 @@ func TestDaemonServesStatusAndRejectsSecondInstance(t *testing.T) {
 		t.Fatalf("service stopped after a rejected daemon.stop: %+v %v", result, err)
 	}
 
-	if _, err := runDaemon(context.Background(), "", ""); err == nil || !strings.Contains(err.Error(), "already running") {
+	if _, err := runDaemon(context.Background(), "127.0.0.1", "0"); err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("second daemon error = %v", err)
 	}
 
@@ -262,9 +323,124 @@ func TestDaemonServesStatusAndRejectsSecondInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cursor, initialized, err := st.HookCursor(context.Background(), "audit")
-	if err != nil || !initialized || cursor != latest || latest == 0 {
-		t.Fatalf("hook cursor = %d %v %v, want initialized at %d", cursor, initialized, err, latest)
+	// The seeded event was the latest at startup and remains the recorded
+	// cursor baseline; the later project.created event was not replayed.
+	if cursor := hookCursor(t, dbPath, "audit"); cursor != 1 || latest < 2 {
+		t.Fatalf("hook cursor = %d with latest %d, want 1 with later activity", cursor, latest)
+	}
+}
+
+func hookCursor(t *testing.T, dbPath, name string) int64 {
+	t.Helper()
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cursor, initialized, err := st.HookCursor(context.Background(), name)
+	if err != nil || !initialized {
+		t.Fatalf("hook cursor = %d %v %v, want an initialized cursor", cursor, initialized, err)
+	}
+	return cursor
+}
+
+func TestCustomPortDaemonHooksReceiveItsOwnURL(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh for the hook")
+	}
+	for _, host := range []string{"127.0.0.1", "localhost", "0.0.0.0", "::1", "::0"} {
+		t.Run(host, func(t *testing.T) {
+			dir := t.TempDir()
+			dbPath := filepath.Join(dir, "gilir.sqlite")
+			hooksPath := filepath.Join(dir, "hooks.json")
+			capturePath := filepath.Join(dir, "hook-url")
+			configs, err := json.Marshal([]map[string]any{{
+				"name":   "capture",
+				"events": []string{"project.created"},
+				"command": []string{
+					"/bin/sh", "-c", `printf '%s' "$GILIR_URL" > "$1"`, "sh", capturePath,
+				},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(hooksPath, configs, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			t.Setenv("GILIR_DB", dbPath)
+			// Service startup must ignore GILIR_URL; its hooks must still get
+			// the URL it actually bound, not the inherited value.
+			t.Setenv("GILIR_URL", "http://127.0.0.1:1")
+			t.Setenv("GILIR_OPENCODE_URL", "http://127.0.0.1:"+freePort(t))
+			t.Setenv("GILIR_WEB_DIR", filepath.Join(dir, "missing"))
+			t.Setenv("GILIR_HOOKS", hooksPath)
+			t.Setenv("OPENCODE_PASSWORD", "")
+
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() {
+				_, err := runDaemon(ctx, host, "0")
+				done <- err
+			}()
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(15 * time.Second):
+				}
+			})
+
+			// Wait for the daemon to publish its ephemeral address, then use
+			// exactly the URL it advertises for local clients.
+			deadline := time.Now().Add(10 * time.Second)
+			var target string
+			for target == "" {
+				if state, ok := readServiceState(dbPath); ok {
+					target = state.URL
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("daemon did not publish its address")
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			endpoint, err := commandEndpoint(target)
+			if err != nil {
+				t.Fatalf("advertised URL %q: %v", target, err)
+			}
+			for {
+				if _, err := sendCommand(ctx, endpoint, "daemon.status", "user", map[string]any{}); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("daemon at %s unavailable: %v", target, err)
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			if _, err := sendCommand(ctx, endpoint, "project.create", "user", map[string]any{"name": "Hooked"}); err != nil {
+				t.Fatal(err)
+			}
+
+			for {
+				data, err := os.ReadFile(capturePath)
+				if err == nil && string(data) == target {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("hook saw GILIR_URL %q, want %q (read error %v)", data, target, err)
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+
+			// The hook env must let gilir reach this service. Executing the
+			// same command through the client proves the advertised URL passes
+			// the Host guard for this bind.
+			t.Setenv("GILIR_URL", target)
+			if _, err := execute(ctx, "project.create", "hook:capture", map[string]any{"name": "Routed"}); err != nil {
+				t.Fatalf("ordinary command via hook URL: %v", err)
+			}
+		})
 	}
 }
 
@@ -272,19 +448,23 @@ func TestServiceStartsDetachedAndStatusUsesState(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "gilir.sqlite")
 	t.Setenv("GILIR_DB", dbPath)
-	t.Setenv("GILIR_LISTEN", "127.0.0.1:0")
+	// The client destination must never choose the service bind address.
+	t.Setenv("GILIR_URL", "http://127.0.0.1:1")
 	t.Setenv("GILIR_OPENCODE_URL", "http://127.0.0.1:"+freePort(t))
 	t.Setenv("GILIR_WEB_DIR", filepath.Join(dir, "missing"))
 	t.Setenv("OPENCODE_PASSWORD", "")
 	t.Cleanup(func() { _, _ = stopService(context.Background()) })
 
-	started, err := startService(context.Background(), "", "")
+	started, err := startService(context.Background(), "127.0.0.1", "0")
 	if err != nil {
 		t.Fatalf("start service: %v", err)
 	}
 	status := started.(serviceStatus)
 	if !status.Running || status.PID == 0 || status.Port == 0 || status.URL == "" {
 		t.Fatalf("started status = %+v", status)
+	}
+	if status.URL == "http://127.0.0.1:1" {
+		t.Fatalf("service bind address came from GILIR_URL: %+v", status)
 	}
 	if status.PID == os.Getpid() {
 		t.Fatal("service runs inside the launcher instead of a detached worker")
@@ -293,9 +473,9 @@ func TestServiceStartsDetachedAndStatusUsesState(t *testing.T) {
 		t.Fatalf("service state: %v", err)
 	}
 
-	// A later invocation must find the service through the state file even
-	// when GILIR_LISTEN points somewhere else.
-	t.Setenv("GILIR_LISTEN", "127.0.0.1:1")
+	// A later invocation must find the service through local state even when
+	// GILIR_URL points somewhere else; only ordinary commands use that URL.
+	t.Setenv("GILIR_URL", "http://127.0.0.1:1")
 	result, err := queryServiceStatus(context.Background())
 	if err != nil {
 		t.Fatalf("status: %v", err)
@@ -329,17 +509,69 @@ func TestServiceStartsDetachedAndStatusUsesState(t *testing.T) {
 	}
 }
 
+func TestServiceStartWildcardRoutesCommandsViaGILIRURL(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "gilir.sqlite")
+	t.Setenv("GILIR_DB", dbPath)
+	// A launcher's client destination must not choose the worker bind.
+	t.Setenv("GILIR_URL", "http://127.0.0.1:1")
+	t.Setenv("GILIR_OPENCODE_URL", "http://127.0.0.1:"+freePort(t))
+	t.Setenv("GILIR_WEB_DIR", filepath.Join(dir, "missing"))
+	t.Setenv("OPENCODE_PASSWORD", "")
+	t.Cleanup(func() { _, _ = stopService(context.Background()) })
+
+	started, err := startService(context.Background(), "0.0.0.0", "0")
+	if err != nil {
+		t.Fatalf("start service: %v", err)
+	}
+	status := started.(serviceStatus)
+	if !status.Running || status.Host != "0.0.0.0" || status.URL == "http://127.0.0.1:1" {
+		t.Fatalf("started status = %+v", status)
+	}
+	if !strings.HasPrefix(status.URL, "http://127.0.0.1:") {
+		t.Fatalf("wildcard service local URL = %q, want loopback", status.URL)
+	}
+
+	// A wildcard bind answers through loopback, a supported GILIR_URL address.
+	t.Setenv("GILIR_URL", status.URL)
+	created, err := execute(context.Background(), "project.create", "user", map[string]any{"name": "Wildcard"})
+	if err != nil {
+		t.Fatalf("command via GILIR_URL: %v", err)
+	}
+	var project struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(created.(json.RawMessage), &project); err != nil {
+		t.Fatal(err)
+	}
+	if project.ID != 1 {
+		t.Fatalf("created project = %+v", project)
+	}
+	if _, err := execute(context.Background(), "daemon.update", "user", map[string]any{"paused": true}); err != nil {
+		t.Fatalf("queue control via GILIR_URL: %v", err)
+	}
+	statusResult, err := queryServiceStatus(context.Background())
+	if err != nil {
+		t.Fatalf("status after pause: %v", err)
+	}
+	if !statusResult.(serviceStatus).Paused {
+		t.Fatal("paused queue control did not reach the service")
+	}
+	if _, err := stopService(context.Background()); err != nil {
+		t.Fatalf("stop service: %v", err)
+	}
+}
+
 func TestServiceStatusRejectsForeignInstance(t *testing.T) {
 	dir := t.TempDir()
 	liveDB := filepath.Join(dir, "live.sqlite")
 	foreignDB := filepath.Join(dir, "foreign.sqlite")
 	t.Setenv("GILIR_DB", liveDB)
-	t.Setenv("GILIR_LISTEN", "127.0.0.1:0")
 	t.Setenv("GILIR_OPENCODE_URL", "http://127.0.0.1:"+freePort(t))
 	t.Setenv("GILIR_WEB_DIR", filepath.Join(dir, "missing"))
 	t.Setenv("OPENCODE_PASSWORD", "")
 
-	if _, err := startService(context.Background(), "", ""); err != nil {
+	if _, err := startService(context.Background(), "127.0.0.1", "0"); err != nil {
 		t.Fatalf("start service: %v", err)
 	}
 	t.Cleanup(func() { _, _ = stopService(context.Background()) })

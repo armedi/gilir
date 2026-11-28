@@ -1,7 +1,7 @@
-// Package commands implements the shared Gilir command service. The same
-// service handles wire commands for both the CLI and the local HTTP API:
-// requests are strict JSON objects and the result is a store object, a small
-// status document, or {"ok":true} for mutations with no natural result.
+// Package commands implements the shared Gilir command service. The daemon's
+// HTTP API serves the CLI and web UI through it: requests are strict JSON
+// objects and the result is a store object, a small status document, or
+// {"ok":true} for mutations with no natural result.
 package commands
 
 import (

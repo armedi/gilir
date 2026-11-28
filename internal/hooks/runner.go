@@ -57,7 +57,23 @@ var defaultEvents = []string{
 // Run starts one worker per hook and blocks until ctx is cancelled and every
 // worker has stopped. Errors are passed to report, which may be nil; calls to
 // report are serialized. Invalid configs are reported and nothing runs.
+//
+// Run does not configure GILIR_URL for command hooks; any inherited value is
+// filtered out. The daemon uses RunWithURL so hooks invoke the daemon that
+// delivered the event.
 func Run(ctx context.Context, configs []Config, source Source, report func(error)) {
+	run(ctx, configs, source, "", report)
+}
+
+// RunWithURL is Run with the daemon's own HTTP origin, for example
+// http://127.0.0.1:44547. Command hooks receive it as GILIR_URL, replacing any
+// inherited value, so a hook that invokes gilir reaches the daemon that
+// delivered the event even when it listens on a custom port.
+func RunWithURL(ctx context.Context, configs []Config, source Source, daemonURL string, report func(error)) {
+	run(ctx, configs, source, daemonURL, report)
+}
+
+func run(ctx context.Context, configs []Config, source Source, daemonURL string, report func(error)) {
 	var mu sync.Mutex
 	reportErr := func(err error) {
 		if report == nil {
@@ -73,7 +89,7 @@ func Run(ctx context.Context, configs []Config, source Source, report func(error
 	}
 	var wg sync.WaitGroup
 	for _, config := range configs {
-		w := &worker{config: config, source: source, report: reportErr, events: eventSet(config.Events)}
+		w := &worker{config: config, source: source, report: reportErr, events: eventSet(config.Events), daemonURL: daemonURL}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -95,10 +111,11 @@ func eventSet(events []string) map[string]bool {
 }
 
 type worker struct {
-	config Config
-	source Source
-	report func(error)
-	events map[string]bool
+	config    Config
+	source    Source
+	report    func(error)
+	events    map[string]bool
+	daemonURL string
 }
 
 func (w *worker) run(ctx context.Context) {
@@ -178,7 +195,7 @@ func (w *worker) deliver(ctx context.Context, event Event) error {
 	if w.config.URL != "" {
 		return postEvent(ctx, w.config.URL, event)
 	}
-	return runCommand(ctx, w.config, event)
+	return runCommand(ctx, w.config, w.daemonURL, event)
 }
 
 // retry runs fn until it succeeds, reporting each failure and backing off up

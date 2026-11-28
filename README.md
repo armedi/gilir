@@ -1,11 +1,11 @@
 # Gilir
 
-Gilir is a local task queue for coding agents. Tasks live in a local SQLite
-database. A single background service dispatches ready tasks to an OpenCode V2
-server and serves a web dashboard, on loopback by default. Each dispatch gets
-its own new session.
-A task that goes through several review cycles keeps every earlier session in
-its history.
+Gilir is a task queue for coding agents. Tasks live in a SQLite database owned
+by a single background service. The service dispatches ready tasks to an
+OpenCode V2 server, serves a web dashboard (loopback by default), and runs
+hooks; the `gilir` CLI is an HTTP client for that service and never opens
+SQLite itself. Each dispatch gets its own new session. A task that goes through
+several review cycles keeps every earlier session in its history.
 
 ## Install
 
@@ -39,8 +39,9 @@ when `NODE_ENV=production`. Run the CLI from that install as `pnpm exec vp` in
 `web` when you need it directly.
 
 Put `gilir` on your `PATH`. The service prompts each agent to run `gilir show
-GILIR-<n> --json`, so the binary and the same `GILIR_DB` must also be available
-in the environment where the OpenCode server runs its agents.
+GILIR-<n> --json`, so the binary must also be available where the OpenCode
+server runs its agents, with `GILIR_URL` pointing at the service when it is not
+using the default address.
 
 ### Publish to npm
 
@@ -63,16 +64,19 @@ the launcher package locally without publishing.
 
 ```sh
 gilir service start                  # detached; default http://127.0.0.1:44547
-gilir service start --port 9000      # bind another port
 gilir service start --host 0.0.0.0   # accept connections from other machines
 gilir service status
 gilir service stop
 gilir service restart
+
+# A custom listener port needs its matching client URL:
+gilir service start --port 9000
+GILIR_URL=http://127.0.0.1:9000 gilir list
 ```
 
 `service start` launches a detached worker and returns once it is serving.
-`service restart` keeps the running host and port unless a flag or
-`GILIR_LISTEN` overrides them. The worker appends startup, warning, and
+`service restart` keeps the running host and port unless `--host` or `--port`
+overrides them. The worker appends startup, warning, and
 shutdown details to `<GILIR_DB>.service.log`, and publishes
 `<GILIR_DB>.service.json` while it runs; stop and status use that record, so
 they do not need the original flags. One service runs per database: a second
@@ -95,18 +99,26 @@ DNS name other than `localhost` is rejected to limit DNS rebinding. Process
 shutdown is served only on a private loopback listener, so it is never exposed
 with the UI.
 
+The `service start` and `service restart` flags are the only way to choose the
+bind address; the service never takes it from `GILIR_URL`. Every ordinary
+command and queue control uses `GILIR_URL` only. The default `GILIR_URL` matches
+the default listener, and a wildcard bind on the default port still works with
+it. Any other port requires setting `GILIR_URL` to an address the service
+accepts. If the service binds `[::1]` specifically, set `GILIR_URL` to that
+address too, because the client default is IPv4 loopback.
+
 The schema version changed when task IDs gained their `GILIR-` prefix. A
 database created by an older Gilir is rejected with an error; delete the file
 and restart the service to recreate it (task history is not migrated).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `GILIR_DB` | `${XDG_DATA_HOME:-$HOME/.local/share}/gilir/gilir.sqlite` (Windows: `%LOCALAPPDATA%\gilir\gilir.sqlite`) | Database file. If missing, it is created with mode 0600 in a 0700 directory. An existing file keeps its mode. |
-| `GILIR_LISTEN` | `127.0.0.1:44547` | Default HTTP bind address. The host may be any IP literal or `localhost`, including `0.0.0.0` and `::` for remote access. `--host` and `--port` on `service start`/`restart` override it. |
+| `GILIR_URL` | `http://127.0.0.1:44547` | HTTP origin of the service for every stateful CLI command and queue control. `http://` and `https://` are accepted; credentials, paths, queries, and fragments are rejected. It never chooses the service bind address. |
+| `GILIR_DB` | `${XDG_DATA_HOME:-$HOME/.local/share}/gilir/gilir.sqlite` (Windows: `%LOCALAPPDATA%\gilir\gilir.sqlite`) | Database file for the background service. If missing, it is created with mode 0600 in a 0700 directory. An existing file keeps its mode. CLI commands never open it. |
 | `GILIR_WEB_DIR` | Embedded dashboard, or `web/dist` for Go-only builds | Override the static web bundle. If the selected directory has no `index.html`, Gilir serves only the API. |
 | `GILIR_OPENCODE_URL` | discovered from `opencode service status` | OpenCode V2 server. It must be on loopback. Set it to pin an explicit server. |
 | `OPENCODE_PASSWORD` | discovered from `opencode service get password` | Sent as HTTP Basic auth (user `opencode`). Set it to pin an explicit password. |
-| `GILIR_HOOKS` | unset | Path to a hook config file (see below). |
+| `GILIR_HOOKS` | unset | Path to a hook config file used by the service (see below). |
 | `GILIR_ACTOR` | `user` | Default actor recorded for CLI changes. `--actor` overrides it. |
 
 ### Connecting OpenCode
@@ -135,9 +147,11 @@ link opens the session in OpenCode Web.
 
 ## CLI
 
-Commands work directly on the database, so they also work when the service is
-stopped. `service status` asks the running service. Add `--json` to get
-machine-readable output on stdout.
+Stateful commands send one POST to the service's command API at `GILIR_URL`, so
+the service must be running. If it cannot be reached, the command exits with an
+error naming the target and never opens a local database or retries the
+request. `service status`, `--help`, and `gilir skill` use local state or no
+service. Add `--json` to get machine-readable output on stdout.
 
 ```sh
 gilir project create Payments                    # -> id 1
@@ -175,6 +189,44 @@ repository, and comment IDs stay bare positive integers.
 local sessions, and its outgoing dependencies. The append-only activity history
 is preserved. Deletion is refused while a dispatch attempt is reserved or
 another task still depends on the task.
+
+### Remote and central operation
+
+SQLite, repository checkouts, OpenCode, and command hooks are all central to the
+service host. The CLI is only a client, so it can run anywhere that can reach
+that service.
+
+- `gilir repo add` sends the path you type. The service resolves it on its own
+  filesystem and runs Git there, so use an absolute path on the service host.
+  Relative paths resolve from the service's working directory.
+- OpenCode agents run under the OpenCode server, not under the Gilir service.
+  Where `GILIR_URL` is not the default, set it in the OpenCode server's launch
+  environment so dispatched agents reach the same service; `gilir` must also be
+  on their `PATH`.
+- Command hooks are started by the service and receive that service's own
+  `GILIR_URL` automatically, replacing any inherited value. A hook that invokes
+  `gilir` therefore reaches the service that delivered its event, including on
+  a custom port or a wildcard bind.
+- A service bound to `0.0.0.0` or `::` accepts `GILIR_URL` addresses that are
+  loopback or a concrete IP literal of the host. DNS names other than
+  `localhost` are rejected. The Host/Origin checks still protect the API.
+- Remote API authentication is not part of this client/flag integration. An
+  exposed service is unauthenticated, so treat adding authentication as a
+  separate follow-up and only expose the port on a trusted network.
+
+SSH local forwarding works today and keeps the API loopback-only on the service
+host. Use the same local and remote port, because the API validates the request
+`Host` against the service's port:
+
+```sh
+# Service on the default port, CLI on this machine using the default GILIR_URL:
+ssh -N -L 127.0.0.1:44547:127.0.0.1:44547 gilir-host
+gilir list
+
+# Service started with --port 9000:
+ssh -N -L 127.0.0.1:9000:127.0.0.1:9000 gilir-host
+GILIR_URL=http://127.0.0.1:9000 gilir list
+```
 
 ## Queue semantics
 
@@ -222,6 +274,6 @@ is optional. It defaults to the task, dependency and session events.
 - Failures are retried with backoff (up to 30s apart) and logged to stderr. A
   failing hook blocks only its own later events. To skip an event, fix the
   handler so it succeeds.
-- Command hooks run with `GILIR_ACTOR=hook:<name>`, and OpenCode passwords are
-  removed from their environment. A `gilir` change made from a hook is not
-  delivered back to that same hook.
+- Command hooks run with `GILIR_ACTOR=hook:<name>` and the service's own
+  `GILIR_URL`, and OpenCode passwords are removed from their environment. A
+  `gilir` change made from a hook is not delivered back to that same hook.

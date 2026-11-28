@@ -26,6 +26,7 @@ const (
 	// parsing, so it never appears in help or collides with a real command.
 	serviceWorkerCommand   = "__service-worker"
 	serviceInstanceEnvName = "GILIR_SERVICE_INSTANCE"
+	serviceListenEnvName   = "GILIR_SERVICE_LISTEN"
 	serviceVersion         = 1
 
 	serviceStartTimeout = 60 * time.Second
@@ -43,28 +44,61 @@ type listenConfig struct {
 	port string
 }
 
-// resolveListen applies the --host/--port flags on top of GILIR_LISTEN, which
-// defaults to 127.0.0.1:44547. The host must be an IP literal or localhost so
-// the request guard can reason about it; a bracketed IPv6 literal is accepted.
+// resolveListen applies the --host/--port flags on top of the defaults,
+// 127.0.0.1:44547. The host must be an IP literal or localhost so the request
+// guard can reason about it; a bracketed IPv6 literal is accepted.
 func resolveListen(host, port string) (listenConfig, error) {
-	listen := envOr("GILIR_LISTEN", defaultListen)
-	envHost, envPort, err := net.SplitHostPort(listen)
-	if err != nil {
-		return listenConfig{}, fmt.Errorf("GILIR_LISTEN %q: %w", listen, err)
-	}
 	if host == "" {
-		host = envHost
+		host = defaultHost()
 	}
+	if port == "" {
+		port = defaultPort()
+	}
+	return normalizeListen(host, port)
+}
+
+// resolveWorkerListen returns the address of a detached worker. The launcher
+// passes the already resolved address through the private
+// GILIR_SERVICE_LISTEN variable, so a GILIR_URL or any other client setting
+// inherited by the worker can never choose the bind address. Explicit
+// arguments still win for direct in-process starts and tests.
+func resolveWorkerListen(host, port string) (listenConfig, error) {
+	if host == "" && port == "" {
+		if value := os.Getenv(serviceListenEnvName); value != "" {
+			workerHost, workerPort, err := net.SplitHostPort(value)
+			if err != nil {
+				return listenConfig{}, fmt.Errorf("%s %q: %w", serviceListenEnvName, value, err)
+			}
+			host, port = workerHost, workerPort
+		}
+	}
+	return resolveListen(host, port)
+}
+
+func defaultHost() string {
+	host, _, err := net.SplitHostPort(defaultListen)
+	if err != nil {
+		return "127.0.0.1"
+	}
+	return host
+}
+
+func defaultPort() string {
+	_, port, err := net.SplitHostPort(defaultListen)
+	if err != nil {
+		return "44547"
+	}
+	return port
+}
+
+func normalizeListen(host, port string) (listenConfig, error) {
 	host = normalizeHost(host)
 	if ip := net.ParseIP(host); ip != nil {
 		// Canonical spelling makes wildcard detection and identity checks
 		// independent of how the address was written (::0 vs ::, and so on).
 		host = ip.String()
-	} else if !strings.EqualFold(host, "localhost") {
+	} else if !validListenHost(host) {
 		return listenConfig{}, fmt.Errorf("listen host %q: must be an IP address or localhost", host)
-	}
-	if port == "" {
-		port = envPort
 	}
 	n, err := strconv.Atoi(port)
 	if err != nil || port != strconv.Itoa(n) || n < 0 || n > 65535 {
@@ -112,6 +146,22 @@ func (c listenConfig) clientHost() string {
 		return "127.0.0.1"
 	}
 	return "::1"
+}
+
+// boundURLFor returns the client URL for an actual listener. Unlike urlFor it
+// resolves localhost from the bound socket, so a host whose localhost maps
+// only to ::1 is not advertised as 127.0.0.1. Wildcard listeners still map to
+// loopback because the wildcard literal is not a dialable destination.
+func boundURLFor(c listenConfig, addr net.Addr) string {
+	tcp, ok := addr.(*net.TCPAddr)
+	if !ok {
+		return c.urlFor(strconv.Itoa(requestedPort(c.port)))
+	}
+	host := tcp.IP.String()
+	if tcp.IP.IsUnspecified() {
+		host = c.clientHost()
+	}
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(tcp.Port))
 }
 
 func (c listenConfig) matches(other listenConfig) bool {
@@ -359,7 +409,9 @@ func startServiceLocked(ctx context.Context, dbPath string, requested listenConf
 			if !ok || state.Instance != instance {
 				continue
 			}
-			if live, probeErr := daemonStatusAt(ctx, state.URL); probeErr == nil {
+			// Require the launched worker's identity: a stale state file may
+			// name a port that another database's service now answers on.
+			if live, probeErr := daemonStatusAt(ctx, state.URL); probeErr == nil && live.Instance == instance {
 				return statusFrom(state, live), nil
 			}
 		case <-deadline.C:
@@ -376,6 +428,7 @@ func serviceWorkerEnv(base []string, instance, listen, dbPath string) []string {
 		key, _, _ := strings.Cut(entry, "=")
 		switch {
 		case strings.EqualFold(key, serviceInstanceEnvName),
+			strings.EqualFold(key, serviceListenEnvName),
 			strings.EqualFold(key, "GILIR_LISTEN"),
 			strings.EqualFold(key, "GILIR_DB"):
 			continue
@@ -384,7 +437,7 @@ func serviceWorkerEnv(base []string, instance, listen, dbPath string) []string {
 	}
 	return append(env,
 		serviceInstanceEnvName+"="+instance,
-		"GILIR_LISTEN="+listen,
+		serviceListenEnvName+"="+listen,
 		"GILIR_DB="+dbPath,
 	)
 }
@@ -509,6 +562,12 @@ func restartService(ctx context.Context, host, port string) (any, error) {
 	defer lock.Close()
 
 	state, ok := readServiceState(dbPath)
+	if ok {
+		// Only a live instance's address is worth keeping; a stale record must
+		// not make restart dial a port that no longer belongs to this database.
+		live, probeErr := daemonStatusAt(ctx, state.URL)
+		ok = probeErr == nil && live.Instance == state.Instance
+	}
 	requested, err := resolveRestartListen(host, port, state, ok)
 	if err != nil {
 		return nil, err
@@ -520,20 +579,8 @@ func restartService(ctx context.Context, host, port string) (any, error) {
 }
 
 // resolveRestartListen keeps the running instance's requested address unless
-// a flag or an explicitly set GILIR_LISTEN overrides it.
+// the --host/--port flags override it. A stopped service uses the defaults.
 func resolveRestartListen(host, port string, state serviceState, ok bool) (listenConfig, error) {
-	if value, present := os.LookupEnv("GILIR_LISTEN"); present && value != "" {
-		envHost, envPort, err := net.SplitHostPort(value)
-		if err != nil {
-			return listenConfig{}, fmt.Errorf("GILIR_LISTEN %q: %w", value, err)
-		}
-		if host == "" {
-			host = envHost
-		}
-		if port == "" {
-			port = envPort
-		}
-	}
 	if ok {
 		if host == "" {
 			host = state.RequestedHost
