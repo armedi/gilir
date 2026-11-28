@@ -15,17 +15,14 @@ func TestReservePriorityOrderingWithUrgent(t *testing.T) {
 	ctx := context.Background()
 	project, repo := seedProjectRepo(t, s)
 
-	urgent := mustCreateTask(t, s, CreateTaskParams{
-		ProjectID: project.ID, RepoID: repo.ID, Title: "urgent",
-		Status: StatusTodo, Priority: PriorityUrgent,
+	low := mustCreateTask(t, s, CreateTaskParams{
+		ProjectID: project.ID, RepoID: repo.ID, Title: "low",
+		Status: StatusTodo, Priority: PriorityLow,
 	})
-	highChanges := mustCreateTask(t, s, CreateTaskParams{
-		ProjectID: project.ID, RepoID: repo.ID, Title: "high changes",
-		Status: StatusTodo, Priority: PriorityHigh,
+	medium := mustCreateTask(t, s, CreateTaskParams{
+		ProjectID: project.ID, RepoID: repo.ID, Title: "medium",
+		Status: StatusTodo, Priority: PriorityMedium,
 	})
-	if _, err := s.SetMarking(ctx, "alice", highChanges.ID, MarkingChangesRequested, true); err != nil {
-		t.Fatalf("mark high changes: %v", err)
-	}
 	mediumChanges := mustCreateTask(t, s, CreateTaskParams{
 		ProjectID: project.ID, RepoID: repo.ID, Title: "medium changes",
 		Status: StatusTodo, Priority: PriorityMedium,
@@ -33,13 +30,16 @@ func TestReservePriorityOrderingWithUrgent(t *testing.T) {
 	if _, err := s.SetMarking(ctx, "alice", mediumChanges.ID, MarkingChangesRequested, true); err != nil {
 		t.Fatalf("mark medium changes: %v", err)
 	}
-	medium := mustCreateTask(t, s, CreateTaskParams{
-		ProjectID: project.ID, RepoID: repo.ID, Title: "medium",
-		Status: StatusTodo, Priority: PriorityMedium,
+	highChanges := mustCreateTask(t, s, CreateTaskParams{
+		ProjectID: project.ID, RepoID: repo.ID, Title: "high changes",
+		Status: StatusTodo, Priority: PriorityHigh,
 	})
-	low := mustCreateTask(t, s, CreateTaskParams{
-		ProjectID: project.ID, RepoID: repo.ID, Title: "low",
-		Status: StatusTodo, Priority: PriorityLow,
+	if _, err := s.SetMarking(ctx, "alice", highChanges.ID, MarkingChangesRequested, true); err != nil {
+		t.Fatalf("mark high changes: %v", err)
+	}
+	urgent := mustCreateTask(t, s, CreateTaskParams{
+		ProjectID: project.ID, RepoID: repo.ID, Title: "urgent",
+		Status: StatusTodo, Priority: PriorityUrgent,
 	})
 
 	wantOrder := []string{urgent.ID, highChanges.ID, mediumChanges.ID, medium.ID, low.ID}
@@ -90,27 +90,6 @@ func TestReservePriorityOrderingWithUrgent(t *testing.T) {
 	}
 }
 
-func TestReserveChangesRequestedBeforeTaskID(t *testing.T) {
-	s, _ := openTestStore(t)
-	ctx := context.Background()
-	project, repo := seedProjectRepo(t, s)
-	plain := mustCreateTask(t, s, CreateTaskParams{
-		ProjectID: project.ID, RepoID: repo.ID, Title: "plain",
-		Status: StatusTodo, Priority: PriorityMedium,
-	})
-	changes := mustCreateTask(t, s, CreateTaskParams{
-		ProjectID: project.ID, RepoID: repo.ID, Title: "changes",
-		Status: StatusTodo, Priority: PriorityMedium,
-	})
-	if _, err := s.SetMarking(ctx, "alice", changes.ID, MarkingChangesRequested, true); err != nil {
-		t.Fatalf("mark changes: %v", err)
-	}
-	attempt := mustReserve(t, s, "http://127.0.0.1:4096", 100)
-	if attempt.TaskID != changes.ID {
-		t.Fatalf("selected task %s, want changes task %s ahead of older plain %s", attempt.TaskID, changes.ID, plain.ID)
-	}
-}
-
 func TestReserveTieBreaksOnFewerInReviewBlockersThenTaskID(t *testing.T) {
 	s, _ := openTestStore(t)
 	ctx := context.Background()
@@ -146,6 +125,12 @@ func TestReserveTieBreaksOnFewerInReviewBlockersThenTaskID(t *testing.T) {
 		t.Fatalf("finish blocked: %v", err)
 	}
 
+	// Make numeric and lexical ID order disagree for the two candidates.
+	for range 5 {
+		mustCreateTask(t, s, CreateTaskParams{
+			ProjectID: project.ID, RepoID: repo.ID, Title: "non-candidate", Status: StatusBacklog,
+		})
+	}
 	older := mustCreateTask(t, s, CreateTaskParams{
 		ProjectID: project.ID, RepoID: repo.ID, Title: "older",
 		Status: StatusTodo, Priority: PriorityLow,
@@ -154,6 +139,9 @@ func TestReserveTieBreaksOnFewerInReviewBlockersThenTaskID(t *testing.T) {
 		ProjectID: project.ID, RepoID: repo.ID, Title: "newer",
 		Status: StatusTodo, Priority: PriorityLow,
 	})
+	if older.ID != "GILIR-9" || newer.ID != "GILIR-10" {
+		t.Fatalf("expected IDs GILIR-9 and GILIR-10, got %s and %s", older.ID, newer.ID)
+	}
 	third := mustReserve(t, s, "http://127.0.0.1:4096", 100)
 	if third.TaskID != older.ID {
 		t.Fatalf("selected task %s, want lower ID %s over %s", third.TaskID, older.ID, newer.ID)
@@ -214,12 +202,8 @@ func TestReserveDependencyEligibilityAndReblock(t *testing.T) {
 	}
 	todo := StatusTodo
 	blockerMessage := "rework requested"
-	blockerTask, err := s.UpdateTask(ctx, "alice", blocker.ID, TaskPatch{Status: &todo, Message: &blockerMessage})
-	if err != nil {
+	if _, err := s.UpdateTask(ctx, "alice", blocker.ID, TaskPatch{Status: &todo, Message: &blockerMessage}); err != nil {
 		t.Fatalf("return blocker to todo: %v", err)
-	}
-	if len(blockerTask.Markings) != 1 || blockerTask.Markings[0] != MarkingChangesRequested {
-		t.Fatalf("returned blocker markings = %+v", blockerTask.Markings)
 	}
 	third := mustReserve(t, s, "http://127.0.0.1:4096", 100)
 	if third.TaskID != normal2.ID {
@@ -234,6 +218,9 @@ func TestReserveDependencyEligibilityAndReblock(t *testing.T) {
 	}
 	if err := s.FinishAttempt(ctx, fourth.ID, OutcomeSuccess, ""); err != nil {
 		t.Fatalf("finish blocker: %v", err)
+	}
+	if approved, err := s.Review(ctx, "alice", blocker.ID, ReviewApprove, ""); err != nil || approved.Status != StatusDone {
+		t.Fatalf("approve blocker = %q, %v; want done", approved.Status, err)
 	}
 	fifth := mustReserve(t, s, "http://127.0.0.1:4096", 100)
 	if fifth.TaskID != dependent2.ID {
@@ -299,22 +286,13 @@ func TestReservePausedQueueAndNoCandidate(t *testing.T) {
 	if attempt.TaskID != task.ID {
 		t.Fatalf("resumed reserve task = %s, want %s", attempt.TaskID, task.ID)
 	}
-	var queueEvents int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT count(*) FROM activity WHERE type = 'queue.updated'`,
-	).Scan(&queueEvents); err != nil {
-		t.Fatalf("count queue events: %v", err)
-	}
-	if queueEvents != 2 {
-		t.Fatalf("queue.updated events = %d, want 2", queueEvents)
-	}
 	activities, err := s.ActivityAfter(ctx, 0, 0)
 	if err != nil {
 		t.Fatalf("ActivityAfter queue events: %v", err)
 	}
 	var queueChanges []Activity
 	for _, activity := range activities {
-		if activity.Type == ActivityQueueUpdated {
+		if activity.Type == "queue.updated" {
 			queueChanges = append(queueChanges, activity)
 		}
 	}

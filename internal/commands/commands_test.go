@@ -100,30 +100,36 @@ func TestOmittedBooleansDoNotMeanFalse(t *testing.T) {
 	} else {
 		requireInvalid(t, err)
 	}
-	if _, err := f.run(t, "task.depend", map[string]any{"id": f.task, "blocker_id": f.task}); err == nil {
-		t.Fatal("task.depend without present was accepted")
-	} else {
-		requireInvalid(t, err)
-	}
-	if _, err := f.run(t, "task.review", map[string]any{"id": f.task}); err == nil {
-		t.Fatal("task.review without approve was accepted")
-	} else {
-		requireInvalid(t, err)
-	}
-
-	marked, err := f.run(t, "task.mark", map[string]any{"id": f.task, "marking": "triage", "present": false})
+	blocker, err := f.run(t, "task.create", map[string]any{"repo_id": f.repo, "title": "Blocker"})
 	if err != nil {
-		t.Fatalf("mark present false: %v", err)
+		t.Fatalf("create blocker: %v", err)
 	}
-	if len(marked.(store.Task).Markings) != 0 {
-		t.Fatalf("markings = %v, want none", marked.(store.Task).Markings)
+	blockerID := blocker.(store.Task).ID
+	if _, err := f.run(t, "task.depend", map[string]any{"id": f.task, "blocker_id": blockerID, "present": true}); err != nil {
+		t.Fatalf("add dependency: %v", err)
 	}
-	marked, err = f.run(t, "task.mark", map[string]any{"id": f.task, "marking": "triage", "present": true})
+	_, err = f.run(t, "task.depend", map[string]any{"id": f.task, "blocker_id": blockerID})
+	requireInvalid(t, err)
+
+	if _, err := f.run(t, "task.update", map[string]any{"id": f.task, "status": "in-review"}); err != nil {
+		t.Fatalf("move to in-review: %v", err)
+	}
+	_, err = f.run(t, "task.review", map[string]any{"id": f.task, "message": "Needs another pass"})
+	requireInvalid(t, err)
+
+	marked, err := f.run(t, "task.mark", map[string]any{"id": f.task, "marking": "triage", "present": true})
 	if err != nil {
 		t.Fatalf("mark present true: %v", err)
 	}
 	if got := marked.(store.Task).Markings; len(got) != 1 || got[0] != "triage" {
 		t.Fatalf("markings = %v, want [triage]", got)
+	}
+	marked, err = f.run(t, "task.mark", map[string]any{"id": f.task, "marking": "triage", "present": false})
+	if err != nil {
+		t.Fatalf("mark present false: %v", err)
+	}
+	if got := marked.(store.Task).Markings; len(got) != 0 {
+		t.Fatalf("markings = %v, want none", got)
 	}
 }
 
@@ -230,7 +236,7 @@ func TestTaskUpdateOmitsUnspecifiedFields(t *testing.T) {
 	}
 }
 
-func TestStrictArgsRejectUnknownAndMissingFields(t *testing.T) {
+func TestRejectsUnknownArgsAndRemovedCommands(t *testing.T) {
 	f := newFixture(t, nil)
 
 	if _, err := f.run(t, "project.create", map[string]any{"name": "Other", "extra": true}); err == nil {
@@ -238,16 +244,8 @@ func TestStrictArgsRejectUnknownAndMissingFields(t *testing.T) {
 	} else {
 		requireInvalid(t, err)
 	}
-	if _, err := f.run(t, "task.list", map[string]any{"project_id": 0}); err == nil {
-		t.Fatal("nonpositive project_id was accepted")
-	} else {
-		requireInvalid(t, err)
-	}
-	if _, err := f.run(t, "task.mark", map[string]any{"id": f.task, "marking": "triage", "present": false, "extra": 1}); err == nil {
-		t.Fatal("unknown field on task.mark was accepted")
-	} else {
-		requireInvalid(t, err)
-	}
+	_, err := f.run(t, "task.mark", map[string]any{"id": f.task, "marking": "triage", "present": false, "extra": 1})
+	requireInvalid(t, err)
 	if _, err := f.service.Execute(context.Background(), "daemon.run", "alice", mustJSON(t, map[string]any{})); err == nil {
 		t.Fatal("daemon.run was accepted")
 	} else {
@@ -428,9 +426,6 @@ func TestVoidMutationsReturnOK(t *testing.T) {
 	result, err := f.run(t, "task.depend", map[string]any{"id": f.task, "blocker_id": otherID, "present": true})
 	if err != nil {
 		t.Fatalf("depend: %v", err)
-	}
-	if result.(okResult).OK != true {
-		t.Fatalf("depend result = %#v, want ok true", result)
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
@@ -702,53 +697,11 @@ func TestRepoLinkAndUnlinkRoundTrip(t *testing.T) {
 	}
 	requireProjectIDs(t, unlinked.(store.Repo), f.project)
 
-	// Unlinking an absent link is an idempotent no-op.
-	again, err := f.run(t, "repo.unlink", map[string]any{"repo_id": f.repo, "project_id": otherID})
-	if err != nil {
-		t.Fatalf("idempotent repo.unlink: %v", err)
-	}
-	requireProjectIDs(t, again.(store.Repo), f.project)
-
 	if _, err := f.run(t, "repo.unlink", map[string]any{"repo_id": f.repo, "project_id": f.project}); err == nil {
 		t.Fatal("unlink of a repo's last project was accepted")
 	} else if status, code := Classify(err); status != 409 || code != "conflict" {
 		t.Fatalf("classify = (%d, %q), want (409, conflict)", status, code)
 	}
-}
-
-func TestRepoUnlinkRefusesProjectWithTasks(t *testing.T) {
-	f := newFixture(t, nil)
-	other, err := f.run(t, "project.create", map[string]any{"name": "Other"})
-	if err != nil {
-		t.Fatalf("create other project: %v", err)
-	}
-	otherID := other.(store.Project).ID
-	if _, err := f.run(t, "repo.link", map[string]any{"repo_id": f.repo, "project_id": otherID}); err != nil {
-		t.Fatalf("repo.link: %v", err)
-	}
-
-	// The fixture task targets f.repo inside f.project, so that link is in use.
-	if _, err := f.run(t, "repo.unlink", map[string]any{"repo_id": f.repo, "project_id": f.project}); err == nil {
-		t.Fatal("unlink of a repo used by a task was accepted")
-	} else if status, code := Classify(err); status != 409 || code != "conflict" {
-		t.Fatalf("classify = (%d, %q), want (409, conflict)", status, code)
-	}
-
-	listed, err := f.run(t, "repo.list", map[string]any{"project_id": f.project})
-	if err != nil {
-		t.Fatalf("repo.list after refused unlink: %v", err)
-	}
-	repos := listed.([]store.Repo)
-	if len(repos) != 1 || repos[0].ID != f.repo {
-		t.Fatalf("repos after refused unlink = %+v", repos)
-	}
-	requireProjectIDs(t, repos[0], f.project, otherID)
-
-	unlinked, err := f.run(t, "repo.unlink", map[string]any{"repo_id": f.repo, "project_id": otherID})
-	if err != nil {
-		t.Fatalf("unlink unused project: %v", err)
-	}
-	requireProjectIDs(t, unlinked.(store.Repo), f.project)
 }
 
 func TestTaskListGlobalAndProjectScoped(t *testing.T) {

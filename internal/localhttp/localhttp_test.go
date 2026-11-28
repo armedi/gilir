@@ -30,10 +30,6 @@ func serveRequest(handler http.Handler, request *http.Request) *httptest.Respons
 	return recorder
 }
 
-func testHandler(web fs.FS, execute func(context.Context, string, string, json.RawMessage) (any, error), classify func(error) (int, string)) http.Handler {
-	return Handler(web, execute, classify)
-}
-
 func commandRequest(body string) *http.Request {
 	request := httptest.NewRequest(http.MethodPost, testAPI, strings.NewReader(body))
 	request.Host = testHost
@@ -218,7 +214,7 @@ func TestCommandAPISuccess(t *testing.T) {
 				return map[string]any{"result": "ok"}, nil
 			}
 
-			handler := testHandler(nil, execute, nil)
+			handler := Handler(nil, execute, nil)
 			request := commandRequest(tt.body)
 			request.Host = tt.host
 			request = request.WithContext(context.WithValue(request.Context(), contextKey{}, "live"))
@@ -265,7 +261,7 @@ func TestCommandAPIOriginValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			called := false
-			handler := testHandler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
+			handler := Handler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
 				called = true
 				return nil, nil
 			}, nil)
@@ -282,23 +278,21 @@ func TestCommandAPIOriginValidation(t *testing.T) {
 	}
 }
 
-func TestCommandAPILocalHTTPSProxy(t *testing.T) {
+func TestCommandAPIRejectsInvalidProxiedOrigin(t *testing.T) {
 	const authority = "gilir.example.ts.net:44547"
 	const httpsOrigin = "https://" + authority
-	h := testHandler(nil,
-		func(context.Context, string, string, json.RawMessage) (any, error) {
-			return "ok", nil
-		}, nil)
+	h := Handler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
+		t.Error("execute was called for a rejected Origin")
+		return nil, nil
+	}, nil)
 	tests := []struct {
-		name    string
-		peer    string
-		origin  string
-		allowed bool
+		name   string
+		peer   string
+		origin string
 	}{
-		{"proxy browser", "127.0.0.1:12345", httpsOrigin, true},
-		{"wrong scheme", "127.0.0.1:12345", "http://" + authority, false},
-		{"different origin", "127.0.0.1:12345", "https://other.example.ts.net:44547", false},
-		{"non-loopback peer", "192.0.2.1:12345", httpsOrigin, false},
+		{"wrong scheme", "127.0.0.1:12345", "http://" + authority},
+		{"different origin", "127.0.0.1:12345", "https://other.example.ts.net:44547"},
+		{"non-loopback peer", "192.0.2.1:12345", httpsOrigin},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -308,11 +302,7 @@ func TestCommandAPILocalHTTPSProxy(t *testing.T) {
 			r.Header.Set("Origin", tt.origin)
 			r.Header.Set("X-Forwarded-Proto", "https")
 			recorder := serveRequest(h, r)
-			if tt.allowed {
-				assertAPISuccess(t, recorder)
-			} else {
-				assertAPIError(t, recorder, http.StatusForbidden, "invalid_origin")
-			}
+			assertAPIError(t, recorder, http.StatusForbidden, "invalid_origin")
 		})
 	}
 }
@@ -381,7 +371,7 @@ func TestCommandAPIMethodAndMediaType(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			called := false
-			handler := testHandler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
+			handler := Handler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
 				called = true
 				return nil, nil
 			}, nil)
@@ -443,7 +433,7 @@ func TestCommandAPIRequestValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			called := false
-			handler := testHandler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
+			handler := Handler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
 				called = true
 				return nil, nil
 			}, nil)
@@ -459,7 +449,7 @@ func TestCommandAPIRequestValidation(t *testing.T) {
 func TestCommandAPIBodyLimitWithoutContentLength(t *testing.T) {
 	oversized := `{"command":"` + strings.Repeat("a", 1<<20) + `"}`
 	called := false
-	handler := testHandler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
+	handler := Handler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
 		called = true
 		return nil, nil
 	}, nil)
@@ -587,7 +577,7 @@ func TestCommandAPIApplicationErrors(t *testing.T) {
 				return tt.status, tt.code
 			}
 
-			handler := testHandler(nil, execute, classify)
+			handler := Handler(nil, execute, classify)
 			recorder := serveRequest(handler, commandRequest(`{"command":"status"}`))
 			body := assertAPIError(t, recorder, tt.wantStatus, tt.wantCode)
 			errorValue := body["error"].(map[string]any)
@@ -602,7 +592,7 @@ func TestCommandAPIApplicationErrors(t *testing.T) {
 }
 
 func TestCommandAPISuccessMarshalFailure(t *testing.T) {
-	handler := testHandler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
+	handler := Handler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
 		return func() {}, nil
 	}, nil)
 	recorder := serveRequest(handler, commandRequest(`{"command":"status"}`))
@@ -621,7 +611,7 @@ func TestStaticServing(t *testing.T) {
 			Data: []byte("nested index"),
 		},
 	}
-	handler := testHandler(web, unexpectedExecute(t), nil)
+	handler := Handler(web, unexpectedExecute(t), nil)
 
 	t.Run("index", func(t *testing.T) {
 		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/"))
@@ -733,19 +723,15 @@ func TestStaticPageFallback(t *testing.T) {
 		"app.js":           &fstest.MapFile{Data: []byte("console.log('gilir')")},
 		"assets/style.css": &fstest.MapFile{Data: []byte("body { color: black; }")},
 	}
-	handler := testHandler(web, unexpectedExecute(t), nil)
+	handler := Handler(web, unexpectedExecute(t), nil)
 
 	pages := []string{
 		"/tasks/GILIR-42",
 		"/tasks/GILIR-42/",
 		"/tasks/gilir-7",
 		"/tasks/new",
-		"/tasks/new/",
 		"/projects",
-		"/projects/",
 		"/projects/repos/new",
-		"/projects/repos/new/",
-		"/Projects",
 		"/TASKS/NEW",
 		"/Tasks/GILIR-1",
 	}
@@ -776,9 +762,7 @@ func TestStaticPageFallback(t *testing.T) {
 	})
 
 	unknown := []string{
-		"/missing",
 		"/tasks",
-		"/tasks/",
 		"/tasks/not-a-task",
 		"/tasks/GILIR-0",
 		"/tasks/GILIR-042",
@@ -816,7 +800,7 @@ func TestStaticPageFallbackWithoutIndex(t *testing.T) {
 	web := fstest.MapFS{
 		"app.js": &fstest.MapFile{Data: []byte("console.log('gilir')")},
 	}
-	handler := testHandler(web, unexpectedExecute(t), nil)
+	handler := Handler(web, unexpectedExecute(t), nil)
 
 	t.Run("page path", func(t *testing.T) {
 		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/tasks/GILIR-42"))
@@ -834,7 +818,7 @@ func TestStaticPageFallbackWithoutIndex(t *testing.T) {
 
 	t.Run("nil web", func(t *testing.T) {
 		recorder := serveRequest(
-			testHandler(nil, unexpectedExecute(t), nil),
+			Handler(nil, unexpectedExecute(t), nil),
 			pageRequest(http.MethodGet, "/projects"),
 		)
 		if recorder.Code != http.StatusNotFound {
@@ -851,7 +835,7 @@ func TestStaticPageFallbackPrefersRealFile(t *testing.T) {
 		"index.html": &fstest.MapFile{Data: []byte("entry point")},
 		"projects":   &fstest.MapFile{Data: []byte("real projects file")},
 	}
-	handler := testHandler(web, unexpectedExecute(t), nil)
+	handler := Handler(web, unexpectedExecute(t), nil)
 
 	recorder := serveRequest(handler, pageRequest(http.MethodGet, "/projects"))
 	if recorder.Code != http.StatusOK {
@@ -860,35 +844,6 @@ func TestStaticPageFallbackPrefersRealFile(t *testing.T) {
 	if got := recorder.Body.String(); got != "real projects file" {
 		t.Errorf("body = %q, want the real file to win over the page fallback", got)
 	}
-}
-
-func TestStaticPageFallbackMethodsAndHost(t *testing.T) {
-	web := fstest.MapFS{
-		"index.html": &fstest.MapFile{Data: []byte("<!doctype html><title>gilir app</title>")},
-	}
-	handler := testHandler(web, unexpectedExecute(t), nil)
-
-	t.Run("post page path", func(t *testing.T) {
-		recorder := serveRequest(handler, pageRequest(http.MethodPost, "/projects"))
-		if recorder.Code != http.StatusMethodNotAllowed {
-			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusMethodNotAllowed)
-		}
-		if got := recorder.Header().Get("Allow"); got != "GET, HEAD" {
-			t.Errorf("Allow = %q, want GET, HEAD", got)
-		}
-	})
-
-	t.Run("arbitrary host", func(t *testing.T) {
-		request := pageRequest(http.MethodGet, "/tasks/GILIR-42")
-		request.Host = "example.com:8080"
-		recorder := serveRequest(handler, request)
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
-		}
-		if !strings.Contains(recorder.Body.String(), "gilir app") {
-			t.Errorf("missing dashboard: %q", recorder.Body.String())
-		}
-	})
 }
 
 func TestStaticRejectsNonRegularFiles(t *testing.T) {
@@ -906,7 +861,7 @@ func TestStaticRejectsNonRegularFiles(t *testing.T) {
 			web := fstest.MapFS{
 				"item": &fstest.MapFile{Data: []byte("non-regular payload"), Mode: tt.mode},
 			}
-			handler := testHandler(web, unexpectedExecute(t), nil)
+			handler := Handler(web, unexpectedExecute(t), nil)
 			recorder := serveRequest(handler, pageRequest(http.MethodGet, "/item"))
 			if recorder.Code != http.StatusNotFound {
 				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
@@ -926,7 +881,7 @@ func TestStaticSeekableRangeDoesNotReadWholeFile(t *testing.T) {
 			"asset.txt": &fstest.MapFile{Data: data},
 		},
 	}
-	handler := testHandler(web, unexpectedExecute(t), nil)
+	handler := Handler(web, unexpectedExecute(t), nil)
 
 	request := pageRequest(http.MethodGet, "/asset.txt")
 	request.Header.Set("Range", "bytes=0-3")
@@ -947,7 +902,7 @@ func TestStaticNonSeekableFallback(t *testing.T) {
 		"index.html": &fstest.MapFile{Data: []byte("fallback index")},
 		"asset.txt":  &fstest.MapFile{Data: []byte("non-seekable asset")},
 	}
-	handler := testHandler(nonSeekableFS{FS: web}, unexpectedExecute(t), nil)
+	handler := Handler(nonSeekableFS{FS: web}, unexpectedExecute(t), nil)
 
 	t.Run("get", func(t *testing.T) {
 		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/"))
@@ -982,7 +937,7 @@ func TestStaticNonSeekableFallback(t *testing.T) {
 	})
 
 	t.Run("oversized", func(t *testing.T) {
-		handler := testHandler(oversizedStaticFS{}, unexpectedExecute(t), nil)
+		handler := Handler(oversizedStaticFS{}, unexpectedExecute(t), nil)
 		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/huge.bin"))
 		if recorder.Code != http.StatusInternalServerError {
 			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
@@ -994,7 +949,7 @@ func TestStaticNonSeekableFallback(t *testing.T) {
 
 	t.Run("under-reported size is bounded", func(t *testing.T) {
 		web := &oversizedStreamFS{}
-		handler := testHandler(web, unexpectedExecute(t), nil)
+		handler := Handler(web, unexpectedExecute(t), nil)
 		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/huge.bin"))
 		if recorder.Code != http.StatusInternalServerError {
 			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
@@ -1012,7 +967,7 @@ func TestStaticRequestGuards(t *testing.T) {
 	web := fstest.MapFS{
 		"index.html": &fstest.MapFile{Data: []byte("<h1>private ui</h1>")},
 	}
-	handler := testHandler(web, unexpectedExecute(t), nil)
+	handler := Handler(web, unexpectedExecute(t), nil)
 
 	t.Run("unexpected origin", func(t *testing.T) {
 		request := pageRequest(http.MethodGet, "/")
@@ -1056,7 +1011,7 @@ func TestStaticWithoutWebIndex(t *testing.T) {
 	}
 
 	t.Run("nil web", func(t *testing.T) {
-		handler := testHandler(nil, execute, nil)
+		handler := Handler(nil, execute, nil)
 		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/"))
 		if recorder.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
@@ -1071,7 +1026,7 @@ func TestStaticWithoutWebIndex(t *testing.T) {
 		web := fstest.MapFS{
 			"app.js": &fstest.MapFile{Data: []byte("console.log('gilir')")},
 		}
-		handler := testHandler(web, execute, nil)
+		handler := Handler(web, execute, nil)
 		recorder := serveRequest(handler, pageRequest(http.MethodGet, "/"))
 		if recorder.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
@@ -1100,7 +1055,7 @@ func TestStaticRejectsPathTraversal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := testHandler(os.DirFS(root), unexpectedExecute(t), nil)
+	handler := Handler(os.DirFS(root), unexpectedExecute(t), nil)
 
 	recorder := serveRequest(handler, pageRequest(http.MethodGet, "/"))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "public index") {

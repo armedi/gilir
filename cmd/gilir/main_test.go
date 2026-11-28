@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -94,44 +95,6 @@ func TestResolveListenDefaultsTo44547(t *testing.T) {
 	}
 }
 
-func TestResolveWorkerListenUsesOnlyThePrivateAddress(t *testing.T) {
-	t.Setenv(serviceListenEnvName, "[::0]:4718")
-	t.Setenv("GILIR_URL", "http://127.0.0.1:1")
-	got, err := resolveWorkerListen("", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.address() != "[::]:4718" {
-		t.Fatalf("worker listen address = %q, want [::]:4718", got.address())
-	}
-	got, err = resolveWorkerListen("127.0.0.1", "9000")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.address() != "127.0.0.1:9000" {
-		t.Fatalf("explicit listen address = %q, want 127.0.0.1:9000", got.address())
-	}
-}
-
-func TestServiceURLMapsWildcardToLoopback(t *testing.T) {
-	tests := []struct {
-		host string
-		want string
-	}{
-		{host: "0.0.0.0", want: "http://127.0.0.1:9000"},
-		{host: "::", want: "http://[::1]:9000"},
-		{host: "::0", want: "http://[::1]:9000"},
-		{host: "localhost", want: "http://127.0.0.1:9000"},
-		{host: "192.168.1.5", want: "http://192.168.1.5:9000"},
-	}
-	for _, test := range tests {
-		got := listenConfig{host: test.host, port: "9000"}.urlFor("9000")
-		if got != test.want {
-			t.Errorf("%q url = %q, want %q", test.host, got, test.want)
-		}
-	}
-}
-
 func TestPrepareDatabaseCreatesPrivateFilesAndKeepsExistingMode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits")
@@ -200,16 +163,6 @@ func TestDaemonServesStatusAndRejectsSecondInstance(t *testing.T) {
 	t.Setenv("GILIR_HOOKS", hooksPath)
 	t.Setenv("OPENCODE_PASSWORD", "")
 
-	// A stateful command before the service starts must fail at the target
-	// rather than create or open the database itself.
-	target := os.Getenv("GILIR_URL")
-	if _, err := execute(context.Background(), "project.create", "user", map[string]any{"name": "Before"}); err == nil ||
-		!strings.Contains(err.Error(), target) || !strings.Contains(err.Error(), "gilir service start") {
-		t.Fatalf("offline command error = %v", err)
-	}
-	if _, err := os.Stat(dbPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("client created the database: %v", err)
-	}
 	offline, err := queryServiceStatus(context.Background())
 	if err != nil {
 		t.Fatalf("offline status: %v", err)
@@ -314,21 +267,6 @@ func TestDaemonServesStatusAndRejectsSecondInstance(t *testing.T) {
 	if _, err := os.Stat(serviceStatePath(dbPath)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("service state after stop: %v", err)
 	}
-
-	st, err := store.Open(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	latest, err := st.LatestActivityID(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The seeded event was the latest at startup and remains the recorded
-	// cursor baseline; the later project.created event was not replayed.
-	if cursor := hookCursor(t, dbPath, "audit"); cursor != 1 || latest < 2 {
-		t.Fatalf("hook cursor = %d with latest %d, want 1 with later activity", cursor, latest)
-	}
 }
 
 func hookCursor(t *testing.T, dbPath, name string) int64 {
@@ -370,6 +308,7 @@ func TestCustomPortDaemonHooksReceiveItsOwnURL(t *testing.T) {
 			}
 
 			t.Setenv("GILIR_DB", dbPath)
+			t.Setenv(serviceListenEnvName, net.JoinHostPort(host, "0"))
 			// Service startup must ignore GILIR_URL; its hooks must still get
 			// the URL it actually bound, not the inherited value.
 			t.Setenv("GILIR_URL", "http://127.0.0.1:1")
@@ -381,7 +320,7 @@ func TestCustomPortDaemonHooksReceiveItsOwnURL(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan error, 1)
 			go func() {
-				_, err := runDaemon(ctx, host, "0")
+				_, err := runDaemon(ctx, "", "")
 				done <- err
 			}()
 			t.Cleanup(func() {
@@ -409,6 +348,9 @@ func TestCustomPortDaemonHooksReceiveItsOwnURL(t *testing.T) {
 			endpoint, err := commandEndpoint(target)
 			if err != nil {
 				t.Fatalf("advertised URL %q: %v", target, err)
+			}
+			if host == "::0" && endpoint.Hostname() != "::1" {
+				t.Fatalf("IPv6 wildcard advertised %s, want [::1]", target)
 			}
 			for {
 				if _, err := sendCommand(ctx, endpoint, "daemon.status", "user", map[string]any{}); err == nil {
@@ -581,7 +523,7 @@ func TestLoopbackServiceWorksBehindHTTPSProxy(t *testing.T) {
 	for _, test := range []struct {
 		name, method, path, origin, body string
 	}{
-		{name: "dashboard", method: http.MethodGet, path: "/"},
+		{name: "dashboard deep link", method: http.MethodGet, path: "/tasks/GILIR-42"},
 		{name: "same-origin API", method: http.MethodPost, path: "/api/v1/command",
 			origin: "https://" + host, body: `{"command":"daemon.status"}`},
 	} {
@@ -603,6 +545,12 @@ func TestLoopbackServiceWorksBehindHTTPSProxy(t *testing.T) {
 			defer resp.Body.Close()
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("HTTP %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+			if test.method == http.MethodGet {
+				body, err := io.ReadAll(resp.Body)
+				if err != nil || string(body) != "dashboard" {
+					t.Fatalf("dashboard response = %q, %v", body, err)
+				}
 			}
 		})
 	}

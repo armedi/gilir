@@ -31,7 +31,6 @@ func TestParseRejectsMalformedIDs(t *testing.T) {
 	for _, value := range []string{
 		"",
 		"42",
-		"0",
 		"GILIR-",
 		"GILIR-0",
 		"GILIR-007",

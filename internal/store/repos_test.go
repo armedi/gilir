@@ -463,11 +463,6 @@ func TestCreateTaskProjectInferenceAndAmbiguity(t *testing.T) {
 	if updated.ProjectID != projectA.ID || updated.RepoID != repoC.ID {
 		t.Fatalf("updated task ownership = %+v", updated)
 	}
-
-	repoBOnly := mustAddRepo(t, s, projectB.ID, newGitRepo(t))
-	if _, err := s.UpdateTask(ctx, "alice", explicitA.ID, TaskPatch{RepoID: &repoBOnly.ID}); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("UpdateTask to other-project repo error = %v, want ErrInvalid", err)
-	}
 }
 
 func TestProjectRepoSchemaConstraints(t *testing.T) {

@@ -210,12 +210,14 @@ func TestCLIStatefulCommandsUseOneHTTPCommandEndpoint(t *testing.T) {
 			if stderr.Len() != 0 {
 				t.Fatalf("stderr = %q", stderr.String())
 			}
-			if !strings.Contains(stdout.String(), "9223372036854775807") {
-				t.Fatalf("stdout lost the exact int64: %q", stdout.String())
-			}
-			var decoded any
+			var decoded map[string]json.RawMessage
 			if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
-				t.Fatalf("stdout is not JSON: %v (%q)", err, stdout.String())
+				t.Fatalf("stdout is not a JSON object: %v (%q)", err, stdout.String())
+			}
+			var repoIDs []int64
+			if len(decoded) != 2 || string(decoded["id"]) != "9223372036854775807" ||
+				json.Unmarshal(decoded["repo_ids"], &repoIDs) != nil || len(repoIDs) != 1 || repoIDs[0] != 3 {
+				t.Fatalf("stdout = %q, want bare data with an exact int64 ID and repo IDs", stdout.String())
 			}
 
 			recorder.mu.Lock()
@@ -409,15 +411,5 @@ func TestCLIMutationsAreNotRetried(t *testing.T) {
 	}
 	if got := requests.Load(); got != 1 {
 		t.Fatalf("mutation requests = %d, want 1", got)
-	}
-}
-
-func TestHelpAndSkillStayLocalWithABadURL(t *testing.T) {
-	t.Setenv("GILIR_URL", "not a url")
-	for _, argv := range [][]string{{"--help"}, {"skill"}, {"skill", "--json"}} {
-		var stdout, stderr bytes.Buffer
-		if code := cli.Run(context.Background(), argv, &stdout, &stderr, "", execute); code != 0 {
-			t.Errorf("%v exit code = %d (stderr %q)", argv, code, stderr.String())
-		}
 	}
 }

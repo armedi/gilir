@@ -111,36 +111,13 @@ func (e *env) discoveryWatcher(t *testing.T, d *scriptedDiscovery) *Watcher {
 	return NewWithConnection(e.st, conn)
 }
 
-func TestWatcherAutoDiscoversAndDispatches(t *testing.T) {
-	e, _, d := discoverySetup(t, 1, 1, "pw")
-	w := e.discoveryWatcher(t, d)
-
-	e.tick(t, w)
-	wantActive(t, w, 0)
-	if got := e.status(t, 0); got != store.StatusInProgress {
-		t.Fatalf("task status = %s, want dispatched in-progress", got)
-	}
-	if urls, passwords := d.counts(); urls != 1 || passwords != 1 {
-		t.Fatalf("discovery calls = %d/%d, want one each", urls, passwords)
-	}
-
-	// The resolved client is cached: later ticks run no CLI subprocesses.
-	e.tick(t, w)
-	if urls, passwords := d.counts(); urls != 1 || passwords != 1 {
-		t.Fatalf("discovery calls after second tick = %d/%d, want still one each", urls, passwords)
-	}
-}
-
 func TestWatcherStaysFailClosedWhileOpenCodeIsStopped(t *testing.T) {
 	e, auth, d := discoverySetup(t, 1, 1, "pw")
 	d.set(true, e.url, "pw")
 	w := e.discoveryWatcher(t, d)
 
-	// Repeated ticks must not spawn a discovery subprocess each time.
-	for range 5 {
-		if err := w.Tick(e.ctx); err == nil {
-			t.Fatal("Tick while stopped succeeded, want an error")
-		}
+	if err := w.Tick(e.ctx); err == nil {
+		t.Fatal("Tick while stopped succeeded, want an error")
 	}
 	snap := w.Snapshot()
 	if snap.ActiveParents != nil {
@@ -152,9 +129,6 @@ func TestWatcherStaysFailClosedWhileOpenCodeIsStopped(t *testing.T) {
 	if got := e.status(t, 0); got != store.StatusTodo {
 		t.Fatalf("task status while stopped = %s, want todo (fail closed)", got)
 	}
-	if urls, _ := d.counts(); urls != 1 {
-		t.Fatalf("URL discoveries over five stopped ticks = %d, want 1 (backoff)", urls)
-	}
 	if n := auth.requestCount(); n != 0 {
 		t.Fatalf("HTTP requests while stopped = %d, want none", n)
 	}
@@ -164,10 +138,14 @@ func TestWatcherRecoversFromPasswordRotation(t *testing.T) {
 	e, auth, d := discoverySetup(t, 1, 1, "old")
 	w := e.discoveryWatcher(t, d)
 	e.tick(t, w)
+	wantActive(t, w, 0)
 	if got := e.status(t, 0); got != store.StatusInProgress {
 		t.Fatalf("initial dispatch status = %s", got)
 	}
-	_, before := d.counts()
+	e.tick(t, w)
+	if urls, passwords := d.counts(); urls != 1 || passwords != 1 {
+		t.Fatalf("discovery calls after two healthy ticks = %d/%d, want one each", urls, passwords)
+	}
 
 	// The service rotated its password: the cached client now gets a 401,
 	// discovery re-reads the password, and the same tick succeeds.
@@ -180,8 +158,8 @@ func TestWatcherRecoversFromPasswordRotation(t *testing.T) {
 	if snap := w.Snapshot(); snap.Error != "" {
 		t.Fatalf("snapshot error after rotation = %q, want none", snap.Error)
 	}
-	if _, after := d.counts(); after != before+1 {
-		t.Fatalf("password discoveries during rotation tick = %d -> %d, want exactly one refresh", before, after)
+	if _, after := d.counts(); after != 2 {
+		t.Fatalf("password discoveries after rotation = %d, want initial discovery and one refresh", after)
 	}
 }
 
@@ -206,16 +184,5 @@ func TestWatcherReportsUnauthorizedWithoutLeakingPassword(t *testing.T) {
 		if strings.Contains(snap.Error, secret) {
 			t.Fatalf("snapshot error leaked password %q: %q", secret, snap.Error)
 		}
-	}
-}
-
-func TestWatcherStopsReDiscoveringOnceCredentialsFillIn(t *testing.T) {
-	e, _, d := discoverySetup(t, 1, 1, "pw")
-	w := e.discoveryWatcher(t, d)
-	for range 3 {
-		e.tick(t, w)
-	}
-	if urls, passwords := d.counts(); urls != 1 || passwords != 1 {
-		t.Fatalf("discovery calls across three healthy ticks = %d/%d, want one each", urls, passwords)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -17,14 +16,12 @@ type recordedCall struct {
 }
 
 type recordingExecutor struct {
-	calls  []recordedCall
-	result any
-	err    error
+	calls []recordedCall
 }
 
 func (r *recordingExecutor) execute(_ context.Context, command, actor string, args map[string]any) (any, error) {
 	r.calls = append(r.calls, recordedCall{command: command, actor: actor, args: args})
-	return r.result, r.err
+	return nil, nil
 }
 
 func runCLI(argv []string, defaultActor string, executor *recordingExecutor) (int, string, string) {
@@ -232,12 +229,6 @@ func TestRunRepoAndTaskProjectOptionality(t *testing.T) {
 			wantArgs:    map[string]any{"path": "/src/app"},
 		},
 		{
-			name:        "repo add explicit project",
-			argv:        []string{"repo", "add", "/src/app", "--project", "3"},
-			wantCommand: "repo.add",
-			wantArgs:    map[string]any{"path": "/src/app", "project_id": int64(3)},
-		},
-		{
 			name:        "repo link",
 			argv:        []string{"repo", "link", "2", "3"},
 			wantCommand: "repo.link",
@@ -424,71 +415,28 @@ func TestRunRejectsRequiredAndInvalidArguments(t *testing.T) {
 	}
 }
 
-func TestRunJSONSemantics(t *testing.T) {
-	t.Run("success is bare data", func(t *testing.T) {
-		executor := &recordingExecutor{result: map[string]any{"id": int64(7), "name": "Demo"}}
-		code, stdout, stderr := runCLI([]string{"show", "GILIR-7", "--json"}, "", executor)
+func TestRunJSONUsageError(t *testing.T) {
+	executor := &recordingExecutor{}
+	code, stdout, stderr := runCLI([]string{"frobnicate", "--json"}, "", executor)
 
-		if code != 0 {
-			t.Fatalf("exit code = %d, want 0 (stderr %q)", code, stderr)
-		}
-		if stderr != "" {
-			t.Fatalf("stderr = %q, want empty", stderr)
-		}
-		var decoded any
-		if err := json.Unmarshal([]byte(stdout), &decoded); err != nil {
-			t.Fatalf("stdout is not JSON: %v (%q)", err, stdout)
-		}
-		want := map[string]any{"id": float64(7), "name": "Demo"}
-		if !reflect.DeepEqual(decoded, want) {
-			t.Fatalf("decoded = %#v, want %#v", decoded, want)
-		}
-	})
-
-	t.Run("command failure", func(t *testing.T) {
-		executor := &recordingExecutor{err: errors.New("store offline")}
-		code, stdout, stderr := runCLI([]string{"show", "GILIR-7", "--json"}, "", executor)
-
-		if code != 1 {
-			t.Fatalf("exit code = %d, want 1", code)
-		}
-		if stdout != "" {
-			t.Fatalf("stdout = %q, want empty", stdout)
-		}
-		var failure struct {
-			Error string `json:"error"`
-		}
-		if err := json.Unmarshal([]byte(stderr), &failure); err != nil {
-			t.Fatalf("stderr is not JSON: %v (%q)", err, stderr)
-		}
-		if failure.Error != "store offline" {
-			t.Fatalf("error = %q, want %q", failure.Error, "store offline")
-		}
-	})
-
-	t.Run("malformed invocation", func(t *testing.T) {
-		executor := &recordingExecutor{}
-		code, stdout, stderr := runCLI([]string{"frobnicate", "--json"}, "", executor)
-
-		if code != 2 {
-			t.Fatalf("exit code = %d, want 2", code)
-		}
-		if stdout != "" {
-			t.Fatalf("stdout = %q, want empty", stdout)
-		}
-		var failure struct {
-			Error string `json:"error"`
-		}
-		if err := json.Unmarshal([]byte(stderr), &failure); err != nil {
-			t.Fatalf("stderr is not JSON: %v (%q)", err, stderr)
-		}
-		if !strings.Contains(failure.Error, "unknown command") {
-			t.Fatalf("error = %q, want unknown command", failure.Error)
-		}
-		if len(executor.calls) != 0 {
-			t.Fatalf("execute calls = %d, want 0", len(executor.calls))
-		}
-	})
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	var failure struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(stderr), &failure); err != nil {
+		t.Fatalf("stderr is not JSON: %v (%q)", err, stderr)
+	}
+	if !strings.Contains(failure.Error, "unknown command") {
+		t.Fatalf("error = %q, want unknown command", failure.Error)
+	}
+	if len(executor.calls) != 0 {
+		t.Fatalf("execute calls = %d, want 0", len(executor.calls))
+	}
 }
 
 func TestRunSkillObservableContract(t *testing.T) {
@@ -504,6 +452,7 @@ func TestRunSkillObservableContract(t *testing.T) {
 	if !strings.HasPrefix(plain, "---\nname: gilir\ndescription: ") {
 		t.Fatalf("skill is missing frontmatter:\n%s", plain)
 	}
+	normalized := strings.Join(strings.Fields(plain), " ")
 	for _, want := range []string{
 		`gilir show "$task_id" --json`,
 		`gilir comment "$task_id"`,
@@ -512,12 +461,20 @@ func TestRunSkillObservableContract(t *testing.T) {
 		`Blocked by:`,
 		`gilir update "$task_id" --status in-review --actor "agent:$session_id"`,
 		`gilir --help`,
+		"gilir repo add ~/src/payments # auto-creates project",
+		"gilir repo add ~/src/payments --project 3",
+		"gilir repo list",
+		"gilir repo list --project 3",
+		"gilir repo link 1 4",
+		"gilir repo unlink 1 4",
+		`gilir create "Fix rounding" --repo 1 --status todo --priority high`,
+		"gilir list --project 3",
 	} {
-		if !strings.Contains(plain, want) {
+		if !strings.Contains(normalized, want) {
 			t.Fatalf("skill missing %q:\n%s", want, plain)
 		}
 	}
-	for _, unwanted := range []string{"gilir approve", "gilir mark"} {
+	for _, unwanted := range []string{"gilir approve", "gilir mark", "--project 1 --repo 1"} {
 		if strings.Contains(plain, unwanted) {
 			t.Fatalf("skill still contains %q:\n%s", unwanted, plain)
 		}
@@ -542,6 +499,9 @@ func TestRunSkillObservableContract(t *testing.T) {
 	if payload.Skill != plain {
 		t.Fatalf("skill JSON and plain output differ")
 	}
+	if len(executor.calls) != 0 {
+		t.Fatalf("execute calls = %d, want 0", len(executor.calls))
+	}
 }
 
 func TestRunHelpReflectsRepoFirstCommands(t *testing.T) {
@@ -554,6 +514,7 @@ func TestRunHelpReflectsRepoFirstCommands(t *testing.T) {
 			name: "general help",
 			argv: []string{"--help"},
 			want: []string{
+				"Usage:",
 				"repo list [--project <id>]",
 				"repo add <path> [--project <id>]",
 				"repo link <repo-id> <project-id>",
@@ -635,51 +596,8 @@ func TestRunHelpReflectsRepoFirstCommands(t *testing.T) {
 	}
 }
 
-func TestRunSkillDocumentsRepoFirstWorkflow(t *testing.T) {
+func TestRunHelpJSON(t *testing.T) {
 	executor := &recordingExecutor{}
-	code, plain, stderr := runCLI([]string{"skill"}, "", executor)
-
-	if code != 0 {
-		t.Fatalf("exit code = %d, want 0 (stderr %q)", code, stderr)
-	}
-	if stderr != "" {
-		t.Fatalf("stderr = %q, want empty", stderr)
-	}
-	for _, want := range []string{
-		"gilir repo add ~/src/payments                                    # auto-creates project",
-		"gilir repo add ~/src/payments --project 3",
-		"gilir repo list",
-		"gilir repo list --project 3",
-		"gilir repo link 1 4",
-		"gilir repo unlink 1 4",
-		`gilir create "Fix rounding" --repo 1 --status todo --priority high`,
-		"gilir list --project 3",
-	} {
-		if !strings.Contains(plain, want) {
-			t.Fatalf("skill missing %q:\n%s", want, plain)
-		}
-	}
-	if strings.Contains(plain, "--project 1 --repo 1") {
-		t.Fatalf("skill still shows --project as required for create:\n%s", plain)
-	}
-}
-
-func TestRunHelp(t *testing.T) {
-	executor := &recordingExecutor{}
-	code, plain, stderr := runCLI([]string{"--help"}, "", executor)
-	if code != 0 {
-		t.Fatalf("exit code = %d, want 0 (stderr %q)", code, stderr)
-	}
-	if stderr != "" {
-		t.Fatalf("stderr = %q, want empty", stderr)
-	}
-	if !strings.Contains(plain, "Usage:") {
-		t.Fatalf("help missing usage:\n%s", plain)
-	}
-	if len(executor.calls) != 0 {
-		t.Fatalf("execute calls = %d, want 0", len(executor.calls))
-	}
-
 	code, stdout, stderr := runCLI([]string{"--json", "--help"}, "", executor)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr %q)", code, stderr)
@@ -695,5 +613,8 @@ func TestRunHelp(t *testing.T) {
 	}
 	if !strings.Contains(payload.Help, "Usage:") {
 		t.Fatalf("help payload missing usage: %q", payload.Help)
+	}
+	if len(executor.calls) != 0 {
+		t.Fatalf("execute calls = %d, want 0", len(executor.calls))
 	}
 }

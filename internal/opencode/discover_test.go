@@ -303,71 +303,31 @@ func TestConnectorReconnectsOnceServiceStarts(t *testing.T) {
 	}
 }
 
-func TestConnectorRefreshesRotatedPasswordOn401(t *testing.T) {
-	d := &discovery{url: "http://127.0.0.1:49374", password: "old"}
-	conn, err := NewConnector(d, Overrides{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := conn.Client(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	d.password = "new"
-	unauthorized := &StatusError{Method: http.MethodGet, Path: "/api/info", StatusCode: http.StatusUnauthorized}
-	if !conn.Failed(unauthorized) {
-		t.Fatal("Failed(401) = false, want an immediate retry after re-discovery")
-	}
-	_, _, err = conn.Client(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.passwordCalls != 2 {
-		t.Fatalf("password discoveries = %d, want 2", d.passwordCalls)
-	}
-	if got := conn.Redact("old and new"); got != "[redacted] and [redacted]" {
-		t.Fatalf("Redact = %q", got)
-	}
-}
-
-func TestConnectorBacksOffRepeated401WithUnchangedPassword(t *testing.T) {
-	d := &discovery{url: "http://127.0.0.1:49374", password: "same"}
-	conn, err := NewConnector(d, Overrides{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := conn.now()
-	conn.now = func() time.Time { return now }
-	if _, _, err := conn.Client(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	unauthorized := &StatusError{Method: http.MethodGet, Path: "/api/info", StatusCode: http.StatusUnauthorized}
-	if !conn.Failed(unauthorized) {
-		t.Fatal("first Failed(401) = false, want an immediate retry")
-	}
-	// The retried tick re-discovers, gets the same password, and fails again.
-	if _, _, err := conn.Client(context.Background()); err != nil {
-		t.Fatalf("client after first refresh = %v", err)
-	}
-	if conn.Failed(unauthorized) {
-		t.Fatal("second Failed(401) = true, want throttled re-discovery")
-	}
-	if _, _, err := conn.Client(context.Background()); !errors.Is(err, unauthorized) {
-		t.Fatalf("client during auth backoff = %v, want the auth error", err)
-	}
-	if d.passwordCalls != 2 {
-		t.Fatalf("password discoveries = %d, want 2 (initial + one refresh)", d.passwordCalls)
-	}
-}
-
 func TestConnectorIgnores401WithExplicitPassword(t *testing.T) {
-	url, password := "http://127.0.0.1:4096", "explicit"
-	conn, err := NewConnector(nil, Overrides{URL: &url, Password: &password})
+	_, _, url := fixture(t, "", map[string]reply{"GET /api/info": {http.StatusUnauthorized, `{}`}})
+	d := &discovery{url: url}
+	password := "explicit"
+	conn, err := NewConnector(d, Overrides{Password: &password})
 	if err != nil {
 		t.Fatal(err)
 	}
-	unauthorized := &StatusError{StatusCode: http.StatusUnauthorized}
-	if conn.Failed(unauthorized) {
+	ctx := context.Background()
+	client, _, err := conn.Client(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.ServerPID(ctx)
+	if !IsUnauthorized(err) {
+		t.Fatalf("ServerPID error = %v, want 401", err)
+	}
+	if conn.Failed(err) {
 		t.Fatal("Failed(401) with an explicit password asked for discovery")
+	}
+	if _, _, err := conn.Client(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if d.urlCalls != 1 || d.passwordCalls != 0 {
+		t.Fatalf("URL/password discoveries = %d/%d, want 1/0", d.urlCalls, d.passwordCalls)
 	}
 }
 
@@ -401,10 +361,12 @@ func TestConnectorRetriesAfterBackoffExpiresDespiteRepeatedAuthFailures(t *testi
 	if conn.Failed(unauthorized) {
 		t.Fatal("second Failed(401) = true, want a throttled refresh")
 	}
-	refreshes := d.passwordCalls
-	deadline := conn.retryAt
-	if deadline.IsZero() {
-		t.Fatal("second Failed(401) set no retry deadline")
+	if d.passwordCalls != 2 {
+		t.Fatalf("password discoveries = %d, want initial discovery and one refresh", d.passwordCalls)
+	}
+	deadline := now.Add(initialRetryDelay)
+	if _, _, err := conn.Client(ctx); !errors.Is(err, unauthorized) {
+		t.Fatalf("client during auth backoff = %v, want the cached auth error", err)
 	}
 
 	// Simulate one-second ticks up to the deadline, the way Run does. Each
@@ -414,14 +376,14 @@ func TestConnectorRetriesAfterBackoffExpiresDespiteRepeatedAuthFailures(t *testi
 	for now.Add(time.Second).Before(deadline) {
 		now = now.Add(time.Second)
 		_, _, err := conn.Client(ctx)
-		if err == nil {
-			t.Fatalf("tick at %v unexpectedly recovered inside the backoff window", now)
+		if !errors.Is(err, unauthorized) {
+			t.Fatalf("tick at %v returned %v, want the cached auth error", now, err)
 		}
 		if conn.Failed(err) {
 			t.Fatalf("tick at %v asked for an immediate refresh inside the window", now)
 		}
-		if !conn.retryAt.Equal(deadline) {
-			t.Fatalf("tick at %v moved the retry deadline from %v to %v", now, deadline, conn.retryAt)
+		if d.passwordCalls != 2 {
+			t.Fatalf("tick at %v discovered passwords %d times during backoff, want 2", now, d.passwordCalls)
 		}
 	}
 
@@ -431,8 +393,8 @@ func TestConnectorRetriesAfterBackoffExpiresDespiteRepeatedAuthFailures(t *testi
 	if _, _, err := conn.Client(ctx); err != nil {
 		t.Fatalf("client after backoff expired = %v, want recovery", err)
 	}
-	if d.passwordCalls != refreshes+1 {
-		t.Fatalf("password discoveries = %d, want %d after recovery", d.passwordCalls, refreshes+1)
+	if d.passwordCalls != 3 {
+		t.Fatalf("password discoveries = %d, want 3 after recovery", d.passwordCalls)
 	}
 	if got := conn.Redact("old and new"); got != "[redacted] and [redacted]" {
 		t.Fatalf("Redact = %q", got)

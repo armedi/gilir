@@ -14,8 +14,8 @@ import (
 )
 
 type request struct {
-	Method, Path, Auth string
-	Body               map[string]any
+	Method, Path, Host, Auth string
+	Body                     map[string]any
 }
 
 type reply struct {
@@ -28,7 +28,7 @@ func fixture(t *testing.T, password string, routes map[string]reply) (*Client, *
 	t.Helper()
 	var got []request
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		req := request{Method: r.Method, Path: r.URL.EscapedPath(), Auth: r.Header.Get("Authorization")}
+		req := request{Method: r.Method, Path: r.URL.EscapedPath(), Host: r.Host, Auth: r.Header.Get("Authorization")}
 		if b, _ := io.ReadAll(r.Body); len(b) > 0 {
 			if err := json.Unmarshal(b, &req.Body); err != nil {
 				t.Errorf("request body is not JSON: %s", b)
@@ -360,5 +360,8 @@ func TestRequestsUseCanonicalBase(t *testing.T) {
 	}
 	if pid, err := c.ServerPID(context.Background()); err != nil || pid != 7 || len(*reqs) != 1 {
 		t.Fatalf("ServerPID via uncanonical URL = %d, %v", pid, err)
+	}
+	if got, want := (*reqs)[0].Host, strings.TrimPrefix(srvURL, "http://"); got != want {
+		t.Fatalf("HTTP Host = %q, want %q", got, want)
 	}
 }

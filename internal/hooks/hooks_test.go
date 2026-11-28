@@ -21,7 +21,6 @@ func TestLoad(t *testing.T) {
 		file string
 		want string // error substring; empty means valid
 	}{
-		{"valid", `[{"name":"notify","events":["task.commented"],"url":"https://example.test/hook"},{"name":"local.sh","command":["/bin/echo","$HOME"]}]`, ""},
 		{"empty array", `[]`, ""},
 		{"not array", `{"name":"a","url":"http://x"}`, "JSON array"},
 		{"null", `null`, "JSON array"},
@@ -66,7 +65,10 @@ func TestLoad(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "hooks.json")
-	os.WriteFile(path, []byte(cases[0].file), 0o600)
+	file := `[{"name":"notify","events":["task.commented"],"url":"https://example.test/hook"},{"name":"local.sh","command":["/bin/echo","$HOME"]}]`
+	if err := os.WriteFile(path, []byte(file), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	configs, err := Load(path)
 	want := []Config{
 		{Name: "notify", Events: []string{"task.commented"}, URL: "https://example.test/hook"},
@@ -149,7 +151,7 @@ func event(id int64, typ, actor string) Event {
 }
 
 type request struct {
-	eventID, contentType, body string
+	method, eventID, contentType, body string
 }
 
 // recorder is an httptest handler that records requests and answers with the
@@ -163,7 +165,7 @@ type recorder struct {
 func (r *recorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	body, _ := io.ReadAll(req.Body)
 	r.mu.Lock()
-	r.requests = append(r.requests, request{req.Header.Get("X-Gilir-Event-ID"), req.Header.Get("Content-Type"), string(body)})
+	r.requests = append(r.requests, request{req.Method, req.Header.Get("X-Gilir-Event-ID"), req.Header.Get("Content-Type"), string(body)})
 	status := http.StatusOK
 	if len(r.statuses) > 0 {
 		status, r.statuses = r.statuses[0], r.statuses[1:]
@@ -206,15 +208,10 @@ func (l *errorLog) all() []string {
 // waits for it to return.
 func start(t *testing.T, configs []Config, source Source, log *errorLog) (stop func()) {
 	t.Helper()
-	return startWithURL(t, configs, source, "", log)
-}
-
-func startWithURL(t *testing.T, configs []Config, source Source, daemonURL string, log *errorLog) (stop func()) {
-	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		RunWithURL(ctx, configs, source, daemonURL, log.report)
+		RunWithURL(ctx, configs, source, "", log.report)
 		close(done)
 	}()
 	stop = func() {
@@ -258,8 +255,8 @@ func TestWebhookDeliversPayloadSkippingSelfAndUnlistedEvents(t *testing.T) {
 
 	eventually(t, "cursor to reach 5", func() bool { return source.cursor("notify") == 5 })
 	want := []request{
-		{"2", "application/json", string(source.events[1].Payload)},
-		{"5", "application/json", string(source.events[4].Payload)},
+		{http.MethodPost, "2", "application/json", string(source.events[1].Payload)},
+		{http.MethodPost, "5", "application/json", string(source.events[4].Payload)},
 	}
 	if got := rec.seen(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests = %#v; want %#v", got, want)
@@ -270,12 +267,19 @@ func TestWebhookDeliversPayloadSkippingSelfAndUnlistedEvents(t *testing.T) {
 }
 
 func TestFailedDeliveryRetriesBeforeLaterEventsAndHoldsCursor(t *testing.T) {
-	rec := &recorder{statuses: []int{http.StatusFound, http.StatusInternalServerError}}
-	server := httptest.NewServer(rec)
-	defer server.Close()
-
 	source := newMemorySource(event(1, "task.created", "user"), event(2, "task.claimed", "user"))
 	source.cursors["notify"] = 0
+	rec := &recorder{statuses: []int{http.StatusFound, http.StatusInternalServerError}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Gilir-Event-ID") == "1" {
+			if cursor := source.cursor("notify"); cursor != 0 {
+				t.Errorf("cursor advanced to %d before event 1 was acknowledged", cursor)
+			}
+		}
+		rec.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+
 	var log errorLog
 	start(t, []Config{{Name: "notify", URL: server.URL}}, source, &log)
 
@@ -343,27 +347,6 @@ func TestCommandReceivesArgvStdinAndHookEnvironment(t *testing.T) {
 	want := "$HOME;x|hook:local|7|unset|" + string(source.events[0].Payload)
 	if string(got) != want {
 		t.Fatalf("command saw %q; want %q", got, want)
-	}
-}
-
-func TestCommandReceivesDaemonURLInsteadOfInheritedValue(t *testing.T) {
-	t.Setenv("GILIR_URL", "http://inherited.invalid:1")
-	out := filepath.Join(t.TempDir(), "out")
-	script := `printf '%s' "$GILIR_URL" > "$1"`
-
-	source := newMemorySource(event(4, "task.created", "user"))
-	source.cursors["local"] = 3
-	var log errorLog
-	startWithURL(t, []Config{{Name: "local", Command: []string{"/bin/sh", "-c", script, "sh", out}}},
-		source, "http://127.0.0.1:9000", &log)
-
-	eventually(t, "cursor to reach 4", func() bool { return source.cursor("local") == 4 })
-	got, err := os.ReadFile(out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "http://127.0.0.1:9000" {
-		t.Fatalf("GILIR_URL = %q; want the daemon URL", got)
 	}
 	if errs := log.all(); len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)

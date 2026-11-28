@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -156,19 +155,6 @@ func activityTypes(activities []Activity) []string {
 		types = append(types, activity.Type)
 	}
 	return types
-}
-
-func jsonObject(t *testing.T, value any) map[string]any {
-	t.Helper()
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		t.Fatalf("json.Marshal: %v", err)
-	}
-	var object map[string]any
-	if err := json.Unmarshal(encoded, &object); err != nil {
-		t.Fatalf("json.Unmarshal(%s): %v", encoded, err)
-	}
-	return object
 }
 
 func TestOpenConfiguresSQLiteAndSchema(t *testing.T) {

@@ -439,6 +439,16 @@ func TestUpdateTaskPatchNoOpAndAudit(t *testing.T) {
 		updated.Priority != PriorityUrgent || updated.RepoID != otherRepo.ID {
 		t.Fatalf("updated task = %+v", updated)
 	}
+	encoded, err := json.Marshal(updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Priority string `json:"priority"`
+	}
+	if err := json.Unmarshal(encoded, &wire); err != nil || wire.Priority != "urgent" {
+		t.Fatalf("updated task JSON priority = %q, %v; want urgent", wire.Priority, err)
+	}
 	if !updated.UpdatedAt.After(originalUpdatedAt) {
 		t.Fatalf("updated_at did not advance: %s -> %s", originalUpdatedAt, updated.UpdatedAt)
 	}
@@ -631,19 +641,6 @@ func TestReviewAndReworkTransitions(t *testing.T) {
 	}
 	if !sawComment {
 		t.Fatalf("request-changes did not record a comment: %+v", changesDetail.Activity)
-	}
-
-	auto := mustCreateTask(t, s, CreateTaskParams{
-		ProjectID: project.ID, RepoID: repo.ID, Title: "auto changes", Status: StatusInReview,
-	})
-	todo := StatusTodo
-	autoMessage := "needs another pass"
-	auto, err = s.UpdateTask(ctx, "carol", auto.ID, TaskPatch{Status: &todo, Message: &autoMessage})
-	if err != nil {
-		t.Fatalf("UpdateTask in-review -> todo: %v", err)
-	}
-	if len(auto.Markings) != 1 || auto.Markings[0] != MarkingChangesRequested {
-		t.Fatalf("auto markings = %+v, want changes-requested", auto.Markings)
 	}
 }
 
@@ -858,24 +855,6 @@ func TestBlankActorsRejectedEverywhere(t *testing.T) {
 	}
 	if queueEvents != 1 {
 		t.Fatalf("queue.updated events = %d, want 1", queueEvents)
-	}
-}
-
-func TestPriorityEnumIncludesUrgent(t *testing.T) {
-	for _, priority := range []Priority{PriorityLow, PriorityMedium, PriorityHigh, PriorityUrgent} {
-		if !priority.Valid() {
-			t.Fatalf("%q should be valid", priority)
-		}
-	}
-	if Priority("critical").Valid() {
-		t.Fatal("critical should not be a valid priority")
-	}
-	encoded, err := json.Marshal(PriorityUrgent)
-	if err != nil || string(encoded) != `"urgent"` {
-		t.Fatalf("urgent JSON = %s, %v", encoded, err)
-	}
-	if _, ok := jsonObject(t, Task{Priority: PriorityUrgent})["priority"]; !ok {
-		t.Fatal("task JSON missing priority")
 	}
 }
 

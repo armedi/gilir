@@ -126,40 +126,15 @@ func (c listenConfig) address() string {
 	return net.JoinHostPort(c.host, c.port)
 }
 
-// urlFor returns a URL a local client can dial. Wildcard binds are probed
-// through loopback because "0.0.0.0" and "::" are not routable destinations
-// on every platform.
-func (c listenConfig) urlFor(port string) string {
-	return "http://" + net.JoinHostPort(c.clientHost(), port)
-}
-
-func (c listenConfig) clientHost() string {
-	ip := net.ParseIP(c.host)
-	if ip == nil {
-		// The only non-literal host accepted by resolveListen is localhost.
-		return "127.0.0.1"
-	}
-	if !ip.IsUnspecified() {
-		return ip.String()
-	}
-	if ip.To4() != nil {
-		return "127.0.0.1"
-	}
-	return "::1"
-}
-
-// boundURLFor returns the client URL for an actual listener. Unlike urlFor it
-// resolves localhost from the bound socket, so a host whose localhost maps
-// only to ::1 is not advertised as 127.0.0.1. Wildcard listeners still map to
-// loopback because the wildcard literal is not a dialable destination.
-func boundURLFor(c listenConfig, addr net.Addr) string {
-	tcp, ok := addr.(*net.TCPAddr)
-	if !ok {
-		return c.urlFor(strconv.Itoa(requestedPort(c.port)))
-	}
+// boundURLFor uses the actual TCP listener's address, mapping wildcard binds
+// to a dialable loopback address in the requested address family.
+func boundURLFor(c listenConfig, tcp *net.TCPAddr) string {
 	host := tcp.IP.String()
 	if tcp.IP.IsUnspecified() {
-		host = c.clientHost()
+		host = "::1"
+		if c.host == "0.0.0.0" {
+			host = "127.0.0.1"
+		}
 	}
 	return "http://" + net.JoinHostPort(host, strconv.Itoa(tcp.Port))
 }

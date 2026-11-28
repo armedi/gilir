@@ -135,7 +135,8 @@ func runDaemon(parent context.Context, host, port string) (any, error) {
 		return nil, fmt.Errorf("listen on %s: %w", listen.address(), err)
 	}
 	// Hooks are local clients and need a dialable URL even on a wildcard bind.
-	boundURL := boundURLFor(listen, ln.Addr())
+	boundAddr := ln.Addr().(*net.TCPAddr)
+	boundURL := boundURLFor(listen, boundAddr)
 
 	// The stop channel is served on a private loopback listener so a public
 	// bind never exposes process shutdown.
@@ -165,7 +166,7 @@ func runDaemon(parent context.Context, host, port string) (any, error) {
 		RequestedHost: listen.host,
 		RequestedPort: requestedPort(listen.port),
 		Host:          listen.host,
-		Port:          ln.Addr().(*net.TCPAddr).Port,
+		Port:          boundAddr.Port,
 		URL:           boundURL,
 		ControlPort:   controlLn.Addr().(*net.TCPAddr).Port,
 		Token:         token,
