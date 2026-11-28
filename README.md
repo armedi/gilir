@@ -56,6 +56,18 @@ Both paths install the same binary. Do not keep both on `PATH`: the first
 `gilir` found wins, and the other copy goes stale. Uninstall the npm one with
 `npm uninstall -g @armedi/gilir` when switching to the script.
 
+### Agent skill
+
+Install the Gilir skill so coding agents pick up the manual whenever a request
+mentions gilir or a `GILIR-<n>` task:
+
+```sh
+npx skills add armedi/gilir
+```
+
+The skill points agents at `gilir skill`, which prints the manual embedded in
+the installed binary, so it stays in step with the version you run.
+
 ## Build
 
 Requirements: Go 1.24+, Node.js `^22.18.0 || ^24.11.0 || >=26.0.0`, and pnpm
