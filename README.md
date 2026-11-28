@@ -108,10 +108,11 @@ tag="v$(node -p 'require("./package.json").version')" && gh release create "$tag
 npm publish
 ```
 
-`npm run build:release` embeds the dashboard in the six binaries, records their
-SHA-256 checksums in `npm/release.json` for the npm launcher, and writes the same
-checksums as `npm/dist/v<version>/SHA256SUMS` for `install.sh`. Upload all of
-them from the same build so every checksum matches the uploaded binaries; the
+`npm run build:release` embeds the dashboard in the six binaries, stamps each
+with `package.json`'s version so `gilir --version` reports it, records their
+SHA-256 checksums in `npm/release.json` for the npm launcher, and writes the
+same checksums as `npm/dist/v<version>/SHA256SUMS` for `install.sh`. Upload all
+of them from the same build so every checksum matches the uploaded binaries; the
 `--check` step and `install.sh` both refuse a build or release without a matching
 `SHA256SUMS`. Use `npm pack` to inspect the launcher package locally without
 publishing. The package ships the npm launcher, its downloader, and
@@ -236,8 +237,9 @@ the service must be running. If it cannot be reached, the command exits with an
 error naming the target and never opens a local database or retries the
 request. `gilir serve` runs the service itself. `service start|stop|restart|status`
 and the host-local queue controls (`service pause|resume|concurrency`) read the
-local service record and never use `GILIR_URL`; `--help` and `gilir skill` use
-no service. Add `--json` to get machine-readable output on stdout.
+local service record and never use `GILIR_URL`; `--help`, `gilir skill`, and
+`gilir version` use no service. Add `--json` to get machine-readable output on
+stdout.
 
 ```sh
 gilir project create Payments                    # -> id 1
@@ -266,6 +268,7 @@ gilir service concurrency 2
 gilir delete GILIR-1                             # keep the audit history
 gilir --help
 gilir skill                                      # embedded agent manual
+gilir --version                                  # or: gilir -v, gilir version
 ```
 
 Task IDs carry a `GILIR-` prefix, for example `GILIR-1`. The prefix is stored

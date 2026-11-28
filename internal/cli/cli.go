@@ -14,6 +14,13 @@ func Run(ctx context.Context, argv []string, stdout, stderr io.Writer, defaultAc
 		return 2
 	}
 
+	// --version is a global flag, but it names the local `version` command. A
+	// leading token keeps the later checks (help, extra arguments, flags the
+	// command does not accept) on the same path as `gilir version`.
+	if inv.version {
+		inv.positionals = append([]string{"version"}, inv.positionals...)
+	}
+
 	if inv.help {
 		text := helpFor(inv.positionals)
 		if inv.json {
@@ -37,9 +44,16 @@ func Run(ctx context.Context, argv []string, stdout, stderr io.Writer, defaultAc
 		return 2
 	}
 
-	if spec.kind == skillCommand {
+	switch spec.kind {
+	case skillCommand:
 		if err := writeSkill(stdout, inv.json); err != nil {
 			writeFailure(stderr, inv.json, "write skill: "+err.Error())
+			return 1
+		}
+		return 0
+	case versionCommand:
+		if err := writeVersion(stdout, inv.json); err != nil {
+			writeFailure(stderr, inv.json, "write version: "+err.Error())
 			return 1
 		}
 		return 0

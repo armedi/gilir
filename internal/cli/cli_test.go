@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -152,6 +153,20 @@ func TestRunFlagPlacementAndActorPrecedence(t *testing.T) {
 			wantActor:   "user",
 			wantCommand: "task.comment",
 			wantArgs:    map[string]any{"id": "GILIR-7", "message": "--json"},
+		},
+		{
+			name:        "short version reaches a command as a value",
+			argv:        []string{"comment", "GILIR-7", "-v"},
+			wantActor:   "user",
+			wantCommand: "task.comment",
+			wantArgs:    map[string]any{"id": "GILIR-7", "message": "-v"},
+		},
+		{
+			name:        "short version can be a task title",
+			argv:        []string{"create", "-v", "--repo", "1"},
+			wantActor:   "user",
+			wantCommand: "task.create",
+			wantArgs:    map[string]any{"title": "-v", "repo_id": int64(1)},
 		},
 		{
 			name:        "edit comment",
@@ -541,6 +556,14 @@ func TestRunRejectsRequiredAndInvalidArguments(t *testing.T) {
 		{name: "block bare task id", argv: []string{"block", "1", "--message", "x"}, want: "GILIR-"},
 		{name: "edit comment invalid comment id", argv: []string{"edit-comment", "GILIR-1", "nope", "body"}, want: "invalid comment id"},
 		{name: "remove comment missing comment id", argv: []string{"remove-comment", "GILIR-1"}, want: "missing <comment-id>"},
+		{name: "version with extra argument", argv: []string{"version", "extra"}, want: `version: unexpected argument "extra"`},
+		{name: "short version with extra argument", argv: []string{"-v", "extra"}, want: `version: unexpected argument "extra"`},
+		{name: "version flag with a command", argv: []string{"--version", "list"}, want: `version: unexpected argument "list"`},
+		{name: "version flag on a server command", argv: []string{"serve", "--version"}, want: `version: unexpected argument "serve"`},
+		{name: "version rejects an ordinary flag", argv: []string{"version", "--repo", "1"}, want: "version: flag --repo is not valid"},
+		{name: "duplicate version flags", argv: []string{"--version", "--version"}, want: "duplicate flag --version"},
+		{name: "version flag takes no value", argv: []string{"--version=1"}, want: "flag --version does not take a value"},
+		{name: "terminator protects the version flag", argv: []string{"--", "--version"}, want: `unknown command "--version"`},
 	}
 
 	for _, test := range tests {
@@ -656,6 +679,99 @@ func TestRunSkillObservableContract(t *testing.T) {
 	}
 }
 
+func TestRunVersionObservableContract(t *testing.T) {
+	tests := []struct {
+		name string
+		argv []string
+	}{
+		{name: "version command", argv: []string{"version"}},
+		{name: "short alias", argv: []string{"-v"}},
+		{name: "long flag", argv: []string{"--version"}},
+		{name: "json before short alias", argv: []string{"--json", "-v"}},
+		{name: "json after long flag", argv: []string{"--version", "--json"}},
+		{name: "json as a command flag", argv: []string{"version", "--json"}},
+	}
+	want := "gilir " + currentVersion() + "\n"
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			executor := &recordingExecutor{}
+			code, stdout, stderr := runCLI(test.argv, "", executor)
+
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0 (stderr %q)", code, stderr)
+			}
+			if stderr != "" {
+				t.Fatalf("stderr = %q, want empty", stderr)
+			}
+			if json.Valid([]byte(strings.TrimSpace(stdout))) {
+				var payload struct {
+					Version string `json:"version"`
+				}
+				if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+					t.Fatalf("stdout is not a version payload: %v (%q)", err, stdout)
+				}
+				if payload.Version != currentVersion() {
+					t.Fatalf("json version = %q, want %q", payload.Version, currentVersion())
+				}
+			} else if stdout != want {
+				t.Fatalf("stdout = %q, want %q", stdout, want)
+			}
+			if len(executor.calls) != 0 {
+				t.Fatalf("execute calls = %d, want 0", len(executor.calls))
+			}
+		})
+	}
+}
+
+func TestResolveVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		stamped string
+		info    *debug.BuildInfo
+		ok      bool
+		want    string
+	}{
+		{
+			name:    "stamped version wins over build info",
+			stamped: "0.3.2",
+			info:    &debug.BuildInfo{Main: debug.Module{Version: "v9.9.9"}},
+			ok:      true,
+			want:    "0.3.2",
+		},
+		{
+			name:    "stamped version drops a leading v",
+			stamped: "v0.3.2",
+			ok:      false,
+			want:    "0.3.2",
+		},
+		{
+			name: "go install module version",
+			info: &debug.BuildInfo{Main: debug.Module{Version: "v0.3.2"}},
+			ok:   true,
+			want: "0.3.2",
+		},
+		{
+			name: "pseudo-version keeps the commit and dirty suffix",
+			info: &debug.BuildInfo{Main: debug.Module{Version: "v0.3.3-0.20261128120000-803e23255e1a+dirty"}},
+			ok:   true,
+			want: "0.3.3-0.20261128120000-803e23255e1a+dirty",
+		},
+		{name: "devel build info is not a version", info: &debug.BuildInfo{Main: debug.Module{Version: "(devel)"}}, ok: true, want: devVersion},
+		{name: "empty build info version", info: &debug.BuildInfo{}, ok: true, want: devVersion},
+		{name: "unavailable build info", ok: false, want: devVersion},
+		{name: "nil build info", info: nil, ok: true, want: devVersion},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := resolveVersion(test.stamped, test.info, test.ok); got != test.want {
+				t.Fatalf("resolveVersion = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestRunHelpReflectsRepoFirstCommands(t *testing.T) {
 	tests := []struct {
 		name string
@@ -677,6 +793,10 @@ func TestRunHelpReflectsRepoFirstCommands(t *testing.T) {
 				"serve [--host <host>] [--port <port>] [--db <path>]",
 				"service start [--host <host>] [--port <port>] [--db <path>]",
 				"service status",
+				"Local commands:",
+				"skill",
+				"version",
+				"--version, -v    Print the version",
 			},
 		},
 		{
@@ -735,6 +855,30 @@ func TestRunHelpReflectsRepoFirstCommands(t *testing.T) {
 				"gilir create <title> --repo <id> [--project <id>]",
 				"--repo <id>                 Repository ID (required)",
 				"--project <id>              Project ID",
+			},
+		},
+		{
+			name: "version command help",
+			argv: []string{"version", "--help"},
+			want: []string{
+				"gilir version",
+				"`gilir -v` and `gilir --version` are aliases",
+			},
+		},
+		{
+			name: "version flag help",
+			argv: []string{"--version", "--help"},
+			want: []string{
+				"gilir version",
+				"are aliases",
+			},
+		},
+		{
+			name: "short version help",
+			argv: []string{"-v", "--help"},
+			want: []string{
+				"gilir version",
+				"are aliases",
 			},
 		},
 	}

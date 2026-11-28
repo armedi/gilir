@@ -16,6 +16,7 @@ type commandKind int
 const (
 	executeCommand commandKind = iota
 	skillCommand
+	versionCommand
 )
 
 type command struct {
@@ -489,6 +490,12 @@ var commandSpecs = []command{
 		usage:   "gilir skill",
 		summary: "Print the agent manual: workflows and invariants --help omits.",
 	},
+	{
+		path:    "version",
+		kind:    versionCommand,
+		usage:   "gilir version",
+		summary: "Print the gilir version. `gilir -v` and `gilir --version` are aliases.",
+	},
 }
 
 var commandByPath = func() map[string]*command {
@@ -503,6 +510,22 @@ var commandGroupNames = map[string]bool{
 	"project": true,
 	"repo":    true,
 	"service": true,
+}
+
+// commandAliases maps a short spelling to the command it stands for. An alias
+// only takes effect in the command position (the first positional), so a value
+// such as `gilir comment GILIR-1 -v` still reaches the command as written.
+var commandAliases = map[string]string{
+	"-v": "version",
+}
+
+// canonicalCommandName resolves a leading alias. Any other token, including an
+// "-" argument after --, is returned unchanged.
+func canonicalCommandName(token string) string {
+	if command, ok := commandAliases[token]; ok {
+		return command
+	}
+	return token
 }
 
 var knownCommandFlags = func() map[string]bool {
@@ -737,7 +760,7 @@ func resolveCommand(positionals []string) (*command, []string, error) {
 	if len(positionals) == 0 {
 		return nil, nil, fmt.Errorf("missing command")
 	}
-	first := positionals[0]
+	first := canonicalCommandName(positionals[0])
 	if commandGroupNames[first] {
 		if len(positionals) < 2 {
 			return nil, nil, fmt.Errorf("missing %s command", first)

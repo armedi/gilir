@@ -3,8 +3,8 @@
 // The service is the only process that opens SQLite. "gilir serve" runs it in
 // the foreground; "gilir service start" launches the same work as a detached
 // managed process. Every ordinary command and host-local queue control sends
-// one POST to that service's HTTP command API, so help, skill and command
-// failures never create or open SQLite.
+// one POST to that service's HTTP command API, so help, skill, version and
+// command failures never create or open SQLite.
 package main
 
 import (
@@ -37,8 +37,8 @@ func main() {
 
 // execute routes one parsed CLI command. `serve` runs in-process; service
 // lifecycle and queue-control commands use local state; every ordinary command
-// is sent to the service at GILIR_URL, so help, skill and command failures
-// never create or open SQLite.
+// is sent to the service at GILIR_URL, so help, skill, version and command
+// failures never create or open SQLite.
 func execute(ctx context.Context, command, actor string, args map[string]any) (any, error) {
 	switch command {
 	case "serve":

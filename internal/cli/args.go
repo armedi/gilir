@@ -9,6 +9,7 @@ type arguments struct {
 	positionals []string
 	json        bool
 	help        bool
+	version     bool
 	actor       string
 	actorSet    bool
 	flags       map[string]string
@@ -57,6 +58,19 @@ func parseArguments(argv []string) (*arguments, error) {
 			}
 			if seen[name] {
 				fail(fmt.Errorf("duplicate flag --help"))
+				continue
+			}
+			seen[name] = true
+		case "--version":
+			// --version is a flag wherever it appears before --. It only marks
+			// the request; Run turns it into a leading `version` command token.
+			inv.version = true
+			if hasValue {
+				fail(fmt.Errorf("flag --version does not take a value"))
+				continue
+			}
+			if seen[name] {
+				fail(fmt.Errorf("duplicate flag --version"))
 				continue
 			}
 			seen[name] = true

@@ -973,6 +973,36 @@ func TestServeStopsBeforeBindingOnACancelledContext(t *testing.T) {
 	}
 }
 
+func TestVersionFlagNeedsNoServiceOrDatabase(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "gilir.sqlite")
+
+	for _, argv := range [][]string{{"--version"}, {"-v"}, {"version", "--json"}} {
+		proc := startServeSubprocess(t, []string{
+			"XDG_DATA_HOME=" + filepath.Join(dir, "data"),
+			"LOCALAPPDATA=" + filepath.Join(dir, "data"),
+			// An unreachable service must not matter for a local command.
+			"GILIR_URL=http://127.0.0.1:1",
+			"GILIR_DB=" + dbPath,
+		}, argv...)
+		if err := proc.wait(t, 10*time.Second); err != nil {
+			t.Fatalf("%v exit = %v, want 0 (stderr %q)", argv, err, proc.stderr.String())
+		}
+		if got := proc.stdout.String(); !strings.HasPrefix(got, "gilir ") && !strings.Contains(got, `"version"`) {
+			t.Fatalf("%v stdout = %q, want a version", argv, got)
+		}
+		if got := proc.stderr.String(); got != "" {
+			t.Fatalf("%v stderr = %q, want empty", argv, got)
+		}
+	}
+
+	for _, path := range []string{dbPath, dbPath + ".lock"} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("gilir --version created %s: %v", path, err)
+		}
+	}
+}
+
 func TestServeCommandRejectsJSON(t *testing.T) {
 	dir := t.TempDir()
 	proc := startServeSubprocess(t, []string{

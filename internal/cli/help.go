@@ -44,7 +44,7 @@ func helpFor(positionals []string) string {
 	if len(positionals) == 0 {
 		return generalHelp()
 	}
-	first := positionals[0]
+	first := canonicalCommandName(positionals[0])
 	if commandGroupNames[first] {
 		if len(positionals) > 1 {
 			if spec, ok := commandByPath[first+" "+positionals[1]]; ok {
@@ -79,11 +79,11 @@ func generalHelp() string {
 	})
 	builder.WriteString("\nTask commands:\n")
 	writeCommandUsages(&builder, func(spec command) bool {
-		return !strings.HasPrefix(spec.path, "project ") &&
+		return spec.kind == executeCommand &&
+			!strings.HasPrefix(spec.path, "project ") &&
 			!strings.HasPrefix(spec.path, "repo ") &&
 			!strings.HasPrefix(spec.path, "service ") &&
-			spec.path != "serve" &&
-			spec.path != "skill"
+			spec.path != "serve"
 	})
 	builder.WriteString("\nServer commands:\n")
 	writeCommandUsages(&builder, func(spec command) bool {
@@ -95,13 +95,14 @@ func generalHelp() string {
 	})
 	builder.WriteString("\nLocal commands:\n")
 	writeCommandUsages(&builder, func(spec command) bool {
-		return spec.path == "skill"
+		return spec.kind != executeCommand
 	})
 
 	builder.WriteString("\nGlobal options (accepted anywhere before --):\n")
 	builder.WriteString("  --actor <actor>  Audit identity (default: GILIR_ACTOR or \"user\")\n")
 	builder.WriteString("  --json           Machine-readable JSON output\n")
 	builder.WriteString("  --help           Show help\n")
+	builder.WriteString("  --version, -v    Print the version\n")
 	builder.WriteString("\nProject, repository, and comment IDs are positive integers. Task IDs\n")
 	builder.WriteString("carry the GILIR- prefix, for example GILIR-42. Use -- to pass values that\n")
 	builder.WriteString("begin with --.\n")

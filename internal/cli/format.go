@@ -22,6 +22,10 @@ type skillOutput struct {
 	Skill string `json:"skill"`
 }
 
+type versionOutput struct {
+	Version string `json:"version"`
+}
+
 func writeFailure(w io.Writer, jsonMode bool, message string) {
 	if jsonMode {
 		if err := writeJSON(w, errorOutput{Error: message}); err == nil {

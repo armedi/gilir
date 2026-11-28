@@ -54,7 +54,8 @@ if (process.argv.includes('--check')) {
   for (const { platform, file, goOS, goArch } of targets) {
     const destination = join(assetsDir, file);
     execFileSync('go', [
-      'build', '-tags=embedweb', '-trimpath', '-ldflags=-s -w',
+      'build', '-tags=embedweb', '-trimpath',
+      `-ldflags=-s -w -X github.com/armedi/gilir/internal/cli.version=${manifest.version}`,
       '-o', destination, './cmd/gilir',
     ], {
       cwd: root,
@@ -62,6 +63,14 @@ if (process.argv.includes('--check')) {
       env: { ...process.env, CGO_ENABLED: '0', GOOS: goOS, GOARCH: goArch },
     });
     assets[platform] = { file, sha256: checksum(destination) };
+    // Guard the -X path: a stale package path in ldflags would leave the
+    // stamp silently empty and every release would report "dev".
+    if (platform === `${process.platform}-${process.arch}`) {
+      const reported = execFileSync(destination, ['--version'], { encoding: 'utf8' }).trim();
+      if (reported !== `gilir ${manifest.version}`) {
+        throw new Error(`built ${file} reports ${JSON.stringify(reported)}, want "gilir ${manifest.version}"`);
+      }
+    }
   }
   writeFileSync(join(assetsDir, 'SHA256SUMS'), checksumManifest(assets));
   writeFileSync(metadataPath, `${JSON.stringify({ version: manifest.version, assets }, null, 2)}\n`);
