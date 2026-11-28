@@ -151,14 +151,6 @@ function RepoRow(props) {
             </For>
           </ul>
 
-          <Show when={soleProject()}>
-            <span class="manage-hint">
-              {availableProjects().length > 0
-                ? 'Only project link. Link another before unlinking.'
-                : 'Must stay linked to at least one project.'}
-            </span>
-          </Show>
-
           <Show
             when={availableProjects().length > 0}
             fallback={
@@ -191,6 +183,14 @@ function RepoRow(props) {
                 {busy()?.startsWith('link:') ? 'Linking…' : 'Link'}
               </button>
             </form>
+          </Show>
+
+          <Show when={soleProject()}>
+            <span class="manage-hint repo-unlink-hint">
+              {availableProjects().length > 0
+                ? 'Link another project before unlinking this one.'
+                : 'Must stay linked to at least one project.'}
+            </span>
           </Show>
         </div>
 
