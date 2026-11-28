@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -135,9 +134,7 @@ func runDaemon(parent context.Context, host, port string) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", listen.address(), err)
 	}
-	boundPort := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
-	// Hooks are local clients of this service. Use the routable form so a
-	// wildcard bind still produces a URL that the Host guard accepts.
+	// Hooks are local clients and need a dialable URL even on a wildcard bind.
 	boundURL := boundURLFor(listen, ln.Addr())
 
 	// The stop channel is served on a private loopback listener so a public
@@ -199,8 +196,7 @@ func runDaemon(parent context.Context, host, port string) (any, error) {
 		}
 	})
 	server := &http.Server{
-		Handler: localhttp.Handler(localhttp.Config{Host: listen.host, Port: boundPort},
-			web, service.Execute, commands.Classify),
+		Handler:           localhttp.Handler(web, service.Execute, commands.Classify),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,

@@ -14,9 +14,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/armedi/gilir/internal/taskid"
@@ -29,7 +27,6 @@ const (
 	defaultActor           = "user"
 
 	codeInternal             = "internal_error"
-	codeInvalidHost          = "invalid_host"
 	codeInvalidOrigin        = "invalid_origin"
 	codeMethodNotAllowed     = "method_not_allowed"
 	codeUnsupportedMediaType = "unsupported_media_type"
@@ -47,20 +44,7 @@ const (
 		"frame-ancestors 'none'; form-action 'self'"
 )
 
-// Config controls request authority validation. Host
-// is the address the daemon actually bound (127.0.0.1, ::1, localhost, a
-// concrete interface address, or a wildcard such as 0.0.0.0 or ::). Port is
-// the actual port, which matters when the daemon was started with port 0.
-type Config struct {
-	Host string
-	Port string
-}
-
-var dnsHostname = regexp.MustCompile(`^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
-
 type handler struct {
-	bindIP   net.IP
-	port     string
 	web      fs.FS
 	execute  func(context.Context, string, string, json.RawMessage) (any, error)
 	classify func(error) (int, string)
@@ -79,17 +63,9 @@ type errorDetail struct {
 	Message string `json:"message"`
 }
 
-// Handler returns the HTTP handler for the local UI. The configured port is
-// normalized to its canonical decimal form; a leading colon is allowed.
-// Loopback Hosts (127.0.0.1, [::1], localhost) are always accepted at that
-// port. A wildcard bind also accepts Hosts that are concrete IP literals, so
-// a machine can be reached by its LAN or public address; a specific
-// non-loopback bind accepts only that IP literal. DNS names other than
-// localhost are accepted only on non-loopback binds. An unspecified address
-// (0.0.0.0 or ::) is never a valid request
-// Host. When the canonical port is 80, the port may be omitted from Host.
-// When an Origin header is present it must be exactly http:// followed by the
-// request Host; no CORS headers are emitted.
+// Handler returns the HTTP handler for the local UI. If a browser sends an
+// Origin header, it must match the request host and scheme. HTTPS can be
+// indicated by a loopback reverse proxy. No CORS headers are emitted.
 //
 // execute is called for valid POST /api/v1/command requests with the command,
 // the actor (default "user"), and the JSON args object (default {}). classify
@@ -98,14 +74,8 @@ type errorDetail struct {
 // regular files are served read-only for GET and HEAD with directory listings
 // disabled. web must confine path resolution to a trusted root; main uses
 // os.OpenRoot. Plain os.DirFS can follow symlinks outside the served root.
-func Handler(config Config, web fs.FS, execute func(context.Context, string, string, json.RawMessage) (any, error), classify func(error) (int, string)) http.Handler {
-	return &handler{
-		bindIP:   net.ParseIP(config.Host),
-		port:     canonicalPort(config.Port),
-		web:      web,
-		execute:  execute,
-		classify: classify,
-	}
+func Handler(web fs.FS, execute func(context.Context, string, string, json.RawMessage) (any, error), classify func(error) (int, string)) http.Handler {
+	return &handler{web: web, execute: execute, classify: classify}
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -120,10 +90,6 @@ func (h *handler) serveAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 
-	if !h.validHost(r.Host) {
-		writeAPIError(w, r, http.StatusForbidden, codeInvalidHost, "invalid host")
-		return
-	}
 	if !validOrigin(r) {
 		writeAPIError(w, r, http.StatusForbidden, codeInvalidOrigin, "invalid origin")
 		return
@@ -218,10 +184,6 @@ func (h *handler) serveAPI(w http.ResponseWriter, r *http.Request) {
 func (h *handler) serveStatic(w http.ResponseWriter, r *http.Request) {
 	setStaticHeaders(w.Header())
 
-	if !h.validHost(r.Host) {
-		writePlainError(w, r, http.StatusForbidden, "forbidden")
-		return
-	}
 	if !validOrigin(r) {
 		writePlainError(w, r, http.StatusForbidden, "forbidden")
 		return
@@ -273,72 +235,6 @@ func (h *handler) serveStatic(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, name, openedInfo.ModTime(), bytes.NewReader(data))
 }
 
-func (h *handler) validHost(authority string) bool {
-	if h.port == "" {
-		return false
-	}
-	host, port, err := net.SplitHostPort(authority)
-	if err != nil {
-		if h.port != "80" {
-			return false
-		}
-		host, err = bareAuthorityHost(authority)
-		if err != nil {
-			return false
-		}
-		return h.acceptsHost(host)
-	}
-	return port == h.port && h.acceptsHost(host)
-}
-
-// acceptsHost reports whether a request Host may name this listener. Loopback
-// names are always accepted so the same daemon answers on the local machine.
-// A wildcard bind accepts concrete address literals (any local interface);
-// a specific bind accepts exactly its own address. Non-loopback binds also
-// accept DNS names for remote access.
-func (h *handler) acceptsHost(host string) bool {
-	if isLoopbackHost(host) {
-		return true
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		name := strings.TrimSuffix(host, ".")
-		return h.bindIP != nil && !h.bindIP.IsLoopback() && len(name) <= 253 && dnsHostname.MatchString(name)
-	}
-	if ip.IsUnspecified() {
-		return false
-	}
-	return h.bindIP.IsUnspecified() || h.bindIP.Equal(ip)
-}
-
-func isLoopbackHost(host string) bool {
-	if host == "127.0.0.1" || host == "::1" {
-		return true
-	}
-	return strings.EqualFold(host, "localhost")
-}
-
-// bareAuthorityHost extracts a host from an authority without a port, which is
-// valid only at port 80. Bracketed IPv6 is unwrapped; anything with extra
-// colons, brackets, or userinfo is malformed.
-func bareAuthorityHost(authority string) (string, error) {
-	if strings.HasPrefix(authority, "[") && strings.HasSuffix(authority, "]") {
-		inner := authority[1 : len(authority)-1]
-		ip := net.ParseIP(inner)
-		if ip == nil || !strings.Contains(inner, ":") {
-			return "", errors.New("invalid IPv6 authority")
-		}
-		return inner, nil
-	}
-	if strings.ContainsAny(authority, "[]:@") {
-		return "", errors.New("invalid authority")
-	}
-	if authority == "" {
-		return "", errors.New("empty authority")
-	}
-	return authority, nil
-}
-
 func (h *handler) classifyError(err error) (status int, code string, expose bool) {
 	status = http.StatusInternalServerError
 	rawCode := ""
@@ -366,29 +262,19 @@ func (h *handler) classifyError(err error) (status int, code string, expose bool
 	return status, code, true
 }
 
-func canonicalPort(port string) string {
-	port = strings.TrimPrefix(port, ":")
-	if port == "" {
-		return ""
-	}
-	for i := 0; i < len(port); i++ {
-		if port[i] < '0' || port[i] > '9' {
-			return ""
-		}
-	}
-	n, err := strconv.Atoi(port)
-	if err != nil || n < 1 || n > 65535 {
-		return ""
-	}
-	return strconv.Itoa(n)
-}
-
 func validOrigin(r *http.Request) bool {
 	values := r.Header.Values("Origin")
 	if len(values) == 0 {
 		return true
 	}
-	return len(values) == 1 && values[0] == "http://"+r.Host
+	scheme := "http"
+	if forwarded := r.Header.Values("X-Forwarded-Proto"); len(forwarded) == 1 && forwarded[0] == "https" {
+		peer, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err == nil && net.ParseIP(peer).IsLoopback() {
+			scheme = "https"
+		}
+	}
+	return len(values) == 1 && values[0] == scheme+"://"+r.Host
 }
 
 func isJSONContentType(r *http.Request) bool {

@@ -434,9 +434,7 @@ func TestCustomPortDaemonHooksReceiveItsOwnURL(t *testing.T) {
 				time.Sleep(50 * time.Millisecond)
 			}
 
-			// The hook env must let gilir reach this service. Executing the
-			// same command through the client proves the advertised URL passes
-			// the Host guard for this bind.
+			// The hook env must let gilir reach this service.
 			t.Setenv("GILIR_URL", target)
 			if _, err := execute(ctx, "project.create", "hook:capture", map[string]any{"name": "Routed"}); err != nil {
 				t.Fatalf("ordinary command via hook URL: %v", err)
@@ -563,7 +561,7 @@ func TestServiceStartWildcardRoutesCommandsViaGILIRURL(t *testing.T) {
 	}
 }
 
-func TestRemoteServiceAllowsDNSHostnames(t *testing.T) {
+func TestLoopbackServiceWorksBehindHTTPSProxy(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("GILIR_DB", filepath.Join(dir, "gilir.sqlite"))
 	t.Setenv("GILIR_OPENCODE_URL", "http://127.0.0.1:"+freePort(t))
@@ -573,36 +571,28 @@ func TestRemoteServiceAllowsDNSHostnames(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = stopService(context.Background()) })
 
-	started, err := startService(context.Background(), "0.0.0.0", "0")
+	started, err := startService(context.Background(), "", "0")
 	if err != nil {
 		t.Fatalf("start service: %v", err)
 	}
 	status := started.(serviceStatus)
-	port := fmt.Sprint(status.Port)
+	const host = "gilir.example.ts.net:44547"
 	client := &http.Client{Timeout: time.Second}
 	for _, test := range []struct {
-		name, host, origin, command string
-		want                        int
+		name, method, path, origin, body string
 	}{
-		{name: "short name", host: "agentic:" + port, want: http.StatusOK},
-		{name: "MagicDNS", host: "agentic.example.ts.net:" + port, want: http.StatusOK},
-		{name: "arbitrary domain", host: "gilir.example.org:" + port, want: http.StatusOK},
-		{name: "invalid hostname", host: "-invalid.example.org:" + port, want: http.StatusForbidden},
-		{name: "wrong port", host: "agentic:0", want: http.StatusForbidden},
-		{name: "same-origin API", host: "agentic.example.ts.net:" + port, origin: "http://agentic.example.ts.net:" + port, command: `{"command":"daemon.status"}`, want: http.StatusOK},
-		{name: "cross-origin API", host: "agentic:" + port, origin: "http://other.example.ts.net:" + port, command: `{"command":"daemon.status"}`, want: http.StatusForbidden},
+		{name: "dashboard", method: http.MethodGet, path: "/"},
+		{name: "same-origin API", method: http.MethodPost, path: "/api/v1/command",
+			origin: "https://" + host, body: `{"command":"daemon.status"}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			method, path := http.MethodGet, "/"
-			if test.command != "" {
-				method, path = http.MethodPost, "/api/v1/command"
-			}
-			req, err := http.NewRequest(method, status.URL+path, strings.NewReader(test.command))
+			req, err := http.NewRequest(test.method, status.URL+test.path, strings.NewReader(test.body))
 			if err != nil {
 				t.Fatal(err)
 			}
-			req.Host = test.host
-			if test.command != "" {
+			req.Host = host
+			req.Header.Set("X-Forwarded-Proto", "https")
+			if test.origin != "" {
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Set("Origin", test.origin)
 			}
@@ -611,8 +601,8 @@ func TestRemoteServiceAllowsDNSHostnames(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer resp.Body.Close()
-			if resp.StatusCode != test.want {
-				t.Fatalf("HTTP %d, want %d", resp.StatusCode, test.want)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("HTTP %d, want %d", resp.StatusCode, http.StatusOK)
 			}
 		})
 	}

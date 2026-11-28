@@ -45,8 +45,8 @@ type listenConfig struct {
 }
 
 // resolveListen applies the --host/--port flags on top of the defaults,
-// 127.0.0.1:44547. The host must be an IP literal or localhost so the request
-// guard can reason about it; a bracketed IPv6 literal is accepted.
+// 127.0.0.1:44547. The host must be an IP literal or localhost; a bracketed IPv6
+// literal is accepted.
 func resolveListen(host, port string) (listenConfig, error) {
 	if host == "" {
 		host = defaultHost()

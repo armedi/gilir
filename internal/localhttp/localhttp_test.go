@@ -19,7 +19,6 @@ import (
 )
 
 const (
-	testPort   = "8080"
 	testHost   = "localhost:8080"
 	testAPI    = "/api/v1/command"
 	testOrigin = "http://localhost:8080"
@@ -32,11 +31,7 @@ func serveRequest(handler http.Handler, request *http.Request) *httptest.Respons
 }
 
 func testHandler(web fs.FS, execute func(context.Context, string, string, json.RawMessage) (any, error), classify func(error) (int, string)) http.Handler {
-	return Handler(Config{Host: "127.0.0.1", Port: testPort}, web, execute, classify)
-}
-
-func testHandlerPort(port string, web fs.FS, execute func(context.Context, string, string, json.RawMessage) (any, error), classify func(error) (int, string)) http.Handler {
-	return Handler(Config{Host: "127.0.0.1", Port: port}, web, execute, classify)
+	return Handler(web, execute, classify)
 }
 
 func commandRequest(body string) *http.Request {
@@ -177,7 +172,6 @@ func assertStaticHeaders(t *testing.T, recorder *httptest.ResponseRecorder) {
 func TestCommandAPISuccess(t *testing.T) {
 	tests := []struct {
 		name        string
-		port        string
 		host        string
 		origin      string
 		body        string
@@ -187,7 +181,6 @@ func TestCommandAPISuccess(t *testing.T) {
 	}{
 		{
 			name:        "defaults on localhost",
-			port:        testPort,
 			host:        testHost,
 			body:        `{"command":"status"}`,
 			wantCommand: "status",
@@ -196,7 +189,6 @@ func TestCommandAPISuccess(t *testing.T) {
 		},
 		{
 			name:        "explicit actor and args on ipv4",
-			port:        testPort,
 			host:        "127.0.0.1:8080",
 			body:        `{"command":"run","actor":"alice","args":{"path":"a"}}`,
 			wantCommand: "run",
@@ -205,7 +197,6 @@ func TestCommandAPISuccess(t *testing.T) {
 		},
 		{
 			name:        "matching origin on ipv6",
-			port:        ":8080",
 			host:        "[::1]:8080",
 			origin:      "http://[::1]:8080",
 			body:        `{"command":"status","args":{}}`,
@@ -227,7 +218,7 @@ func TestCommandAPISuccess(t *testing.T) {
 				return map[string]any{"result": "ok"}, nil
 			}
 
-			handler := testHandlerPort(tt.port, nil, execute, nil)
+			handler := testHandler(nil, execute, nil)
 			request := commandRequest(tt.body)
 			request.Host = tt.host
 			request = request.WithContext(context.WithValue(request.Context(), contextKey{}, "live"))
@@ -251,219 +242,6 @@ func TestCommandAPISuccess(t *testing.T) {
 			}
 			if gotContext != "live" {
 				t.Errorf("execute context value = %q, want live", gotContext)
-			}
-		})
-	}
-}
-
-func TestCommandAPIHostValidation(t *testing.T) {
-	hosts := []struct {
-		name string
-		host string
-	}{
-		{name: "external host", host: "example.com:8080"},
-		{name: "other loopback address", host: "127.0.0.2:8080"},
-		{name: "wrong port", host: "localhost:9090"},
-		{name: "missing port", host: "localhost"},
-		{name: "trailing dot", host: "localhost.:8080"},
-		{name: "userinfo trick", host: "localhost:8080@evil.example:8080"},
-		{name: "other ipv6 address", host: "[::2]:8080"},
-	}
-
-	for _, tt := range hosts {
-		t.Run(tt.name, func(t *testing.T) {
-			called := false
-			handler := testHandler(nil, func(context.Context, string, string, json.RawMessage) (any, error) {
-				called = true
-				return nil, nil
-			}, nil)
-			request := commandRequest(`{"command":"status"}`)
-			request.Host = tt.host
-			recorder := serveRequest(handler, request)
-			assertAPIError(t, recorder, http.StatusForbidden, "invalid_host")
-			if called {
-				t.Error("execute was called for a rejected Host")
-			}
-		})
-	}
-}
-
-func TestCommandAPIBindHostPolicy(t *testing.T) {
-	tests := []struct {
-		name      string
-		bind      string
-		host      string
-		origin    string
-		wantAllow bool
-	}{
-		{name: "loopback bind rejects lan ip", bind: "127.0.0.1", host: "192.168.1.5:8080"},
-		{name: "wildcard accepts ipv4 literal", bind: "0.0.0.0", host: "192.168.1.5:8080", wantAllow: true},
-		{name: "wildcard accepts loopback", bind: "0.0.0.0", host: "127.0.0.1:8080", wantAllow: true},
-		{name: "wildcard accepts ipv6 literal", bind: "0.0.0.0", host: "[fd00::1]:8080", wantAllow: true},
-		{name: "wildcard accepts matching origin", bind: "0.0.0.0", host: "192.168.1.5:8080",
-			origin: "http://192.168.1.5:8080", wantAllow: true},
-		{name: "ipv6 loopback rejects dns name", bind: "::1", host: "gilir.example:8080"},
-		{name: "wildcard rejects unspecified host", bind: "0.0.0.0", host: "0.0.0.0:8080"},
-		{name: "wildcard rejects wrong port", bind: "0.0.0.0", host: "192.168.1.5:9090"},
-		{name: "ipv6 wildcard accepts ipv6 literal", bind: "::", host: "[fd00::1]:8080", wantAllow: true},
-		{name: "specific bind accepts its address", bind: "192.168.1.5", host: "192.168.1.5:8080", wantAllow: true},
-		{name: "specific remote bind accepts dns name", bind: "192.168.1.5", host: "gilir.example:8080", wantAllow: true},
-		{name: "specific bind accepts loopback", bind: "192.168.1.5", host: "localhost:8080", wantAllow: true},
-		{name: "specific bind rejects another address", bind: "192.168.1.5", host: "192.168.1.6:8080"},
-		{name: "specific loopback bind rejects another loopback", bind: "127.0.0.1", host: "127.0.0.2:8080"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			called := false
-			handler := Handler(Config{Host: tt.bind, Port: testPort}, nil,
-				func(context.Context, string, string, json.RawMessage) (any, error) {
-					called = true
-					return map[string]any{"ok": true}, nil
-				}, nil)
-			request := commandRequest(`{"command":"status"}`)
-			request.Host = tt.host
-			if tt.origin != "" {
-				request.Header.Set("Origin", tt.origin)
-			}
-			recorder := serveRequest(handler, request)
-			if tt.wantAllow {
-				assertAPISuccess(t, recorder)
-				if !called {
-					t.Error("execute was not called for an accepted Host")
-				}
-				return
-			}
-			assertAPIError(t, recorder, http.StatusForbidden, "invalid_host")
-			if called {
-				t.Error("execute was called for a rejected Host")
-			}
-		})
-	}
-}
-
-func TestStaticAcceptsRemoteIPWhenBoundToWildcard(t *testing.T) {
-	web := fstest.MapFS{
-		"index.html": &fstest.MapFile{Data: []byte("<!doctype html><title>gilir app</title>")},
-	}
-	handler := Handler(Config{Host: "0.0.0.0", Port: testPort}, web, unexpectedExecute(t), nil)
-
-	request := pageRequest(http.MethodGet, "/")
-	request.Host = "192.168.1.5:8080"
-	recorder := serveRequest(handler, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
-	}
-}
-
-func TestCommandAPIPortNormalizationAndDefaultPort(t *testing.T) {
-	tests := []struct {
-		name       string
-		port       string
-		host       string
-		origin     string
-		wantStatus int
-		wantCode   string
-	}{
-		{
-			name:       "leading zeros in configured port",
-			port:       "0008080",
-			host:       "localhost:8080",
-			wantStatus: http.StatusOK,
-		},
-		{
-			name:       "leading colon and zeros",
-			port:       ":008080",
-			host:       "127.0.0.1:8080",
-			wantStatus: http.StatusOK,
-		},
-		{
-			name:       "port 80 omitted on localhost",
-			port:       "080",
-			host:       "localhost",
-			origin:     "http://localhost",
-			wantStatus: http.StatusOK,
-		},
-		{
-			name:       "port 80 omitted on ipv4",
-			port:       "00080",
-			host:       "127.0.0.1",
-			wantStatus: http.StatusOK,
-		},
-		{
-			name:       "port 80 omitted on ipv6",
-			port:       "80",
-			host:       "[::1]",
-			origin:     "http://[::1]",
-			wantStatus: http.StatusOK,
-		},
-		{
-			name:       "port 80 explicit",
-			port:       "80",
-			host:       "localhost:80",
-			wantStatus: http.StatusOK,
-		},
-		{
-			name:       "omitted port rejected for non-80",
-			port:       "8080",
-			host:       "localhost",
-			wantStatus: http.StatusForbidden,
-			wantCode:   "invalid_host",
-		},
-		{
-			name:       "empty host port rejected",
-			port:       "80",
-			host:       "localhost:",
-			wantStatus: http.StatusForbidden,
-			wantCode:   "invalid_host",
-		},
-		{
-			name:       "unbracketed ipv6 rejected",
-			port:       "80",
-			host:       "::1",
-			wantStatus: http.StatusForbidden,
-			wantCode:   "invalid_host",
-		},
-		{
-			name:       "bare external host rejected",
-			port:       "80",
-			host:       "example.com",
-			wantStatus: http.StatusForbidden,
-			wantCode:   "invalid_host",
-		},
-		{
-			name:       "noncanonical host port rejected",
-			port:       "00080",
-			host:       "localhost:0080",
-			wantStatus: http.StatusForbidden,
-			wantCode:   "invalid_host",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			called := false
-			handler := testHandlerPort(tt.port, nil, func(context.Context, string, string, json.RawMessage) (any, error) {
-				called = true
-				return map[string]any{"ok": true}, nil
-			}, nil)
-			request := commandRequest(`{"command":"status"}`)
-			request.Host = tt.host
-			if tt.origin != "" {
-				request.Header.Set("Origin", tt.origin)
-			}
-
-			recorder := serveRequest(handler, request)
-			if tt.wantStatus == http.StatusOK {
-				assertAPISuccess(t, recorder)
-				if !called {
-					t.Error("execute was not called for an accepted Host")
-				}
-				return
-			}
-			assertAPIError(t, recorder, tt.wantStatus, tt.wantCode)
-			if called {
-				t.Error("execute was called for a rejected Host")
 			}
 		})
 	}
@@ -499,6 +277,41 @@ func TestCommandAPIOriginValidation(t *testing.T) {
 			assertAPIError(t, recorder, http.StatusForbidden, "invalid_origin")
 			if called {
 				t.Error("execute was called for a rejected Origin")
+			}
+		})
+	}
+}
+
+func TestCommandAPILocalHTTPSProxy(t *testing.T) {
+	const authority = "gilir.example.ts.net:44547"
+	const httpsOrigin = "https://" + authority
+	h := testHandler(nil,
+		func(context.Context, string, string, json.RawMessage) (any, error) {
+			return "ok", nil
+		}, nil)
+	tests := []struct {
+		name    string
+		peer    string
+		origin  string
+		allowed bool
+	}{
+		{"proxy browser", "127.0.0.1:12345", httpsOrigin, true},
+		{"wrong scheme", "127.0.0.1:12345", "http://" + authority, false},
+		{"different origin", "127.0.0.1:12345", "https://other.example.ts.net:44547", false},
+		{"non-loopback peer", "192.0.2.1:12345", httpsOrigin, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := commandRequest(`{"command":"status"}`)
+			r.Host = authority
+			r.RemoteAddr = tt.peer
+			r.Header.Set("Origin", tt.origin)
+			r.Header.Set("X-Forwarded-Proto", "https")
+			recorder := serveRequest(h, r)
+			if tt.allowed {
+				assertAPISuccess(t, recorder)
+			} else {
+				assertAPIError(t, recorder, http.StatusForbidden, "invalid_origin")
 			}
 		})
 	}
@@ -1049,7 +862,7 @@ func TestStaticPageFallbackPrefersRealFile(t *testing.T) {
 	}
 }
 
-func TestStaticPageFallbackKeepsMethodAndHostGuards(t *testing.T) {
+func TestStaticPageFallbackMethodsAndHost(t *testing.T) {
 	web := fstest.MapFS{
 		"index.html": &fstest.MapFile{Data: []byte("<!doctype html><title>gilir app</title>")},
 	}
@@ -1065,15 +878,15 @@ func TestStaticPageFallbackKeepsMethodAndHostGuards(t *testing.T) {
 		}
 	})
 
-	t.Run("unexpected host", func(t *testing.T) {
+	t.Run("arbitrary host", func(t *testing.T) {
 		request := pageRequest(http.MethodGet, "/tasks/GILIR-42")
 		request.Host = "example.com:8080"
 		recorder := serveRequest(handler, request)
-		if recorder.Code != http.StatusForbidden {
-			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusForbidden)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
 		}
-		if strings.Contains(recorder.Body.String(), "gilir app") {
-			t.Errorf("page served for an unexpected Host: %q", recorder.Body.String())
+		if !strings.Contains(recorder.Body.String(), "gilir app") {
+			t.Errorf("missing dashboard: %q", recorder.Body.String())
 		}
 	})
 }
@@ -1200,19 +1013,6 @@ func TestStaticRequestGuards(t *testing.T) {
 		"index.html": &fstest.MapFile{Data: []byte("<h1>private ui</h1>")},
 	}
 	handler := testHandler(web, unexpectedExecute(t), nil)
-
-	t.Run("unexpected host", func(t *testing.T) {
-		request := pageRequest(http.MethodGet, "/")
-		request.Host = "example.com:8080"
-		recorder := serveRequest(handler, request)
-		if recorder.Code != http.StatusForbidden {
-			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusForbidden)
-		}
-		assertStaticHeaders(t, recorder)
-		if strings.Contains(recorder.Body.String(), "private ui") {
-			t.Errorf("static content was served for an unexpected Host: %q", recorder.Body.String())
-		}
-	})
 
 	t.Run("unexpected origin", func(t *testing.T) {
 		request := pageRequest(http.MethodGet, "/")

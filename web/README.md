@@ -40,7 +40,8 @@ pnpm dev
 `http://localhost:5173` (Vite `strictPort`). It proxies `/api` to
 `http://127.0.0.1:44547` with `changeOrigin: true`.
 
-The backend validates `Host` and `Origin` including ports. The dev proxy only
+The backend checks that a supplied `Origin` matches the request host and scheme,
+including the port. The dev proxy only
 rewrites `Origin` to the backend origin when the incoming `Origin` exactly
 matches the request host, the host is loopback, and the port is `5173`. Other
 origins are forwarded unchanged so the backend can reject them. Run the backend

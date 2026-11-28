@@ -85,19 +85,29 @@ address matches.
 
 Open <http://127.0.0.1:44547>. To reach the dashboard from another machine,
 bind a wildcard address and visit `http://<machine-ip>:44547` or
-`http://<hostname>:44547`. Tailscale MagicDNS names work the same way:
-
-```sh
-gilir service start --host 0.0.0.0
-```
+`http://<hostname>:44547`.
 
 There is no authentication and the API can create, change, and delete tasks,
 and dispatched tasks run OpenCode agents on this machine. Treat an exposed port
 as remote code execution on the host and only expose it on a trusted network.
-When bound to a non-loopback address, the server accepts DNS hostnames at the
-listener port. The default loopback listener rejects DNS hostnames other than
-`localhost` to limit DNS rebinding. Process shutdown is served only on a
-private loopback listener.
+Process shutdown is served only on a private loopback listener.
+
+### Tailscale Serve
+
+To use MagicDNS and HTTPS while keeping Gilir on loopback:
+
+```sh
+gilir service start
+tailscale serve --bg --https=44547 http://127.0.0.1:44547
+```
+
+Open the URL printed by `tailscale serve` from your tailnet. Tailscale
+terminates HTTPS and forwards requests directly to Gilir. Local HTTP clients
+continue to use `http://127.0.0.1:44547`. If you previously started Gilir on a
+non-loopback address, run `gilir service restart --host 127.0.0.1` first. Use
+Serve rather than Funnel for tailnet-only access.
+
+### Service configuration
 
 The `service start` and `service restart` flags are the only way to choose the
 bind address; the service never takes it from `GILIR_URL`. Every ordinary
@@ -207,17 +217,13 @@ that service.
   `GILIR_URL` automatically, replacing any inherited value. A hook that invokes
   `gilir` therefore reaches the service that delivered its event, including on
   a custom port or a wildcard bind.
-- A service bound to `0.0.0.0` or `::` accepts `GILIR_URL` addresses that are
-  loopback, a concrete IP literal of the host, or a DNS hostname. The API
-  still checks the listener port and requires any supplied Origin to match
-  the request Host.
+- Any supplied browser `Origin` must match the request host and scheme.
 - Remote API authentication is not part of this client/flag integration. An
   exposed service is unauthenticated, so treat adding authentication as a
   separate follow-up and only expose the port on a trusted network.
 
 SSH local forwarding works today and keeps the API loopback-only on the service
-host. Use the same local and remote port, because the API validates the request
-`Host` against the service's port:
+host:
 
 ```sh
 # Service on the default port, CLI on this machine using the default GILIR_URL:
