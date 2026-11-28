@@ -553,6 +553,12 @@ func newGitRepo(t *testing.T) string {
 	if output, err := exec.Command("git", "init", "-q", root).CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, output)
 	}
+	// t.TempDir can live under a symlinked parent (for example /var on macOS),
+	// while AddRepo deliberately stores the symlink-resolved Git root.
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve repository root: %v", err)
+	}
 	return root
 }
 
