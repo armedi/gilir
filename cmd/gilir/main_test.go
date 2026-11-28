@@ -563,12 +563,11 @@ func TestServiceStartWildcardRoutesCommandsViaGILIRURL(t *testing.T) {
 	}
 }
 
-func TestServiceAllowsDNSHostnamesWhenEnabled(t *testing.T) {
+func TestRemoteServiceAllowsDNSHostnames(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("GILIR_DB", filepath.Join(dir, "gilir.sqlite"))
 	t.Setenv("GILIR_OPENCODE_URL", "http://127.0.0.1:"+freePort(t))
 	t.Setenv("GILIR_WEB_DIR", dir)
-	t.Setenv("GILIR_ALLOW_ANY_HOST", "1")
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("dashboard"), 0o600); err != nil {
 		t.Fatal(err)
 	}

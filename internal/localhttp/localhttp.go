@@ -52,15 +52,15 @@ const (
 // concrete interface address, or a wildcard such as 0.0.0.0 or ::). Port is
 // the actual port, which matters when the daemon was started with port 0.
 type Config struct {
-	Host         string
-	Port         string
-	AllowDNSHost bool // Accept arbitrary DNS hostnames at the configured port.
+	Host string
+	Port string
 }
 
 var dnsHostname = regexp.MustCompile(`^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
 
 type handler struct {
-	config   Config
+	bindIP   net.IP
+	port     string
 	web      fs.FS
 	execute  func(context.Context, string, string, json.RawMessage) (any, error)
 	classify func(error) (int, string)
@@ -84,9 +84,9 @@ type errorDetail struct {
 // Loopback Hosts (127.0.0.1, [::1], localhost) are always accepted at that
 // port. A wildcard bind also accepts Hosts that are concrete IP literals, so
 // a machine can be reached by its LAN or public address; a specific
-// non-loopback bind accepts only that address. DNS names other than localhost
-// require AllowDNSHost, which disables DNS-rebinding protection. An
-// unspecified address (0.0.0.0 or ::) is never a valid request
+// non-loopback bind accepts only that IP literal. DNS names other than
+// localhost are accepted only on non-loopback binds. An unspecified address
+// (0.0.0.0 or ::) is never a valid request
 // Host. When the canonical port is 80, the port may be omitted from Host.
 // When an Origin header is present it must be exactly http:// followed by the
 // request Host; no CORS headers are emitted.
@@ -99,9 +99,9 @@ type errorDetail struct {
 // disabled. web must confine path resolution to a trusted root; main uses
 // os.OpenRoot. Plain os.DirFS can follow symlinks outside the served root.
 func Handler(config Config, web fs.FS, execute func(context.Context, string, string, json.RawMessage) (any, error), classify func(error) (int, string)) http.Handler {
-	config.Port = canonicalPort(config.Port)
 	return &handler{
-		config:   config,
+		bindIP:   net.ParseIP(config.Host),
+		port:     canonicalPort(config.Port),
 		web:      web,
 		execute:  execute,
 		classify: classify,
@@ -274,12 +274,12 @@ func (h *handler) serveStatic(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) validHost(authority string) bool {
-	if h.config.Port == "" {
+	if h.port == "" {
 		return false
 	}
 	host, port, err := net.SplitHostPort(authority)
 	if err != nil {
-		if h.config.Port != "80" {
+		if h.port != "80" {
 			return false
 		}
 		host, err = bareAuthorityHost(authority)
@@ -288,14 +288,14 @@ func (h *handler) validHost(authority string) bool {
 		}
 		return h.acceptsHost(host)
 	}
-	return port == h.config.Port && h.acceptsHost(host)
+	return port == h.port && h.acceptsHost(host)
 }
 
 // acceptsHost reports whether a request Host may name this listener. Loopback
 // names are always accepted so the same daemon answers on the local machine.
 // A wildcard bind accepts concrete address literals (any local interface);
-// a specific bind accepts exactly its own address. Other DNS names require
-// explicit opt-in.
+// a specific bind accepts exactly its own address. Non-loopback binds also
+// accept DNS names for remote access.
 func (h *handler) acceptsHost(host string) bool {
 	if isLoopbackHost(host) {
 		return true
@@ -303,16 +303,12 @@ func (h *handler) acceptsHost(host string) bool {
 	ip := net.ParseIP(host)
 	if ip == nil {
 		name := strings.TrimSuffix(host, ".")
-		return h.config.AllowDNSHost && len(name) <= 253 && dnsHostname.MatchString(name)
+		return h.bindIP != nil && !h.bindIP.IsLoopback() && len(name) <= 253 && dnsHostname.MatchString(name)
 	}
 	if ip.IsUnspecified() {
 		return false
 	}
-	if isWildcardHost(h.config.Host) {
-		return true
-	}
-	bind := net.ParseIP(h.config.Host)
-	return bind != nil && bind.Equal(ip)
+	return h.bindIP.IsUnspecified() || h.bindIP.Equal(ip)
 }
 
 func isLoopbackHost(host string) bool {
@@ -320,11 +316,6 @@ func isLoopbackHost(host string) bool {
 		return true
 	}
 	return strings.EqualFold(host, "localhost")
-}
-
-func isWildcardHost(host string) bool {
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsUnspecified()
 }
 
 // bareAuthorityHost extracts a host from an authority without a port, which is

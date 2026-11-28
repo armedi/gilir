@@ -302,13 +302,12 @@ func TestCommandAPIBindHostPolicy(t *testing.T) {
 		{name: "wildcard accepts ipv6 literal", bind: "0.0.0.0", host: "[fd00::1]:8080", wantAllow: true},
 		{name: "wildcard accepts matching origin", bind: "0.0.0.0", host: "192.168.1.5:8080",
 			origin: "http://192.168.1.5:8080", wantAllow: true},
-		{name: "wildcard rejects dns name", bind: "0.0.0.0", host: "gilir.example:8080"},
-		{name: "wildcard rejects dns name with matching origin", bind: "0.0.0.0", host: "gilir.example:8080",
-			origin: "http://gilir.example:8080"},
+		{name: "ipv6 loopback rejects dns name", bind: "::1", host: "gilir.example:8080"},
 		{name: "wildcard rejects unspecified host", bind: "0.0.0.0", host: "0.0.0.0:8080"},
 		{name: "wildcard rejects wrong port", bind: "0.0.0.0", host: "192.168.1.5:9090"},
 		{name: "ipv6 wildcard accepts ipv6 literal", bind: "::", host: "[fd00::1]:8080", wantAllow: true},
 		{name: "specific bind accepts its address", bind: "192.168.1.5", host: "192.168.1.5:8080", wantAllow: true},
+		{name: "specific remote bind accepts dns name", bind: "192.168.1.5", host: "gilir.example:8080", wantAllow: true},
 		{name: "specific bind accepts loopback", bind: "192.168.1.5", host: "localhost:8080", wantAllow: true},
 		{name: "specific bind rejects another address", bind: "192.168.1.5", host: "192.168.1.6:8080"},
 		{name: "specific loopback bind rejects another loopback", bind: "127.0.0.1", host: "127.0.0.2:8080"},
@@ -354,13 +353,6 @@ func TestStaticAcceptsRemoteIPWhenBoundToWildcard(t *testing.T) {
 	recorder := serveRequest(handler, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
-	}
-
-	request = pageRequest(http.MethodGet, "/")
-	request.Host = "gilir.example:8080"
-	recorder = serveRequest(handler, request)
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("dns host status = %d, want %d", recorder.Code, http.StatusForbidden)
 	}
 }
 

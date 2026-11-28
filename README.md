@@ -84,7 +84,8 @@ start on the same database is refused, or is a no-op when the requested
 address matches.
 
 Open <http://127.0.0.1:44547>. To reach the dashboard from another machine,
-bind a wildcard address and visit `http://<machine-ip>:44547`:
+bind a wildcard address and visit `http://<machine-ip>:44547` or
+`http://<hostname>:44547`. Tailscale MagicDNS names work the same way:
 
 ```sh
 gilir service start --host 0.0.0.0
@@ -93,17 +94,10 @@ gilir service start --host 0.0.0.0
 There is no authentication and the API can create, change, and delete tasks,
 and dispatched tasks run OpenCode agents on this machine. Treat an exposed port
 as remote code execution on the host and only expose it on a trusted network.
-When bound to a wildcard address the server accepts request hosts that are IP
-literals (plus loopback). For access by hostname, including Tailscale MagicDNS,
-opt in when starting or restarting the service:
-
-```sh
-GILIR_ALLOW_ANY_HOST=1 gilir service restart --host 0.0.0.0
-```
-
-This accepts any DNS hostname at the listener port and disables DNS-rebinding
-protection. It does not restrict access to Tailscale peers. Process shutdown is
-served only on a private loopback listener.
+When bound to a non-loopback address, the server accepts DNS hostnames at the
+listener port. The default loopback listener rejects DNS hostnames other than
+`localhost` to limit DNS rebinding. Process shutdown is served only on a
+private loopback listener.
 
 The `service start` and `service restart` flags are the only way to choose the
 bind address; the service never takes it from `GILIR_URL`. Every ordinary
@@ -122,7 +116,6 @@ and restart the service to recreate it (task history is not migrated).
 | `GILIR_URL` | `http://127.0.0.1:44547` | HTTP origin of the service for every stateful CLI command and queue control. `http://` and `https://` are accepted; credentials, paths, queries, and fragments are rejected. It never chooses the service bind address. |
 | `GILIR_DB` | `${XDG_DATA_HOME:-$HOME/.local/share}/gilir/gilir.sqlite` (Windows: `%LOCALAPPDATA%\gilir\gilir.sqlite`) | Database file for the background service. If missing, it is created with mode 0600 in a 0700 directory. An existing file keeps its mode. CLI commands never open it. |
 | `GILIR_WEB_DIR` | Embedded dashboard, or `web/dist` for Go-only builds | Override the static web bundle. If the selected directory has no `index.html`, Gilir serves only the API. |
-| `GILIR_ALLOW_ANY_HOST` | unset | Set to `1` in the service launcher environment to accept any DNS hostname at the listener port. Repeat on each start or restart. |
 | `GILIR_OPENCODE_URL` | discovered from `opencode service status` | OpenCode V2 server. It must be on loopback. Set it to pin an explicit server. |
 | `OPENCODE_PASSWORD` | discovered from `opencode service get password` | Sent as HTTP Basic auth (user `opencode`). Set it to pin an explicit password. |
 | `GILIR_HOOKS` | unset | Path to a hook config file used by the service (see below). |
@@ -215,9 +208,9 @@ that service.
   `gilir` therefore reaches the service that delivered its event, including on
   a custom port or a wildcard bind.
 - A service bound to `0.0.0.0` or `::` accepts `GILIR_URL` addresses that are
-  loopback or a concrete IP literal of the host. DNS names other than
-  `localhost` require `GILIR_ALLOW_ANY_HOST=1` on the service. The API still
-  checks the listener port and requires any supplied Origin to match the request Host.
+  loopback, a concrete IP literal of the host, or a DNS hostname. The API
+  still checks the listener port and requires any supplied Origin to match
+  the request Host.
 - Remote API authentication is not part of this client/flag integration. An
   exposed service is unauthenticated, so treat adding authentication as a
   separate follow-up and only expose the port on a trusted network.
