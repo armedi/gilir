@@ -1,6 +1,6 @@
 {
   "name": "@armedi/gilir",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Local task queue and dashboard for coding agents",
   "repository": {
     "type": "git",
