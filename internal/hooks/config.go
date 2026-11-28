@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-// Config is one hook entry from the daemon's hooks file. Name is the stable
+// Config is one hook entry from the service's hooks file. Name is the stable
 // identifier used for the persisted cursor and the hook:<name> actor, so
 // renaming a hook starts a new cursor at the latest event.
 type Config struct {

@@ -63,6 +63,9 @@ the launcher package locally without publishing.
 ## Run
 
 ```sh
+gilir serve                          # foreground; default http://127.0.0.1:44547
+gilir serve --host 0.0.0.0           # foreground, accept remote connections
+
 gilir service start                  # detached; default http://127.0.0.1:44547
 gilir service start --host 0.0.0.0   # accept connections from other machines
 gilir service status
@@ -74,14 +77,23 @@ gilir service start --port 9000
 GILIR_URL=http://127.0.0.1:9000 gilir list
 ```
 
+`gilir serve` runs the HTTP API, dashboard, watcher, and hooks in the current
+process. It logs to `stderr`, writes nothing to `stdout`, and exits 0 on
+`SIGINT`/`SIGTERM`. It refuses `--json`, takes `--host`, `--port`, and `--db`,
+and holds `<GILIR_DB>.lock` while it runs. It never touches the managed-service
+files, so several `gilir serve` instances may run alongside the managed service
+as long as each uses its own database and port.
+
 `service start` launches a detached worker and returns once it is serving.
-`service restart` keeps the running host and port unless `--host` or `--port`
-overrides them. The worker appends startup, warning, and
-shutdown details to `<GILIR_DB>.service.log`, and publishes
-`<GILIR_DB>.service.json` while it runs; stop and status use that record, so
-they do not need the original flags. One service runs per database: a second
-start on the same database is refused, or is a no-op when the requested
-address matches.
+`service restart` keeps the running host, port, and database unless `--host`,
+`--port`, or `--db` overrides them. The managed service is a singleton per
+user: its state, log, and operation lock live in the Gilir data directory
+(`<dataDir>/gilir/service.json`, `service.log`, `service.lock`, where `dataDir`
+is `$XDG_DATA_HOME`/`~/.local/share` on Unix and `%LOCALAPPDATA%` on Windows).
+`service.json` records the canonical `db_path`; `service status` and
+`service start` report it. One managed service runs per user: a second start is
+a no-op only when the requested `--host`, `--port`, and resolved `--db` match
+the running one, and otherwise asks you to run `gilir service stop` first.
 
 Open <http://127.0.0.1:44547>. To reach the dashboard from another machine,
 bind a wildcard address and visit `http://<machine-ip>:44547` or
@@ -109,13 +121,16 @@ Serve rather than Funnel for tailnet-only access.
 
 ### Service configuration
 
-The `service start` and `service restart` flags are the only way to choose the
-bind address; the service never takes it from `GILIR_URL`. Every ordinary
-command and queue control uses `GILIR_URL` only. The default `GILIR_URL` matches
-the default listener, and a wildcard bind on the default port still works with
-it. Any other port requires setting `GILIR_URL` to an address the service
-accepts. If the service binds `[::1]` specifically, set `GILIR_URL` to that
-address too, because the client default is IPv4 loopback.
+The `serve`/`service start`/`service restart` flags are the only way to choose
+the bind address; the service never takes it from `GILIR_URL`. Every ordinary
+command uses `GILIR_URL` only. The host-local queue controls
+(`service pause|resume|concurrency`) read `<dataDir>/gilir/service.json` and
+reach the managed service directly, so they only work on the host running it.
+
+The default `GILIR_URL` matches the default listener, and a wildcard bind on the
+default port still works with it. Any other port requires setting `GILIR_URL` to
+an address the service accepts. If the service binds `[::1]` specifically, set
+`GILIR_URL` to that address too, because the client default is IPv4 loopback.
 
 The schema is upgraded automatically. Version 5 adds a durable per-database ID
 that namespaces worktrees; version 4 added the per-task worktree, so a version 3
@@ -125,8 +140,8 @@ to recreate it (task history is not migrated).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `GILIR_URL` | `http://127.0.0.1:44547` | HTTP origin of the service for every stateful CLI command and queue control. `http://` and `https://` are accepted; credentials, paths, queries, and fragments are rejected. It never chooses the service bind address. |
-| `GILIR_DB` | `${XDG_DATA_HOME:-$HOME/.local/share}/gilir/gilir.sqlite` (Windows: `%LOCALAPPDATA%\gilir\gilir.sqlite`) | Database file for the background service. If missing, it is created with mode 0600 in a 0700 directory. An existing file keeps its mode. CLI commands never open it. |
+| `GILIR_URL` | `http://127.0.0.1:44547` | HTTP origin of the service for every stateful CLI command. Host-local `service` lifecycle and queue-control commands ignore it. `http://` and `https://` are accepted; credentials, paths, queries, and fragments are rejected. It never chooses the service bind address. |
+| `GILIR_DB` | `${XDG_DATA_HOME:-$HOME/.local/share}/gilir/gilir.sqlite` (Windows: `%LOCALAPPDATA%\gilir\gilir.sqlite`) | Database file for the background service. If missing, it is created with mode 0600 in a 0700 directory. An existing file keeps its mode. CLI commands never open it. The `--db` flag on `gilir serve`, `service start`, and `service restart` overrides it. |
 | `GILIR_WEB_DIR` | Embedded dashboard, or `web/dist` for Go-only builds | Override the static web bundle. If the selected directory has no `index.html`, Gilir serves only the API. |
 | `GILIR_OPENCODE_URL` | discovered from `opencode service status` | OpenCode V2 server. It must be on loopback. Set it to pin an explicit server. |
 | `OPENCODE_PASSWORD` | discovered from `opencode service get password` | Sent as HTTP Basic auth (user `opencode`). Set it to pin an explicit password. |
@@ -162,8 +177,10 @@ link opens the session in OpenCode Web.
 Stateful commands send one POST to the service's command API at `GILIR_URL`, so
 the service must be running. If it cannot be reached, the command exits with an
 error naming the target and never opens a local database or retries the
-request. `service status`, `--help`, and `gilir skill` use local state or no
-service. Add `--json` to get machine-readable output on stdout.
+request. `gilir serve` runs the service itself. `service start|stop|restart|status`
+and the host-local queue controls (`service pause|resume|concurrency`) read the
+local service record and never use `GILIR_URL`; `--help` and `gilir skill` use
+no service. Add `--json` to get machine-readable output on stdout.
 
 ```sh
 gilir project create Payments                    # -> id 1
@@ -186,9 +203,9 @@ gilir edit-comment GILIR-1 12 "Narrowed to **rounding**" --actor agent:me
 gilir remove-comment GILIR-1 12 --actor agent:me
 gilir approve GILIR-1                            # or: gilir request-changes GILIR-1 --message "Add tests"
 gilir service status
-gilir daemon pause
-gilir daemon resume
-gilir daemon concurrency 2
+gilir service pause
+gilir service resume
+gilir service concurrency 2
 gilir delete GILIR-1                             # keep the audit history
 gilir --help
 gilir skill                                      # embedded agent manual

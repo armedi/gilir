@@ -1,4 +1,4 @@
-// Package commands implements the shared Gilir command service. The daemon's
+// Package commands implements the shared Gilir command service. The service's
 // HTTP API serves the CLI and web UI through it: requests are strict JSON
 // objects and the result is a store object, a small status document, or
 // {"ok":true} for mutations with no natural result.
@@ -17,7 +17,7 @@ import (
 	"github.com/armedi/gilir/internal/taskid"
 )
 
-// Snapshot is the dynamic watch state of a running daemon. ActiveParents is
+// Snapshot is the dynamic watch state of a running service. ActiveParents is
 // nil when watcher health is unknown; zero is a known count of zero. Instance
 // identifies the process serving the database so lifecycle commands cannot
 // mistake a different service that reused the same port for their own.
@@ -34,7 +34,7 @@ type Service struct {
 }
 
 // New returns a command service. status is optional; without it
-// daemon.status reports an unknown (null) active parent count.
+// service.status reports an unknown (null) active parent count.
 func New(st *store.Store, status func() Snapshot) *Service {
 	return &Service{store: st, status: status}
 }
@@ -377,8 +377,8 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		}
 		return s.store.Review(ctx, actor, id, decision, in.Message)
 
-	case "daemon.status":
-		var in daemonStatusArgs
+	case "service.status":
+		var in serviceStatusArgs
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
@@ -386,7 +386,7 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		if err != nil {
 			return nil, err
 		}
-		status := daemonStatus{
+		status := serviceStatus{
 			Running:        true,
 			Paused:         settings.Paused,
 			MaxConcurrency: settings.MaxConcurrency,
@@ -399,8 +399,8 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		}
 		return status, nil
 
-	case "daemon.update":
-		var in daemonUpdateArgs
+	case "service.update":
+		var in serviceUpdateArgs
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
@@ -627,14 +627,14 @@ type taskReviewArgs struct {
 	Message string `json:"message"`
 }
 
-type daemonStatusArgs struct{}
+type serviceStatusArgs struct{}
 
-type daemonUpdateArgs struct {
+type serviceUpdateArgs struct {
 	Paused         *bool `json:"paused"`
 	MaxConcurrency *int  `json:"max_concurrency"`
 }
 
-type daemonStatus struct {
+type serviceStatus struct {
 	Running        bool   `json:"running"`
 	Paused         bool   `json:"paused"`
 	MaxConcurrency int    `json:"max_concurrency"`

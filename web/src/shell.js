@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'solid-js';
 
-// The shell owns the dashboard's live state (queue, daemon, detail, panels).
+// The shell owns the dashboard's live state (queue, service, detail, panels).
 // Route pages read it here so the polling effects live once, in App, and are
 // not torn down and recreated as the URL changes.
 export const ShellContext = createContext();

@@ -54,7 +54,7 @@ type commandResponse struct {
 	} `json:"error"`
 }
 
-// postCommand sends one wire command to the daemon named by GILIR_URL and
+// postCommand sends one wire command to the service named by GILIR_URL and
 // returns its data. The raw data is handed to the CLI renderer unchanged so
 // --json output and arbitrary integer IDs keep their exact spelling.
 //
@@ -85,7 +85,7 @@ func sendCommand(ctx context.Context, endpoint *url.URL, command, actor string, 
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("build %s request for Gilir daemon at %s: %w", command, origin, err)
+		return nil, fmt.Errorf("build %s request for Gilir service at %s: %w", command, origin, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	// Without GetBody the transport cannot replay a POST that may already
@@ -110,14 +110,14 @@ func sendCommand(ctx context.Context, endpoint *url.URL, command, actor string, 
 	decoder := json.NewDecoder(response.Body)
 	var envelope commandResponse
 	if err := decoder.Decode(&envelope); err != nil {
-		return nil, fmt.Errorf("Gilir daemon at %s returned HTTP %d without a valid command response", origin, response.StatusCode)
+		return nil, fmt.Errorf("Gilir service at %s returned HTTP %d without a valid command response", origin, response.StatusCode)
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("Gilir daemon at %s returned HTTP %d with trailing data after the command response", origin, response.StatusCode)
+		return nil, fmt.Errorf("Gilir service at %s returned HTTP %d with trailing data after the command response", origin, response.StatusCode)
 	}
 	if response.StatusCode == http.StatusOK && envelope.Error == nil {
 		if len(envelope.Data) == 0 {
-			return nil, fmt.Errorf("Gilir daemon at %s returned HTTP 200 without command data", origin)
+			return nil, fmt.Errorf("Gilir service at %s returned HTTP 200 without command data", origin)
 		}
 		return envelope.Data, nil
 	}
@@ -128,7 +128,7 @@ func sendCommand(ctx context.Context, endpoint *url.URL, command, actor string, 
 	if message == "" {
 		message = "command failed"
 	}
-	return nil, fmt.Errorf("Gilir daemon at %s returned HTTP %d: %s", origin, response.StatusCode, message)
+	return nil, fmt.Errorf("Gilir service at %s returned HTTP %d: %s", origin, response.StatusCode, message)
 }
 
 // commandEndpoint validates one GILIR_URL value and returns the command URL.

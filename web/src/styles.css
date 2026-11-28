@@ -675,8 +675,8 @@ p {
   background: var(--accent);
 }
 
-/* Docked inline daemon bar */
-.daemon-strip {
+/* Docked inline service bar */
+.service-strip {
   display: inline-flex;
   align-items: center;
   border: 1px solid var(--border);
@@ -685,7 +685,7 @@ p {
   height: 32px;
 }
 
-.daemon-segment {
+.service-segment {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -695,16 +695,16 @@ p {
   white-space: nowrap;
 }
 
-.daemon-segment + .daemon-segment {
+.service-segment + .service-segment {
   border-left: 1px solid var(--border);
 }
 
-.daemon-state {
+.service-state {
   font-weight: 600;
   color: var(--ink);
 }
 
-.daemon-dot {
+.service-dot {
   width: 7px;
   height: 7px;
   flex: none;
@@ -712,47 +712,47 @@ p {
   background: var(--muted);
 }
 
-.daemon-strip.running .daemon-dot {
+.service-strip.running .service-dot {
   background: var(--accent);
 }
 
-.daemon-strip.paused .daemon-dot {
+.service-strip.paused .service-dot {
   background: var(--status-progress);
 }
 
-.daemon-strip.warning .daemon-dot {
+.service-strip.warning .service-dot {
   background: var(--danger);
 }
 
-.daemon-meter {
+.service-meter {
   gap: 6px;
   color: var(--muted);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
 
-.daemon-slots {
+.service-slots {
   display: inline-flex;
   align-items: center;
   gap: 2px;
 }
 
-.daemon-slot {
+.service-slot {
   width: 3.5px;
   height: 10px;
   border-radius: 1px;
   background: var(--border-strong);
 }
 
-.daemon-slot.busy {
+.service-slot.busy {
   background: var(--accent);
 }
 
-.daemon-strip.paused .daemon-slot.busy {
+.service-strip.paused .service-slot.busy {
   background: var(--status-progress);
 }
 
-.daemon-strip.warning .daemon-slot.busy {
+.service-strip.warning .service-slot.busy {
   background: var(--danger);
 }
 
@@ -791,7 +791,7 @@ p {
   border-left: 1px solid var(--border);
 }
 
-.daemon-toggle-btn {
+.service-toggle-btn {
   display: inline-flex;
   align-items: center;
   height: 100%;
@@ -806,22 +806,22 @@ p {
   transition: background-color 140ms var(--ease-out), color 140ms var(--ease-out);
 }
 
-.daemon-toggle-btn:hover:not(:disabled) {
+.service-toggle-btn:hover:not(:disabled) {
   background: var(--surface-subtle);
   color: var(--ink);
 }
 
-.daemon-toggle-btn:disabled {
+.service-toggle-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 
-.daemon-strip.paused .daemon-toggle-btn {
+.service-strip.paused .service-toggle-btn {
   color: var(--accent-ink);
   background: var(--accent-soft);
 }
 
-.daemon-strip.paused .daemon-toggle-btn:hover:not(:disabled) {
+.service-strip.paused .service-toggle-btn:hover:not(:disabled) {
   background: var(--accent);
   color: #ffffff;
 }
@@ -2661,16 +2661,16 @@ p {
     margin-left: auto;
   }
 
-  .daemon-strip {
+  .service-strip {
     order: 3;
     width: 100%;
   }
 
-  .daemon-state {
+  .service-state {
     flex: 1;
   }
 
-  .daemon-slots,
+  .service-slots,
   .header-notice,
   .header-divider {
     display: none;

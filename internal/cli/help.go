@@ -17,6 +17,7 @@ var flagDescriptions = map[string]string{
 	"message":     "Markdown message",
 	"host":        "HTTP host to bind (default: 127.0.0.1)",
 	"port":        "HTTP port to bind (default: 44547)",
+	"db":          "SQLite database path (default: the Gilir data directory)",
 }
 
 var flagPlaceholders = map[string]string{
@@ -30,13 +31,13 @@ var flagPlaceholders = map[string]string{
 	"message":     "markdown",
 	"host":        "host",
 	"port":        "port",
+	"db":          "path",
 }
 
 var groupSummaries = map[string]string{
 	"project": "Manage projects.",
 	"repo":    "Manage repositories and their project links.",
-	"service": "Manage the background service.",
-	"daemon":  "Pause, resume, and tune task dispatch.",
+	"service": "Manage the managed background service and its queue.",
 }
 
 func helpFor(positionals []string) string {
@@ -62,8 +63,9 @@ func generalHelp() string {
 	var builder strings.Builder
 	builder.WriteString("gilir tracks projects, repositories, and tasks for coding agents.\n\n")
 	builder.WriteString("Usage:\n  gilir [--actor <actor>] [--json] <command> [arguments]\n\n")
-	builder.WriteString("Ordinary commands and queue controls use GILIR_URL (default\n")
-	builder.WriteString("http://127.0.0.1:44547). Service start/restart flags choose the bind address.\n\n")
+	builder.WriteString("Ordinary commands use GILIR_URL (default\n")
+	builder.WriteString("http://127.0.0.1:44547). `gilir serve` runs the service in the foreground;\n")
+	builder.WriteString("`gilir service` manages a detached one and its queue.\n\n")
 
 	builder.WriteString("Project commands:\n")
 	writeCommandUsages(&builder, func(spec command) bool {
@@ -78,16 +80,16 @@ func generalHelp() string {
 		return !strings.HasPrefix(spec.path, "project ") &&
 			!strings.HasPrefix(spec.path, "repo ") &&
 			!strings.HasPrefix(spec.path, "service ") &&
-			!strings.HasPrefix(spec.path, "daemon ") &&
+			spec.path != "serve" &&
 			spec.path != "skill"
+	})
+	builder.WriteString("\nServer commands:\n")
+	writeCommandUsages(&builder, func(spec command) bool {
+		return spec.path == "serve"
 	})
 	builder.WriteString("\nService commands:\n")
 	writeCommandUsages(&builder, func(spec command) bool {
 		return strings.HasPrefix(spec.path, "service ")
-	})
-	builder.WriteString("\nDaemon commands:\n")
-	writeCommandUsages(&builder, func(spec command) bool {
-		return strings.HasPrefix(spec.path, "daemon ")
 	})
 	builder.WriteString("\nLocal commands:\n")
 	writeCommandUsages(&builder, func(spec command) bool {

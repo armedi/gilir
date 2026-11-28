@@ -31,14 +31,10 @@ const (
 	maxStatusBytes  = 1 << 20
 )
 
-// errLocked reports that another process holds the daemon lock.
+// errLocked reports that another process holds the service lock.
 var errLocked = errors.New("lock is held by another process")
 
-type stopped struct {
-	Stopped bool `json:"stopped"`
-}
-
-// opencodeEndpoint describes where the daemon will look for OpenCode, for the
+// opencodeEndpoint describes where the service will look for OpenCode, for the
 // startup line. It never contains the password.
 func opencodeEndpoint(overrides opencode.Overrides) string {
 	if overrides.URL != nil {
@@ -62,18 +58,48 @@ func opencodeOverrides() opencode.Overrides {
 	return overrides
 }
 
-// runDaemon serves until SIGINT/SIGTERM, a private stop request, or a server
-// failure, then stops the HTTP servers, cancels and waits for the watcher and
-// hooks, and only then closes SQLite and releases the lock.
-func runDaemon(parent context.Context, host, port string) (any, error) {
-	listen, err := resolveWorkerListen(host, port)
+// serveForeground runs the service in the current process until SIGINT,
+// SIGTERM, or a server failure. It never publishes managed-service state,
+// never starts the private control listener, and prints nothing on stdout on a
+// clean exit.
+func serveForeground(ctx context.Context, host, port, db string) (any, error) {
+	listen, err := resolveListen(host, port)
 	if err != nil {
 		return nil, err
 	}
+	dbPath, err := prepareDatabase(db)
+	if err != nil {
+		return nil, err
+	}
+	if err := serve(ctx, listen, dbPath, false); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+// runServiceWorker is the private detached-worker entry point replumbed by
+// `gilir service start`. It reads its bind address and database from the
+// launcher's private environment.
+func runServiceWorker(ctx context.Context) error {
+	listen, err := resolveWorkerListen("", "")
+	if err != nil {
+		return err
+	}
+	dbPath, err := prepareDatabase("")
+	if err != nil {
+		return err
+	}
+	return serve(ctx, listen, dbPath, true)
+}
+
+// serve runs the HTTP API, web UI, watcher and hooks until shutdown. managed
+// selects the detached-service behavior: publish service state under
+// <dataDir>/gilir and serve the private loopback stop endpoint.
+func serve(parent context.Context, listen listenConfig, dbPath string, managed bool) error {
 	overrides := opencodeOverrides()
 	conn, err := opencode.NewConnector(opencode.NewCLI(), overrides)
 	if err != nil {
-		return nil, fmt.Errorf("GILIR_OPENCODE_URL: %w", err)
+		return fmt.Errorf("GILIR_OPENCODE_URL: %w", err)
 	}
 	// Resolve once at startup so a stopped service is reported immediately and
 	// the first watcher tick reuses the cached client instead of running the
@@ -86,32 +112,28 @@ func runDaemon(parent context.Context, host, port string) (any, error) {
 	var hookConfigs []hooks.Config
 	if path := os.Getenv("GILIR_HOOKS"); path != "" {
 		if hookConfigs, err = hooks.Load(path); err != nil {
-			return nil, fmt.Errorf("GILIR_HOOKS: %w", err)
+			return fmt.Errorf("GILIR_HOOKS: %w", err)
 		}
 	}
 
-	dbPath, err := prepareDatabase()
-	if err != nil {
-		return nil, err
-	}
 	lock, err := lockFile(dbPath + ".lock")
 	if errors.Is(err, errLocked) {
-		return nil, fmt.Errorf("another gilir service is already running for %s", dbPath)
+		return fmt.Errorf("another gilir service is already running for %s", dbPath)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("acquire daemon lock: %w", err)
+		return fmt.Errorf("acquire service lock: %w", err)
 	}
 	defer lock.Close() // released by close or process exit; the file stays
 
 	st, err := store.Open(dbPath)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer st.Close()
 
 	source := storeSource{st}
 	if err := initHookCursors(parent, source, hookConfigs); err != nil {
-		return nil, err
+		return err
 	}
 
 	web := embeddedWeb()
@@ -132,60 +154,73 @@ func runDaemon(parent context.Context, host, port string) (any, error) {
 
 	ln, err := net.Listen("tcp", listen.address())
 	if err != nil {
-		return nil, fmt.Errorf("listen on %s: %w", listen.address(), err)
+		return fmt.Errorf("listen on %s: %w", listen.address(), err)
 	}
 	// Hooks are local clients and need a dialable URL even on a wildcard bind.
 	boundAddr := ln.Addr().(*net.TCPAddr)
 	boundURL := boundURLFor(listen, boundAddr)
 
-	// The stop channel is served on a private loopback listener so a public
-	// bind never exposes process shutdown.
-	controlLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		ln.Close()
-		return nil, fmt.Errorf("listen for service control: %w", err)
-	}
-	token, err := randomHex(32)
-	if err != nil {
-		ln.Close()
-		controlLn.Close()
-		return nil, fmt.Errorf("generate service token: %w", err)
-	}
-	instance := os.Getenv(serviceInstanceEnvName)
-	if instance == "" {
-		if instance, err = randomHex(16); err != nil {
+	instance := ""
+	var paths servicePaths
+	if managed {
+		if paths, err = resolveServicePaths(); err != nil {
 			ln.Close()
-			controlLn.Close()
-			return nil, fmt.Errorf("generate service identity: %w", err)
+			return err
+		}
+		instance = os.Getenv(serviceInstanceEnvName)
+		if instance == "" {
+			if instance, err = randomHex(16); err != nil {
+				ln.Close()
+				return fmt.Errorf("generate service identity: %w", err)
+			}
 		}
 	}
-	state := serviceState{
-		Version:       serviceVersion,
-		Instance:      instance,
-		PID:           os.Getpid(),
-		RequestedHost: listen.host,
-		RequestedPort: requestedPort(listen.port),
-		Host:          listen.host,
-		Port:          boundAddr.Port,
-		URL:           boundURL,
-		ControlPort:   controlLn.Addr().(*net.TCPAddr).Port,
-		Token:         token,
-		LogPath:       serviceLogPath(dbPath),
-		StartedAt:     time.Now().UTC(),
-	}
-	if err := writeServiceState(dbPath, state); err != nil {
-		ln.Close()
-		controlLn.Close()
-		return nil, err
-	}
-	defer removeServiceState(dbPath)
 
+	// A foreground `gilir serve` stops on signals only. A managed worker also
+	// listens on a private loopback listener so a public bind never exposes
+	// process shutdown.
 	stopRequests := make(chan struct{}, 1)
-	controlServer := &http.Server{
-		Handler:           &controlHandler{token: token, stop: stopRequests},
-		ReadHeaderTimeout: 5 * time.Second,
+	var controlServer *http.Server
+	if managed {
+		controlLn, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			ln.Close()
+			return fmt.Errorf("listen for service control: %w", err)
+		}
+		token, err := randomHex(32)
+		if err != nil {
+			ln.Close()
+			controlLn.Close()
+			return fmt.Errorf("generate service token: %w", err)
+		}
+		state := serviceState{
+			Version:       serviceVersion,
+			Instance:      instance,
+			PID:           os.Getpid(),
+			RequestedHost: listen.host,
+			RequestedPort: requestedPort(listen.port),
+			Host:          listen.host,
+			Port:          boundAddr.Port,
+			URL:           boundURL,
+			ControlPort:   controlLn.Addr().(*net.TCPAddr).Port,
+			Token:         token,
+			DBPath:        dbPath,
+			LogPath:       paths.Log,
+			StartedAt:     time.Now().UTC(),
+		}
+		if err := writeServiceState(paths, state); err != nil {
+			ln.Close()
+			controlLn.Close()
+			return err
+		}
+		defer removeServiceState(paths)
+
+		controlServer = &http.Server{
+			Handler:           &controlHandler{token: token, stop: stopRequests},
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		go func() { _ = controlServer.Serve(controlLn) }()
 	}
-	go func() { _ = controlServer.Serve(controlLn) }()
 
 	w := watcher.NewWithConnection(st, conn)
 	service := commands.New(st, func() commands.Snapshot {
@@ -242,13 +277,12 @@ func runDaemon(parent context.Context, host, port string) (any, error) {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		_ = server.Close()
 	}
-	controlServer.Close()
+	if controlServer != nil {
+		controlServer.Close()
+	}
 	cancel()
 	wg.Wait()
-	if runErr != nil {
-		return nil, runErr
-	}
-	return stopped{Stopped: true}, nil
+	return runErr
 }
 
 // openWeb returns the static bundle in dir when it has an index.html, read

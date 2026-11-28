@@ -68,6 +68,9 @@ func Run(ctx context.Context, argv []string, stdout, stderr io.Writer, defaultAc
 		return 1
 	}
 
+	if spec.silent {
+		return 0
+	}
 	if inv.json {
 		if err := writeJSON(stdout, result); err != nil {
 			writeFailure(stderr, true, "encode result: "+err.Error())

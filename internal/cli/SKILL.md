@@ -96,8 +96,10 @@ gilir delete GILIR-7
 - `delete` needs no reserved dispatch attempt and no task still depending on
   the task. The audit history survives.
 - Retry a task that carries `error` by moving it back to `todo`.
-- Queue controls: `gilir service status`, `gilir daemon pause`,
-  `gilir daemon resume`, `gilir daemon concurrency 2`.
+- Queue controls are host-local, not remote `GILIR_URL` client commands:
+  `gilir service status`, `gilir service pause`, `gilir service resume`,
+  `gilir service concurrency 2`. Only run them on the machine hosting the
+  service.
 
 ## Human-requested reviews
 

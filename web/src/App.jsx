@@ -59,7 +59,7 @@ const LEFT_MAX = 460;
 const RIGHT_MIN = 250;
 const RIGHT_MAX = 420;
 
-// App is the router's root layout: it mounts once, owns the queue/daemon/
+// App is the router's root layout: it mounts once, owns the queue/service/
 // detail polling and the panel chrome, and renders the matched page in its
 // center slot. The URL is the single source of truth for which page is shown
 // and which task is selected; everything that is presentation-only (panel
@@ -87,9 +87,9 @@ export default function App(props) {
   const [taskReload, setTaskReload] = createSignal(0);
   const [projectTaskCounts, setProjectTaskCounts] = createSignal({});
 
-  const [daemon, setDaemon] = createSignal(null);
-  const [daemonError, setDaemonError] = createSignal(null);
-  const [daemonReload, setDaemonReload] = createSignal(0);
+  const [service, setService] = createSignal(null);
+  const [serviceError, setServiceError] = createSignal(null);
+  const [serviceReload, setServiceReload] = createSignal(0);
 
   const [detail, setDetail] = createSignal(null);
   const [detailLoading, setDetailLoading] = createSignal(false);
@@ -186,10 +186,10 @@ export default function App(props) {
   });
 
   const watcherWarning = createMemo(() =>
-    daemon()?.watcher_error
-      ? { title: 'OpenCode warning.', body: daemon()?.watcher_error }
-      : daemonError()
-        ? { title: 'Queue status unavailable.', body: daemonError() }
+    service()?.watcher_error
+      ? { title: 'OpenCode warning.', body: service()?.watcher_error }
+      : serviceError()
+        ? { title: 'Queue status unavailable.', body: serviceError() }
         : null,
   );
 
@@ -432,20 +432,20 @@ export default function App(props) {
     return () => clearTimeout(markingTimer);
   });
 
-  createEffect(daemonReload, () => {
+  createEffect(serviceReload, () => {
     const controller = new AbortController();
     let cancelled = false;
     let timer = null;
 
     const load = async () => {
       try {
-        const data = await command('daemon.status', {}, { signal: controller.signal });
+        const data = await command('service.status', {}, { signal: controller.signal });
         if (cancelled) return;
-        setDaemon(data && typeof data === 'object' ? data : null);
-        setDaemonError(null);
+        setService(data && typeof data === 'object' ? data : null);
+        setServiceError(null);
       } catch (error) {
         if (cancelled || isAbortError(error)) return;
-        setDaemonError(errorText(error));
+        setServiceError(errorText(error));
       }
     };
 
@@ -592,8 +592,8 @@ export default function App(props) {
     },
   );
 
-  function refreshDaemon() {
-    setDaemonReload((value) => value + 1);
+  function refreshService() {
+    setServiceReload((value) => value + 1);
   }
 
   function refreshTasks() {
@@ -789,7 +789,7 @@ export default function App(props) {
         </a>
 
         <Header
-          daemon={daemon()}
+          service={service()}
           hasRepos={hasRepos()}
           notice={notice()}
           leftOpen={leftOpen()}
@@ -798,7 +798,7 @@ export default function App(props) {
           primaryHref={primaryHref()}
           onToggleLeft={() => setLeftOpen((open) => !open)}
           onToggleRight={() => setRightOpen((open) => !open)}
-          onRefreshDaemon={refreshDaemon}
+          onRefreshService={refreshService}
           notify={notify}
         />
 
@@ -809,7 +809,7 @@ export default function App(props) {
               <span class="watcher-banner-text">
                 <strong>{warning().title}</strong> {warning().body}
               </span>
-              <button class="btn btn-ghost btn-sm" type="button" onClick={refreshDaemon}>
+              <button class="btn btn-ghost btn-sm" type="button" onClick={refreshService}>
                 Retry
               </button>
             </div>

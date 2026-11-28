@@ -53,7 +53,7 @@ export default function Header(props) {
   const [pauseBusy, setPauseBusy] = createSignal(false);
   const [concurrencyBusy, setConcurrencyBusy] = createSignal(false);
 
-  const status = () => props.daemon;
+  const status = () => props.service;
   const state = () => stateOf(status());
   const activeNum = () =>
     typeof status()?.active_parents === 'number' ? status().active_parents : null;
@@ -76,8 +76,8 @@ export default function Header(props) {
     const wasPaused = Boolean(current.paused);
     setPauseBusy(true);
     try {
-      await command('daemon.update', { paused: !wasPaused });
-      await props.onRefreshDaemon();
+      await command('service.update', { paused: !wasPaused });
+      await props.onRefreshService();
       props.notify(wasPaused ? 'Queue resumed' : 'Queue paused');
     } catch (requestError) {
       props.notify(errorText(requestError));
@@ -93,8 +93,8 @@ export default function Header(props) {
     if (!Number.isInteger(next) || next < 1) return;
     setConcurrencyBusy(true);
     try {
-      await command('daemon.update', { max_concurrency: next });
-      await props.onRefreshDaemon();
+      await command('service.update', { max_concurrency: next });
+      await props.onRefreshService();
       props.notify(`Max concurrency set to ${next}`);
     } catch (requestError) {
       props.notify(errorText(requestError));
@@ -145,23 +145,23 @@ export default function Header(props) {
           </Show>
 
           <div
-            class={['daemon-strip', state()]}
+            class={['service-strip', state()]}
             role="group"
-            aria-label="Dispatch daemon controls"
+            aria-label="Dispatch service controls"
           >
-            <span class="daemon-segment daemon-state">
-              <span class="daemon-dot" aria-hidden="true" />
+            <span class="service-segment service-state">
+              <span class="service-dot" aria-hidden="true" />
               <span>{stateLabel(state())}</span>
             </span>
 
             <span
-              class="daemon-segment daemon-meter"
+              class="service-segment service-meter"
               title="Active OpenCode parent runs / max concurrency"
             >
               <Show when={slotIndicators().length > 0}>
-                <span class="daemon-slots" aria-hidden="true">
+                <span class="service-slots" aria-hidden="true">
                   <For each={slotIndicators()}>
-                    {(busy) => <span class={['daemon-slot', { busy }]} />}
+                    {(busy) => <span class={['service-slot', { busy }]} />}
                   </For>
                 </span>
               </Show>
@@ -212,7 +212,7 @@ export default function Header(props) {
 
             <button
               type="button"
-              class="daemon-toggle-btn"
+              class="service-toggle-btn"
               onClick={togglePause}
               disabled={!status() || pauseBusy()}
             >

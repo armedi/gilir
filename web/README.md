@@ -23,8 +23,10 @@ Back/Forward:
 - `/projects` - combined Projects & Repos management
 - `/projects/repos/new` - the add-repository form inside that screen
 
-`App.jsx` is the router's root layout and owns the queue, service, and detail
-polling plus the panel chrome; `src/pages/` holds the per-URL views. The Go
+`App.jsx` is the router's root layout and owns the queue, service status, and
+detail polling plus the panel chrome; `src/pages/` holds the per-URL views. The
+header's dispatch controls call the `service.status` and `service.update` wire
+commands, which the Go service also exposes to the CLI. The Go
 server answers direct loads and refreshes of these paths with `index.html`
 (see `staticPagePath` in `internal/localhttp/localhttp.go`), while unknown
 assets and `/api` paths still return 404. Keep the two path lists in sync.
@@ -45,8 +47,9 @@ including the port. The dev proxy only
 rewrites `Origin` to the backend origin when the incoming `Origin` exactly
 matches the request host, the host is loopback, and the port is `5173`. Other
 origins are forwarded unchanged so the backend can reject them. Run the backend
-on `127.0.0.1:44547` (the default) while using the dev server; if you pass
-`gilir service start --port`, point `API_TARGET` in `vite.config.js` at it.
+on `127.0.0.1:44547` (the default) while using the dev server, for example with
+`gilir serve --db "$PWD/dev.sqlite"`; if you pass `--port`, point `API_TARGET`
+in `vite.config.js` at it.
 
 ## Production
 
@@ -58,8 +61,8 @@ pnpm build
 `pnpm build` runs `vp build` and writes the static bundle to `web/dist`
 (ignored by Git). The explicit `--prod=false` keeps the Vite+ development
 dependencies installed when `NODE_ENV=production`. Serve that directory from
-the Go process on the same origin as `/api/v1/command`; the browser then calls
-the API without a proxy.
+`gilir serve` or the managed `gilir service`, on the same origin as
+`/api/v1/command`; the browser then calls the API without a proxy.
 
 ## Scripts
 
