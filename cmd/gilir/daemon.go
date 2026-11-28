@@ -198,9 +198,13 @@ func runDaemon(parent context.Context, host, port string) (any, error) {
 			Instance:      instance,
 		}
 	})
+	httpConfig := localhttp.Config{
+		Host:         listen.host,
+		Port:         boundPort,
+		AllowDNSHost: os.Getenv("GILIR_ALLOW_ANY_HOST") == "1",
+	}
 	server := &http.Server{
-		Handler: localhttp.Handler(localhttp.Config{Host: listen.host, Port: boundPort},
-			web, service.Execute, commands.Classify),
+		Handler:           localhttp.Handler(httpConfig, web, service.Execute, commands.Classify),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,

@@ -1,4 +1,4 @@
-// Package localhttp implements the loopback-only HTTP transport for the
+// Package localhttp implements the HTTP transport for the
 // Gilir local UI. It serves a JSON command API and, when provided, a static
 // web bundle.
 package localhttp
@@ -14,6 +14,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,18 +47,20 @@ const (
 		"frame-ancestors 'none'; form-action 'self'"
 )
 
-// Config is the bound listen address that request validation depends on. Host
+// Config controls request authority validation. Host
 // is the address the daemon actually bound (127.0.0.1, ::1, localhost, a
 // concrete interface address, or a wildcard such as 0.0.0.0 or ::). Port is
 // the actual port, which matters when the daemon was started with port 0.
 type Config struct {
-	Host string
-	Port string
+	Host         string
+	Port         string
+	AllowDNSHost bool // Accept arbitrary DNS hostnames at the configured port.
 }
 
+var dnsHostname = regexp.MustCompile(`^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
+
 type handler struct {
-	host     string
-	port     string
+	config   Config
 	web      fs.FS
 	execute  func(context.Context, string, string, json.RawMessage) (any, error)
 	classify func(error) (int, string)
@@ -82,8 +85,8 @@ type errorDetail struct {
 // port. A wildcard bind also accepts Hosts that are concrete IP literals, so
 // a machine can be reached by its LAN or public address; a specific
 // non-loopback bind accepts only that address. DNS names other than localhost
-// are rejected, which keeps a wildcard bind from becoming a DNS-rebinding
-// target. An unspecified address (0.0.0.0 or ::) is never a valid request
+// require AllowDNSHost, which disables DNS-rebinding protection. An
+// unspecified address (0.0.0.0 or ::) is never a valid request
 // Host. When the canonical port is 80, the port may be omitted from Host.
 // When an Origin header is present it must be exactly http:// followed by the
 // request Host; no CORS headers are emitted.
@@ -96,9 +99,9 @@ type errorDetail struct {
 // disabled. web must confine path resolution to a trusted root; main uses
 // os.OpenRoot. Plain os.DirFS can follow symlinks outside the served root.
 func Handler(config Config, web fs.FS, execute func(context.Context, string, string, json.RawMessage) (any, error), classify func(error) (int, string)) http.Handler {
+	config.Port = canonicalPort(config.Port)
 	return &handler{
-		host:     config.Host,
-		port:     canonicalPort(config.Port),
+		config:   config,
 		web:      web,
 		execute:  execute,
 		classify: classify,
@@ -271,12 +274,12 @@ func (h *handler) serveStatic(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) validHost(authority string) bool {
-	if h.port == "" {
+	if h.config.Port == "" {
 		return false
 	}
 	host, port, err := net.SplitHostPort(authority)
 	if err != nil {
-		if h.port != "80" {
+		if h.config.Port != "80" {
 			return false
 		}
 		host, err = bareAuthorityHost(authority)
@@ -285,29 +288,30 @@ func (h *handler) validHost(authority string) bool {
 		}
 		return h.acceptsHost(host)
 	}
-	return port == h.port && h.acceptsHost(host)
+	return port == h.config.Port && h.acceptsHost(host)
 }
 
 // acceptsHost reports whether a request Host may name this listener. Loopback
 // names are always accepted so the same daemon answers on the local machine.
 // A wildcard bind accepts concrete address literals (any local interface);
-// a specific bind accepts exactly its own address. DNS names beyond localhost
-// are rejected so a rebinding name cannot ride a wildcard bind.
+// a specific bind accepts exactly its own address. Other DNS names require
+// explicit opt-in.
 func (h *handler) acceptsHost(host string) bool {
 	if isLoopbackHost(host) {
 		return true
 	}
 	ip := net.ParseIP(host)
 	if ip == nil {
-		return false
+		name := strings.TrimSuffix(host, ".")
+		return h.config.AllowDNSHost && len(name) <= 253 && dnsHostname.MatchString(name)
 	}
 	if ip.IsUnspecified() {
 		return false
 	}
-	if isWildcardHost(h.host) {
+	if isWildcardHost(h.config.Host) {
 		return true
 	}
-	bind := net.ParseIP(h.host)
+	bind := net.ParseIP(h.config.Host)
 	return bind != nil && bind.Equal(ip)
 }
 
