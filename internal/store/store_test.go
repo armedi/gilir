@@ -513,3 +513,40 @@ func TestTimestampsAreUTC(t *testing.T) {
 		t.Fatalf("activity timestamp is not UTC: %+v", detail.Activity)
 	}
 }
+
+// TestDatabaseIDIsDurableAndUniquePerFile covers the durable per-database ID
+// that namespaces external resources such as OpenCode worktrees: it must
+// survive reopen and differ between files so a recreated database cannot adopt
+// resources created by the one it replaced.
+func TestDatabaseIDIsDurableAndUniquePerFile(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "ids.db")
+	first, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	id, err := first.DatabaseID(ctx)
+	if err != nil || len(id) != 32 {
+		t.Fatalf("DatabaseID = %q, %v; want 32 hex characters", id, err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if again, err := reopened.DatabaseID(ctx); err != nil || again != id {
+		t.Fatalf("DatabaseID after reopen = %q, %v; want %q", again, err, id)
+	}
+
+	other, err := Open(filepath.Join(t.TempDir(), "other.db"))
+	if err != nil {
+		t.Fatalf("Open other: %v", err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+	if otherID, err := other.DatabaseID(ctx); err != nil || otherID == id {
+		t.Fatalf("second database ID = %q, %v; want a distinct ID from %q", otherID, err, id)
+	}
+}

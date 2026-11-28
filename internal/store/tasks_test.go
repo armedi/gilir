@@ -106,6 +106,39 @@ func TestCreateTaskDefaultsJSONAndDetailArrays(t *testing.T) {
 	}
 }
 
+// TestTaskCreatedEventOmitsBody pins the task.created activity payload. Task
+// body can be arbitrarily long and lives on the task row, so duplicating it into
+// activity data bloats the append-only history and hook deliveries. It also
+// keeps a top-level "body" out of event data, which is how ActivityFeed decides
+// an event is a comment thread.
+func TestTaskCreatedEventOmitsBody(t *testing.T) {
+	s, _ := openTestStore(t)
+	project, repo := seedProjectRepo(t, s)
+	task := mustCreateTask(t, s, CreateTaskParams{
+		ProjectID: project.ID, RepoID: repo.ID, Title: "audited", Body: "long task body",
+	})
+
+	detail := mustShow(t, s, task.ID)
+	var created Activity
+	for _, activity := range detail.Activity {
+		if activity.Type == ActivityTaskCreated {
+			created = activity
+		}
+	}
+	if created.Type != ActivityTaskCreated {
+		t.Fatalf("task.created event missing: %v", activityTypes(detail.Activity))
+	}
+	if _, ok := created.Data["body"]; ok {
+		t.Fatalf("task.created data carries body: %#v", created.Data)
+	}
+	if created.Data["title"] != "audited" {
+		t.Fatalf("task.created title = %#v, want audited", created.Data["title"])
+	}
+	if task.Body != "long task body" {
+		t.Fatalf("task body = %q, want it preserved on the task row", task.Body)
+	}
+}
+
 func TestListTasksFilters(t *testing.T) {
 	s, _ := openTestStore(t)
 	ctx := context.Background()

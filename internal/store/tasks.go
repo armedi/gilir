@@ -268,7 +268,6 @@ func (s *Store) CreateTask(ctx context.Context, actor string, in CreateTaskParam
 			Data: map[string]any{
 				"repo_id":  in.RepoID,
 				"title":    title,
-				"body":     in.Body,
 				"status":   string(status),
 				"priority": string(priority),
 			},
