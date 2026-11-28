@@ -388,7 +388,7 @@ export default function TaskInspectorPanel(props) {
                 <h3 id="rail-markings-heading">Markings</h3>
                 <Show
                   when={markings().length > 0}
-                  fallback={<p class="muted-small" style="margin-bottom: 10px">No markings.</p>}
+                  fallback={<p class="muted-small rail-empty">No markings.</p>}
                 >
                   <div class="token-list">
                     <For each={markings()}>
@@ -447,7 +447,7 @@ export default function TaskInspectorPanel(props) {
                 <h3 id="rail-blockers-heading">Blockers</h3>
                 <Show
                   when={blockerIds().length > 0}
-                  fallback={<p class="muted-small" style="margin-bottom: 10px">No blockers.</p>}
+                  fallback={<p class="muted-small rail-empty">No blockers.</p>}
                 >
                   <ul class="flat-list">
                     <For each={blockerIds()}>

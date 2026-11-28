@@ -997,6 +997,10 @@ p {
   gap: 8px;
 }
 
+.marking-filter {
+  flex: 1;
+}
+
 .filter-control {
   min-height: 30px;
   border-color: var(--border);
@@ -1762,6 +1766,10 @@ p {
 .rail-saving {
   color: var(--muted);
   font-size: var(--text-sm);
+}
+
+.rail-empty {
+  margin-bottom: 10px;
 }
 
 .token-list {

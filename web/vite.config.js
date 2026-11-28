@@ -47,5 +47,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    // The production CSP allows font URLs from this origin, not data URLs.
+    assetsInlineLimit: 0,
   },
 });
