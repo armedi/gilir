@@ -313,8 +313,8 @@ export default function TaskDetailPane(props) {
     if (actionBusy() !== null) return;
     const current = task();
     if (!current) return;
-    const body = comment().trim();
-    if (!body) {
+    const message = comment().trim();
+    if (!message) {
       setCommentError('Enter a comment.');
       commentInput?.focus();
       return;
@@ -325,7 +325,7 @@ export default function TaskDetailPane(props) {
     setActionBusy('comment');
     setCommentError(null);
     try {
-      await command('task.comment', { id: taskId, body });
+      await command('task.comment', { id: taskId, message });
       if (commentKey) clearDraft(commentKey);
       await props.onRefresh();
       if (activeTaskKey === taskKey) {
@@ -431,8 +431,8 @@ export default function TaskDetailPane(props) {
     if (activeTaskKey === taskKey) props.notify(notice);
   }
 
-  const editComment = (commentId, body) =>
-    mutateComment('task.comment.edit', commentId, { body }, 'Comment updated');
+  const editComment = (commentId, message) =>
+    mutateComment('task.comment.edit', commentId, { message }, 'Comment updated');
   const removeComment = (commentId) =>
     mutateComment('task.comment.remove', commentId, {}, 'Comment removed');
 

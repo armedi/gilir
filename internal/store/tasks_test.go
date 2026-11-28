@@ -106,33 +106,48 @@ func TestCreateTaskDefaultsJSONAndDetailArrays(t *testing.T) {
 	}
 }
 
-// TestTaskCreatedEventOmitsBody pins the task.created activity payload. Task
-// body can be arbitrarily long and lives on the task row, so duplicating it into
-// activity data bloats the append-only history and hook deliveries. It also
-// keeps a top-level "body" out of event data, which is how ActivityFeed decides
-// an event is a comment thread.
-func TestTaskCreatedEventOmitsBody(t *testing.T) {
+// TestEventDataReservesBodyForKey pins the activity-data vocabulary: "body" names
+// task.body and nothing else. Comment records store their prose under "message",
+// the same name block and review take, because they all become comments.
+// ActivityFeed identifies a comment thread by the presence of that key, so a
+// task body under "body" would otherwise render created tasks as comments.
+// Task body can also be arbitrarily long, so it stays on the task row rather
+// than being duplicated into the append-only history and hook deliveries.
+func TestEventDataReservesBodyForKey(t *testing.T) {
 	s, _ := openTestStore(t)
+	ctx := context.Background()
 	project, repo := seedProjectRepo(t, s)
 	task := mustCreateTask(t, s, CreateTaskParams{
 		ProjectID: project.ID, RepoID: repo.ID, Title: "audited", Body: "long task body",
 	})
+	if _, err := s.Comment(ctx, "alice", task.ID, "please add a test"); err != nil {
+		t.Fatalf("Comment: %v", err)
+	}
 
 	detail := mustShow(t, s, task.ID)
-	var created Activity
+	var created, commented Activity
 	for _, activity := range detail.Activity {
-		if activity.Type == ActivityTaskCreated {
+		switch activity.Type {
+		case ActivityTaskCreated:
 			created = activity
+		case ActivityTaskCommented:
+			commented = activity
 		}
 	}
-	if created.Type != ActivityTaskCreated {
-		t.Fatalf("task.created event missing: %v", activityTypes(detail.Activity))
+	if created.Type != ActivityTaskCreated || commented.Type != ActivityTaskCommented {
+		t.Fatalf("events missing: %v", activityTypes(detail.Activity))
 	}
 	if _, ok := created.Data["body"]; ok {
 		t.Fatalf("task.created data carries body: %#v", created.Data)
 	}
 	if created.Data["title"] != "audited" {
 		t.Fatalf("task.created title = %#v, want audited", created.Data["title"])
+	}
+	if commented.Data["message"] != "please add a test" {
+		t.Fatalf("comment message = %#v, want it under the message key", commented.Data["message"])
+	}
+	if _, ok := commented.Data["body"]; ok {
+		t.Fatalf("comment data carries body: %#v", commented.Data)
 	}
 	if task.Body != "long task body" {
 		t.Fatalf("task body = %q, want it preserved on the task row", task.Body)
@@ -311,7 +326,7 @@ func TestDeleteTaskPreservesAuditAndRemovesTerminalHistory(t *testing.T) {
 	}
 	sawPriorComment := false
 	for _, activity := range after {
-		if activity.Type == ActivityTaskCommented && activity.Data["body"] == "prior audit" {
+		if activity.Type == ActivityTaskCommented && activity.Data["message"] == "prior audit" {
 			sawPriorComment = true
 		}
 	}
@@ -667,7 +682,7 @@ func TestReviewAndReworkTransitions(t *testing.T) {
 		if activity.Type == ActivityTaskStatusChanged && activity.Data["reason"] == "changes_requested" {
 			sawReason = true
 		}
-		if activity.Type == ActivityTaskCommented && activity.Data["body"] == "add tests" {
+		if activity.Type == ActivityTaskCommented && activity.Data["message"] == "add tests" {
 			sawComment = true
 		}
 	}
@@ -745,7 +760,7 @@ func TestMarkingCommentDependencyIdempotency(t *testing.T) {
 		t.Fatalf("Comment: %v", err)
 	}
 	if comment.Type != ActivityTaskCommented || comment.Actor != "dave" ||
-		comment.Data["body"] != "please add a test" || comment.TaskID == nil || *comment.TaskID != taskA.ID {
+		comment.Data["message"] != "please add a test" || comment.TaskID == nil || *comment.TaskID != taskA.ID {
 		t.Fatalf("comment activity = %+v", comment)
 	}
 

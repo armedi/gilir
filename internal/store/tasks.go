@@ -539,7 +539,7 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID string, pat
 					TaskID:    stringPointer(taskID),
 					ProjectID: int64Pointer(old.ProjectID),
 					Timestamp: now,
-					Data:      map[string]any{"body": message},
+					Data:      map[string]any{"message": message},
 				}); err != nil {
 					return err
 				}
@@ -622,7 +622,7 @@ func (s *Store) Block(ctx context.Context, actor string, taskID, message string)
 			TaskID:    stringPointer(taskID),
 			ProjectID: int64Pointer(current.ProjectID),
 			Timestamp: now,
-			Data:      map[string]any{"body": message},
+			Data:      map[string]any{"message": message},
 		}); err != nil {
 			return err
 		}
@@ -676,7 +676,7 @@ func (s *Store) Unblock(ctx context.Context, actor string, taskID, message strin
 				TaskID:    stringPointer(taskID),
 				ProjectID: int64Pointer(current.ProjectID),
 				Timestamp: now,
-				Data:      map[string]any{"body": message},
+				Data:      map[string]any{"message": message},
 			}); err != nil {
 				return err
 			}
@@ -1002,7 +1002,7 @@ func dependencyCreatesCycle(ctx context.Context, tx *sql.Tx, taskID, dependsOnTa
 
 // Comment appends a comment as an immutable task.commented activity record.
 // Blank comments are rejected.
-func (s *Store) Comment(ctx context.Context, actor string, taskID string, body string) (Activity, error) {
+func (s *Store) Comment(ctx context.Context, actor string, taskID string, message string) (Activity, error) {
 	actor, err := normalizeActor(actor)
 	if err != nil {
 		return Activity{}, err
@@ -1010,8 +1010,8 @@ func (s *Store) Comment(ctx context.Context, actor string, taskID string, body s
 	if taskID, err = normalizeTaskID(taskID); err != nil {
 		return Activity{}, err
 	}
-	if strings.TrimSpace(body) == "" {
-		return Activity{}, fmt.Errorf("%w: comment body is required", ErrInvalid)
+	if strings.TrimSpace(message) == "" {
+		return Activity{}, fmt.Errorf("%w: comment message is required", ErrInvalid)
 	}
 
 	var comment Activity
@@ -1025,7 +1025,7 @@ func (s *Store) Comment(ctx context.Context, actor string, taskID string, body s
 			Actor:     actor,
 			TaskID:    stringPointer(taskID),
 			ProjectID: int64Pointer(projectID),
-			Data:      map[string]any{"body": body},
+			Data:      map[string]any{"message": message},
 		})
 		return err
 	})
@@ -1038,11 +1038,11 @@ func (s *Store) Comment(ctx context.Context, actor string, taskID string, body s
 // EditComment appends an edit event for an existing comment. The comment must
 // be a task.commented event on taskID owned by actor. Removed comments cannot
 // be edited.
-func (s *Store) EditComment(ctx context.Context, actor string, taskID string, commentID int64, body string) (Activity, error) {
-	if strings.TrimSpace(body) == "" {
-		return Activity{}, fmt.Errorf("%w: comment body is required", ErrInvalid)
+func (s *Store) EditComment(ctx context.Context, actor string, taskID string, commentID int64, message string) (Activity, error) {
+	if strings.TrimSpace(message) == "" {
+		return Activity{}, fmt.Errorf("%w: comment message is required", ErrInvalid)
 	}
-	return s.mutateComment(ctx, actor, taskID, commentID, ActivityTaskCommentEdited, map[string]any{"body": body})
+	return s.mutateComment(ctx, actor, taskID, commentID, ActivityTaskCommentEdited, map[string]any{"message": message})
 }
 
 // RemoveComment appends a removal event for an existing comment. The comment
@@ -1182,7 +1182,7 @@ func projectTaskActivity(activities []Activity) []Activity {
 			if data == nil {
 				data = map[string]any{}
 			}
-			data["body"] = mutation.Data["body"]
+			data["message"] = mutation.Data["message"]
 			data["edited_at"] = formatTime(mutation.Timestamp)
 			activity.Data = data
 		}
@@ -1242,7 +1242,7 @@ func (s *Store) Review(ctx context.Context, actor string, taskID string, decisio
 				TaskID:    stringPointer(taskID),
 				ProjectID: int64Pointer(current.ProjectID),
 				Timestamp: now,
-				Data:      map[string]any{"body": message},
+				Data:      map[string]any{"message": message},
 			}); err != nil {
 				return err
 			}

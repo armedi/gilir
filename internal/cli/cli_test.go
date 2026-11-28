@@ -35,7 +35,7 @@ func runCLI(argv []string, defaultActor string, executor *recordingExecutor) (in
 func taskDetailFixture() map[string]any {
 	return map[string]any{
 		"activity": []any{
-			map[string]any{"id": 2, "type": "task.commented", "actor": "agent:ses_1", "data": map[string]any{"body": "Progress"}},
+			map[string]any{"id": 2, "type": "task.commented", "actor": "agent:ses_1", "data": map[string]any{"message": "Progress"}},
 		},
 		"sessions": []any{
 			map[string]any{"id": "ses_gilir_1", "state": "linked", "attempt_id": "abc", "worktree": "/work/gilir-1", "url": "http://127.0.0.1:4096/session/x"},
@@ -151,14 +151,14 @@ func TestRunFlagPlacementAndActorPrecedence(t *testing.T) {
 			argv:        []string{"comment", "GILIR-7", "--", "--json"},
 			wantActor:   "user",
 			wantCommand: "task.comment",
-			wantArgs:    map[string]any{"id": "GILIR-7", "body": "--json"},
+			wantArgs:    map[string]any{"id": "GILIR-7", "message": "--json"},
 		},
 		{
 			name:        "edit comment",
 			argv:        []string{"edit-comment", "GILIR-7", "9", "new body"},
 			wantActor:   "user",
 			wantCommand: "task.comment.edit",
-			wantArgs:    map[string]any{"id": "GILIR-7", "comment_id": int64(9), "body": "new body"},
+			wantArgs:    map[string]any{"id": "GILIR-7", "comment_id": int64(9), "message": "new body"},
 		},
 		{
 			name:        "remove comment",

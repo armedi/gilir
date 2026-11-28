@@ -444,7 +444,7 @@ func TestVoidMutationsReturnOK(t *testing.T) {
 		t.Fatalf("blockers = %v, want [%s]", got, otherID)
 	}
 
-	comment, err := f.run(t, "task.comment", map[string]any{"id": f.task, "body": "Progress: **done**"})
+	comment, err := f.run(t, "task.comment", map[string]any{"id": f.task, "message": "Progress: **done**"})
 	if err != nil {
 		t.Fatalf("comment: %v", err)
 	}
@@ -794,7 +794,7 @@ func TestCommentEditRemoveLifecycle(t *testing.T) {
 	f := newFixture(t, nil)
 	ctx := context.Background()
 
-	created, err := f.run(t, "task.comment", map[string]any{"id": f.task, "body": "first draft"})
+	created, err := f.run(t, "task.comment", map[string]any{"id": f.task, "message": "first draft"})
 	if err != nil {
 		t.Fatalf("comment: %v", err)
 	}
@@ -829,13 +829,13 @@ func TestCommentEditRemoveLifecycle(t *testing.T) {
 		want                 error
 		status               int
 	}{
-		{"wrong actor", "bob", "task.comment.edit", map[string]any{"id": f.task, "comment_id": comment.ID, "body": "hijack"}, store.ErrNotFound, 404},
-		{"wrong task", "alice", "task.comment.edit", map[string]any{"id": otherID, "comment_id": comment.ID, "body": "wrong task"}, store.ErrNotFound, 404},
-		{"invalid target", "alice", "task.comment.edit", map[string]any{"id": f.task, "comment_id": createdEventID, "body": "wrong type"}, store.ErrNotFound, 404},
+		{"wrong actor", "bob", "task.comment.edit", map[string]any{"id": f.task, "comment_id": comment.ID, "message": "hijack"}, store.ErrNotFound, 404},
+		{"wrong task", "alice", "task.comment.edit", map[string]any{"id": otherID, "comment_id": comment.ID, "message": "wrong task"}, store.ErrNotFound, 404},
+		{"invalid target", "alice", "task.comment.edit", map[string]any{"id": f.task, "comment_id": createdEventID, "message": "wrong type"}, store.ErrNotFound, 404},
 		{"missing comment", "alice", "task.comment.remove", map[string]any{"id": f.task, "comment_id": 999999}, store.ErrNotFound, 404},
-		{"zero task", "alice", "task.comment.edit", map[string]any{"id": 0, "comment_id": comment.ID, "body": "x"}, store.ErrInvalid, 400},
+		{"zero task", "alice", "task.comment.edit", map[string]any{"id": 0, "comment_id": comment.ID, "message": "x"}, store.ErrInvalid, 400},
 		{"zero comment", "alice", "task.comment.remove", map[string]any{"id": f.task, "comment_id": 0}, store.ErrInvalid, 400},
-		{"blank body", "alice", "task.comment.edit", map[string]any{"id": f.task, "comment_id": comment.ID, "body": "  "}, store.ErrInvalid, 400},
+		{"blank message", "alice", "task.comment.edit", map[string]any{"id": f.task, "comment_id": comment.ID, "message": "  "}, store.ErrInvalid, 400},
 	}
 	for _, test := range rejections {
 		t.Run(test.name, func(t *testing.T) {
@@ -860,7 +860,7 @@ func TestCommentEditRemoveLifecycle(t *testing.T) {
 	}
 
 	for _, body := range []string{"second draft", "final draft"} {
-		if _, err := f.run(t, "task.comment.edit", map[string]any{"id": f.task, "comment_id": comment.ID, "body": body}); err != nil {
+		if _, err := f.run(t, "task.comment.edit", map[string]any{"id": f.task, "comment_id": comment.ID, "message": body}); err != nil {
 			t.Fatalf("edit %q: %v", body, err)
 		}
 	}
@@ -882,7 +882,7 @@ func TestCommentEditRemoveLifecycle(t *testing.T) {
 	if original == nil {
 		t.Fatal("edited comment missing from Show")
 	}
-	if original.Data["body"] != "final draft" || original.Data["edited_at"] == nil {
+	if original.Data["message"] != "final draft" || original.Data["edited_at"] == nil {
 		t.Fatalf("projected comment = %+v, want latest body and edited_at", original.Data)
 	}
 	if !original.Timestamp.Equal(comment.Timestamp) || original.Actor != "alice" {
@@ -896,12 +896,12 @@ func TestCommentEditRemoveLifecycle(t *testing.T) {
 	edits := 0
 	editBodies := map[string]bool{}
 	for _, activity := range raw {
-		if activity.ID == comment.ID && activity.Data["body"] != "first draft" {
-			t.Fatalf("raw original comment changed: %#v", activity.Data["body"])
+		if activity.ID == comment.ID && activity.Data["message"] != "first draft" {
+			t.Fatalf("raw original comment changed: %#v", activity.Data["message"])
 		}
 		if activity.Type == store.ActivityTaskCommentEdited && activity.Data["comment_id"] == commentKey {
 			edits++
-			if body, ok := activity.Data["body"].(string); ok {
+			if body, ok := activity.Data["message"].(string); ok {
 				editBodies[body] = true
 			}
 		}
@@ -949,7 +949,7 @@ func TestCommentEditRemoveLifecycle(t *testing.T) {
 		name, command string
 		args          map[string]any
 	}{
-		{"edit after removal", "task.comment.edit", map[string]any{"id": f.task, "comment_id": comment.ID, "body": "resurrect"}},
+		{"edit after removal", "task.comment.edit", map[string]any{"id": f.task, "comment_id": comment.ID, "message": "resurrect"}},
 		{"remove after removal", "task.comment.remove", map[string]any{"id": f.task, "comment_id": comment.ID}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1036,7 +1036,7 @@ func TestBlockAndUnblockWireCommands(t *testing.T) {
 	for _, activity := range detail.(store.TaskDetail).Activity {
 		if activity.Type == store.ActivityTaskCommented {
 			comments++
-			if body, _ := activity.Data["body"].(string); body != "Waiting on **ledger**" {
+			if body, _ := activity.Data["message"].(string); body != "Waiting on **ledger**" {
 				t.Fatalf("block comment = %q", body)
 			}
 		}

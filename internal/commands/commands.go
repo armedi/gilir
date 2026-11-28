@@ -321,10 +321,10 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		if err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(in.Body) == "" {
-			return nil, fmt.Errorf("%w: body is required", store.ErrInvalid)
+		if strings.TrimSpace(in.Message) == "" {
+			return nil, fmt.Errorf("%w: message is required", store.ErrInvalid)
 		}
-		return s.store.Comment(ctx, actor, id, in.Body)
+		return s.store.Comment(ctx, actor, id, in.Message)
 
 	case "task.comment.edit":
 		var in taskCommentEditArgs
@@ -338,10 +338,10 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		if err := requireID("comment_id", in.CommentID); err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(in.Body) == "" {
-			return nil, fmt.Errorf("%w: body is required", store.ErrInvalid)
+		if strings.TrimSpace(in.Message) == "" {
+			return nil, fmt.Errorf("%w: message is required", store.ErrInvalid)
 		}
-		return s.store.EditComment(ctx, actor, id, in.CommentID, in.Body)
+		return s.store.EditComment(ctx, actor, id, in.CommentID, in.Message)
 
 	case "task.comment.remove":
 		var in taskCommentRemoveArgs
@@ -606,14 +606,14 @@ type taskUnblockArgs struct {
 }
 
 type taskCommentArgs struct {
-	ID   string `json:"id"`
-	Body string `json:"body"`
+	ID      string `json:"id"`
+	Message string `json:"message"`
 }
 
 type taskCommentEditArgs struct {
 	ID        string `json:"id"`
 	CommentID int64  `json:"comment_id"`
-	Body      string `json:"body"`
+	Message   string `json:"message"`
 }
 
 type taskCommentRemoveArgs struct {

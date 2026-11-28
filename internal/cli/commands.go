@@ -339,7 +339,7 @@ var commandSpecs = []command{
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"id": id, "body": positionals[1]}, nil
+			return map[string]any{"id": id, "message": positionals[1]}, nil
 		},
 	},
 	{
@@ -357,7 +357,7 @@ var commandSpecs = []command{
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"id": id, "comment_id": commentID, "body": positionals[2]}, nil
+			return map[string]any{"id": id, "comment_id": commentID, "message": positionals[2]}, nil
 		},
 	},
 	{

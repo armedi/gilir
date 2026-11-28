@@ -54,9 +54,12 @@ function eventTone(event) {
   return 'neutral';
 }
 
-function commentBody(data) {
+// Comment records carry their prose under "message", the same name block and
+// review take, because they all become comments. "body" is reserved for
+// task.body so an event's key alone identifies what it holds.
+function commentMessage(data) {
   if (!data || typeof data !== 'object') return '';
-  for (const key of ['body', 'comment', 'message', 'content']) {
+  for (const key of ['message', 'comment', 'content']) {
     if (typeof data[key] === 'string' && data[key].trim()) return data[key];
   }
   return '';
@@ -199,7 +202,7 @@ function CommentItem(props) {
   }
 
   function startEdit() {
-    setDraft(props.body());
+    setDraft(props.message());
     setError(null);
     setMode('edit');
     focusSoon(() => textarea);
@@ -224,13 +227,13 @@ function CommentItem(props) {
     if (pending || !textarea?.isConnected) return;
     const value = textarea.value;
     setDraft(value);
-    const body = value.trim();
-    if (!body) {
+    const message = value.trim();
+    if (!message) {
       setError('Enter a comment.');
       textarea?.focus();
       return;
     }
-    if (body === props.body().trim()) {
+    if (message === props.message().trim()) {
       close('edit');
       return;
     }
@@ -238,7 +241,7 @@ function CommentItem(props) {
     setBusy(true);
     setError(null);
     try {
-      await props.onEdit(event().id, body);
+      await props.onEdit(event().id, message);
       close('edit');
     } catch (requestError) {
       setError(errorText(requestError));
@@ -328,7 +331,7 @@ function CommentItem(props) {
         </span>
       </div>
 
-      <Show when={editing()} fallback={<Markdown source={props.body()} />}>
+      <Show when={editing()} fallback={<Markdown source={props.message()} />}>
         <form class="activity-comment-edit" onSubmit={save}>
           <label class="sr-only" for={textareaId}>
             Edit comment
@@ -423,7 +426,7 @@ export default function ActivityFeed(props) {
             reference-keyed row would remount and drop an open comment editor. */}
         <For each={events()} keyed={(event) => event.id ?? event}>
           {(event) => {
-            const body = () => commentBody(event().data);
+            const message = () => commentMessage(event().data);
             const actor = () => asText(event().actor).trim() || 'system';
             const rawData = () =>
               typeof event().data === 'string' && event().data.trim() ? event().data : '';
@@ -431,7 +434,7 @@ export default function ActivityFeed(props) {
 
             return (
               <Show
-                when={body()}
+                when={message()}
                 fallback={
                   <li class={`activity-event tone-${eventTone(event())}`}>
                     <span class="activity-event-dot" aria-hidden="true" />
@@ -459,7 +462,7 @@ export default function ActivityFeed(props) {
                 {(comment) => (
                   <CommentItem
                     event={event}
-                    body={comment}
+                    message={comment}
                     actor={actor}
                     onEdit={props.onEditComment}
                     onRemove={props.onRemoveComment}
