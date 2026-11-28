@@ -345,7 +345,7 @@ func setup(t *testing.T, tasks, maxConcurrency int) *env {
 	for i := range tasks {
 		task, err := st.CreateTask(ctx, "alice", store.CreateTaskParams{
 			ProjectID: project.ID, RepoID: repo.ID, Title: fmt.Sprintf("secret title %d", i),
-			Description: "secret description", Status: store.StatusTodo, Priority: store.PriorityMedium,
+			Body: "secret body", Status: store.StatusTodo, Priority: store.PriorityMedium,
 		})
 		if err != nil {
 			t.Fatal(err)

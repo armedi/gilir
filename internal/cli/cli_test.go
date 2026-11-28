@@ -403,15 +403,15 @@ func TestRunRepoAndTaskProjectOptionality(t *testing.T) {
 		},
 		{
 			name:        "create with project and fields",
-			argv:        []string{"create", "Fix rounding", "--repo", "2", "--project", "3", "--description", "body", "--status", "todo", "--priority", "high"},
+			argv:        []string{"create", "Fix rounding", "--repo", "2", "--project", "3", "--body", "body", "--status", "todo", "--priority", "high"},
 			wantCommand: "task.create",
 			wantArgs: map[string]any{
-				"repo_id":     int64(2),
-				"project_id":  int64(3),
-				"title":       "Fix rounding",
-				"description": "body",
-				"status":      "todo",
-				"priority":    "high",
+				"repo_id":    int64(2),
+				"project_id": int64(3),
+				"title":      "Fix rounding",
+				"body":       "body",
+				"status":     "todo",
+				"priority":   "high",
 			},
 		},
 	}

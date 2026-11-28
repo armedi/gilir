@@ -1512,12 +1512,12 @@ p {
   margin: 0 auto;
 }
 
-.description-block {
+.task-body-block {
   padding-bottom: 20px;
   border-bottom: 1px solid var(--border);
 }
 
-.description-display {
+.task-body-display {
   min-height: 1.55em;
   color: var(--ink);
   font-size: var(--text-body);
@@ -1527,17 +1527,17 @@ p {
   cursor: text;
 }
 
-.description-textbox:focus {
+.task-body-textbox:focus {
   outline: none;
 }
 
-.description-empty,
-.description-textbox.is-empty::before {
+.task-body-empty,
+.task-body-textbox.is-empty::before {
   color: var(--muted);
 }
 
 .inline-title-textbox:empty::before,
-.description-textbox.is-empty::before {
+.task-body-textbox.is-empty::before {
   content: attr(data-placeholder);
   position: absolute;
   pointer-events: none;

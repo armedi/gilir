@@ -2,92 +2,67 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// TestMigrationFromVersion3AddsWorktreeColumns checks that a version 3 database
-// keeps its data and gains the worktree columns. The upgrade path matters
-// because existing installations carry live task history.
-func TestMigrationFromVersion3AddsWorktreeColumns(t *testing.T) {
+// TestOpenRejectsUnsupportedSchemaVersion checks that a database from any other
+// schema version is refused instead of opened against a schema it does not
+// match. The store never migrates, so the only supported version is the current
+// one and the error must tell the caller to recreate the file.
+func TestOpenRejectsUnsupportedSchemaVersion(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "v3.db")
-
-	// Build a current database, record data, then roll it back to version 3 by
-	// dropping the columns and table the migrations add.
-	s, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	project := mustCreateProject(t, s, "legacy")
-	repo := mustAddRepo(t, s, project.ID, newGitRepo(t))
-	task := mustCreateTask(t, s, CreateTaskParams{
-		ProjectID: project.ID, RepoID: repo.ID, Title: "legacy task", Status: StatusTodo,
-	})
-	if _, err := s.db.ExecContext(ctx, `DROP TABLE store_meta`); err != nil {
-		t.Fatalf("drop store_meta: %v", err)
-	}
-	if _, err := s.db.ExecContext(ctx, `ALTER TABLE tasks DROP COLUMN worktree`); err != nil {
-		t.Fatalf("drop tasks.worktree: %v", err)
-	}
-	if _, err := s.db.ExecContext(ctx, `ALTER TABLE sessions DROP COLUMN worktree`); err != nil {
-		t.Fatalf("drop sessions.worktree: %v", err)
-	}
-	if _, err := s.db.ExecContext(ctx, `PRAGMA user_version = 3`); err != nil {
-		t.Fatalf("set user_version: %v", err)
-	}
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	migrated, err := Open(path)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	t.Cleanup(func() { _ = migrated.Close() })
-
-	var version int
-	if err := migrated.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
-		t.Fatalf("read user_version: %v", err)
-	}
-	if version != schemaVersion {
-		t.Fatalf("user_version = %d, want %d", version, schemaVersion)
-	}
-	for _, table := range []string{"tasks", "sessions"} {
-		if !tableHasColumn(t, migrated, table, "worktree") {
-			t.Fatalf("table %s is missing the worktree column after migration", table)
+	for _, version := range []int{2, 3, 4, 5} {
+		path := filepath.Join(t.TempDir(), "old.db")
+		s, err := Open(path)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
 		}
-	}
-	restored := mustShow(t, migrated, task.ID)
-	if restored.Task.Title != "legacy task" || restored.Task.Worktree != nil {
-		t.Fatalf("task after migration = %+v", restored.Task)
-	}
+		// PRAGMA takes a literal, not a bound parameter.
+		if _, err := s.db.ExecContext(ctx,
+			fmt.Sprintf("PRAGMA user_version = %d", version),
+		); err != nil {
+			t.Fatalf("set user_version %d: %v", version, err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
 
-	// The migrated schema accepts the same worktree writes as a fresh one.
-	attempt := mustReserve(t, migrated, "http://127.0.0.1:4096", 100)
-	worktree := mustRecordWorktree(t, migrated, attempt.ID)
-	if detail := mustShow(t, migrated, task.ID); detail.Task.Worktree == nil || *detail.Task.Worktree != worktree {
-		t.Fatalf("worktree after migration = %v, want %q", detail.Task.Worktree, worktree)
+		refused, err := Open(path)
+		if err == nil {
+			_ = refused.Close()
+			t.Fatalf("Open accepted schema version %d", version)
+		}
+		if !strings.Contains(err.Error(), "not supported") ||
+			!strings.Contains(err.Error(), "delete the database file") {
+			t.Fatalf("Open version %d error = %v, want an actionable refusal", version, err)
+		}
+
+		// The refusal must leave the file untouched so the operator's next step
+		// is still deleting it.
+		if got := rawUserVersion(t, path); got != version {
+			t.Fatalf("user_version after refusal = %d, want %d", got, version)
+		}
 	}
 }
 
-func tableHasColumn(t *testing.T, s *Store, table, column string) bool {
+// rawUserVersion reads PRAGMA user_version without going through Open, which
+// would reject the file.
+func rawUserVersion(t *testing.T, path string) int {
 	t.Helper()
-	rows, err := s.db.QueryContext(context.Background(), `SELECT name FROM pragma_table_info(?)`, table)
+	db, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
-		t.Fatalf("pragma_table_info(%s): %v", table, err)
+		t.Fatalf("open raw database: %v", err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			t.Fatalf("scan column: %v", err)
-		}
-		if name == column {
-			return true
-		}
+	defer db.Close()
+	var version int
+	if err := db.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatalf("read user_version: %v", err)
 	}
-	return false
+	return version
 }
 
 func TestDatabaseIDIsDurableAndUniquePerFile(t *testing.T) {
@@ -120,43 +95,5 @@ func TestDatabaseIDIsDurableAndUniquePerFile(t *testing.T) {
 	t.Cleanup(func() { _ = other.Close() })
 	if otherID, err := other.DatabaseID(ctx); err != nil || otherID == id {
 		t.Fatalf("second database ID = %q, %v; want a distinct ID from %q", otherID, err, id)
-	}
-}
-
-// TestMigrationFromVersion4AddsDatabaseID checks the single-step upgrade that a
-// version 4 installation running before this change performs. The worktree
-// columns are already present, so only the metadata table is added.
-func TestMigrationFromVersion4AddsDatabaseID(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "v4.db")
-	s, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	project := mustCreateProject(t, s, "v4")
-	repo := mustAddRepo(t, s, project.ID, newGitRepo(t))
-	task := mustCreateTask(t, s, CreateTaskParams{
-		ProjectID: project.ID, RepoID: repo.ID, Title: "kept", Status: StatusTodo,
-	})
-	if _, err := s.db.ExecContext(ctx, `DROP TABLE store_meta`); err != nil {
-		t.Fatalf("drop store_meta: %v", err)
-	}
-	if _, err := s.db.ExecContext(ctx, `PRAGMA user_version = 4`); err != nil {
-		t.Fatalf("set user_version: %v", err)
-	}
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	migrated, err := Open(path)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	t.Cleanup(func() { _ = migrated.Close() })
-	if id, err := migrated.DatabaseID(ctx); err != nil || len(id) != 32 {
-		t.Fatalf("DatabaseID = %q, %v", id, err)
-	}
-	if restored := mustShow(t, migrated, task.ID); restored.Task.Title != "kept" {
-		t.Fatalf("task after migration = %+v", restored.Task)
 	}
 }

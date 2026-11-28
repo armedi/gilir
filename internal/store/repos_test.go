@@ -512,7 +512,7 @@ func TestProjectRepoSchemaConstraints(t *testing.T) {
 		t.Fatal("deleting a project_repos row used by a task succeeded; RESTRICT missing")
 	}
 	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO tasks (project_id, repo_id, title, description, status, priority, created_at, updated_at)
+		INSERT INTO tasks (project_id, repo_id, title, body, status, priority, created_at, updated_at)
 		VALUES (?, ?, 'raw', '', 'backlog', 'medium', ?, ?)`,
 		projectB.ID, repo.ID, formatTime(nowUTC()), formatTime(nowUTC()),
 	); err == nil {

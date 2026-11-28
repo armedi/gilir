@@ -76,17 +76,17 @@ type Repo struct {
 // OpenCode worktree directory reserved for this task; it is nil until the first
 // dispatch records one and never changes afterward.
 type Task struct {
-	ID          string    `json:"id"`
-	ProjectID   int64     `json:"project_id"`
-	RepoID      int64     `json:"repo_id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Status      Status    `json:"status"`
-	Priority    Priority  `json:"priority"`
-	Worktree    *string   `json:"worktree,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	Markings    []string  `json:"markings"`
+	ID        string    `json:"id"`
+	ProjectID int64     `json:"project_id"`
+	RepoID    int64     `json:"repo_id"`
+	Title     string    `json:"title"`
+	Body      string    `json:"body"`
+	Status    Status    `json:"status"`
+	Priority  Priority  `json:"priority"`
+	Worktree  *string   `json:"worktree,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Markings  []string  `json:"markings"`
 }
 
 // Session is an OpenCode session linked to a dispatch attempt. Sessions are
@@ -155,12 +155,12 @@ const (
 // linked to multiple projects requires an explicit ProjectID. Empty Status and
 // Priority select the defaults backlog and medium.
 type CreateTaskParams struct {
-	ProjectID   int64
-	RepoID      int64
-	Title       string
-	Description string
-	Status      Status
-	Priority    Priority
+	ProjectID int64
+	RepoID    int64
+	Title     string
+	Body      string
+	Status    Status
+	Priority  Priority
 }
 
 // TaskPatch is a partial task edit. Nil pointer fields are left unchanged;
@@ -168,12 +168,12 @@ type CreateTaskParams struct {
 // Message is required when Status moves a task from in-review back to todo and
 // is recorded as a review comment.
 type TaskPatch struct {
-	Title       *string
-	Description *string
-	Priority    *Priority
-	RepoID      *int64
-	Status      *Status
-	Message     *string
+	Title    *string
+	Body     *string
+	Priority *Priority
+	RepoID   *int64
+	Status   *Status
+	Message  *string
 }
 
 // TaskFilter restricts ListTasks. Zero values mean no restriction.

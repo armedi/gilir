@@ -189,10 +189,10 @@ var commandSpecs = []command{
 	{
 		path:        "create",
 		wire:        "task.create",
-		usage:       "gilir create <title> --repo <id> [--project <id>] [--description <markdown>] [--status <status>] [--priority <priority>]",
+		usage:       "gilir create <title> --repo <id> [--project <id>] [--body <markdown>] [--status <status>] [--priority <priority>]",
 		summary:     "Create a task.",
 		positionals: []string{"<title>"},
-		flags:       []string{"project", "repo", "description", "status", "priority"},
+		flags:       []string{"project", "repo", "body", "status", "priority"},
 		required:    []string{"repo"},
 		build: func(positionals []string, flags map[string]string) (map[string]any, error) {
 			repoID, err := parseID("repo id", flags["repo"])
@@ -206,7 +206,7 @@ var commandSpecs = []command{
 			if err := addIDFlag(args, flags, "project", "project_id", "project id"); err != nil {
 				return nil, err
 			}
-			addStringFlag(args, flags, "description", "description")
+			addStringFlag(args, flags, "body", "body")
 			addStringFlag(args, flags, "status", "status")
 			addStringFlag(args, flags, "priority", "priority")
 			return args, nil
@@ -244,10 +244,10 @@ var commandSpecs = []command{
 	{
 		path:        "update",
 		wire:        "task.update",
-		usage:       "gilir update <task-id> [--title <title>] [--description <markdown>] [--repo <id>] [--status <status>] [--priority <priority>] [--message <markdown>]",
+		usage:       "gilir update <task-id> [--title <title>] [--body <markdown>] [--repo <id>] [--status <status>] [--priority <priority>] [--message <markdown>]",
 		summary:     "Update task fields. Moving in-review back to todo requires --message.",
 		positionals: []string{"<task-id>"},
-		flags:       []string{"title", "description", "repo", "status", "priority", "message"},
+		flags:       []string{"title", "body", "repo", "status", "priority", "message"},
 		build: func(positionals []string, flags map[string]string) (map[string]any, error) {
 			id, err := parseTaskID(positionals[0])
 			if err != nil {
@@ -255,7 +255,7 @@ var commandSpecs = []command{
 			}
 			args := map[string]any{"id": id}
 			addStringFlag(args, flags, "title", "title")
-			addStringFlag(args, flags, "description", "description")
+			addStringFlag(args, flags, "body", "body")
 			if err := addIDFlag(args, flags, "repo", "repo_id", "repo id"); err != nil {
 				return nil, err
 			}

@@ -423,7 +423,10 @@ export default function ActivityFeed(props) {
             reference-keyed row would remount and drop an open comment editor. */}
         <For each={events()} keyed={(event) => event.id ?? event}>
           {(event) => {
-            const body = () => commentBody(event().data);
+            // Only comment events carry a top-level body. task.created now also
+            // records the task body at the top level, so gate on the type or it
+            // would render every new task as a comment bubble.
+            const body = () => (event().type === 'task.commented' ? commentBody(event().data) : '');
             const actor = () => asText(event().actor).trim() || 'system';
             const rawData = () =>
               typeof event().data === 'string' && event().data.trim() ? event().data : '';

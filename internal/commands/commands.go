@@ -191,12 +191,12 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 			return nil, fmt.Errorf("%w: title is required", store.ErrInvalid)
 		}
 		return s.store.CreateTask(ctx, actor, store.CreateTaskParams{
-			ProjectID:   projectID,
-			RepoID:      in.RepoID,
-			Title:       in.Title,
-			Description: in.Description,
-			Status:      store.Status(in.Status),
-			Priority:    store.Priority(in.Priority),
+			ProjectID: projectID,
+			RepoID:    in.RepoID,
+			Title:     in.Title,
+			Body:      in.Body,
+			Status:    store.Status(in.Status),
+			Priority:  store.Priority(in.Priority),
 		})
 
 	case "task.show":
@@ -234,10 +234,10 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 			return nil, err
 		}
 		patch := store.TaskPatch{
-			Title:       in.Title,
-			Description: in.Description,
-			RepoID:      in.RepoID,
-			Message:     in.Message,
+			Title:   in.Title,
+			Body:    in.Body,
+			RepoID:  in.RepoID,
+			Message: in.Message,
 		}
 		if in.Status != nil {
 			status := store.Status(*in.Status)
@@ -557,12 +557,12 @@ type taskListArgs struct {
 }
 
 type taskCreateArgs struct {
-	ProjectID   optionalIDValue `json:"project_id"`
-	RepoID      int64           `json:"repo_id"`
-	Title       string          `json:"title"`
-	Description string          `json:"description"`
-	Status      string          `json:"status"`
-	Priority    string          `json:"priority"`
+	ProjectID optionalIDValue `json:"project_id"`
+	RepoID    int64           `json:"repo_id"`
+	Title     string          `json:"title"`
+	Body      string          `json:"body"`
+	Status    string          `json:"status"`
+	Priority  string          `json:"priority"`
 }
 
 type taskShowArgs struct {
@@ -574,13 +574,13 @@ type taskDeleteArgs struct {
 }
 
 type taskUpdateArgs struct {
-	ID          string  `json:"id"`
-	Title       *string `json:"title"`
-	Description *string `json:"description"`
-	RepoID      *int64  `json:"repo_id"`
-	Status      *string `json:"status"`
-	Priority    *string `json:"priority"`
-	Message     *string `json:"message"`
+	ID       string  `json:"id"`
+	Title    *string `json:"title"`
+	Body     *string `json:"body"`
+	RepoID   *int64  `json:"repo_id"`
+	Status   *string `json:"status"`
+	Priority *string `json:"priority"`
+	Message  *string `json:"message"`
 }
 
 type taskMarkArgs struct {

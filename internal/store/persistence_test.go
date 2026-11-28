@@ -21,7 +21,7 @@ func TestStateSurvivesCloseAndReopen(t *testing.T) {
 	project := mustCreateProject(t, s, "persistent")
 	repo := mustAddRepo(t, s, project.ID, newGitRepo(t))
 	task := mustCreateTask(t, s, CreateTaskParams{
-		ProjectID: project.ID, RepoID: repo.ID, Title: "persisted task", Description: "body",
+		ProjectID: project.ID, RepoID: repo.ID, Title: "persisted task", Body: "body",
 		Status: StatusTodo, Priority: PriorityUrgent,
 	})
 	if _, err := s.SetMarking(ctx, "alice", task.ID, "docs", true); err != nil {
@@ -80,7 +80,7 @@ func TestStateSurvivesCloseAndReopen(t *testing.T) {
 		t.Fatalf("repos after reopen = %+v, %v", repos, err)
 	}
 	detail := mustShow(t, s, task.ID)
-	if detail.Task.Title != "persisted task" || detail.Task.Description != "body" ||
+	if detail.Task.Title != "persisted task" || detail.Task.Body != "body" ||
 		detail.Task.Status != StatusInProgress || detail.Task.Priority != PriorityUrgent {
 		t.Fatalf("task after reopen = %+v", detail.Task)
 	}

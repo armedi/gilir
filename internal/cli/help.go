@@ -7,31 +7,31 @@ import (
 )
 
 var flagDescriptions = map[string]string{
-	"project":     "Project ID",
-	"repo":        "Repository ID",
-	"status":      "Task status",
-	"priority":    "Task priority",
-	"marking":     "Marking name",
-	"description": "Markdown description",
-	"title":       "Task title",
-	"message":     "Markdown message",
-	"host":        "HTTP host to bind (default: 127.0.0.1)",
-	"port":        "HTTP port to bind (default: 44547)",
-	"db":          "SQLite database path (default: the Gilir data directory)",
+	"project":  "Project ID",
+	"repo":     "Repository ID",
+	"status":   "Task status",
+	"priority": "Task priority",
+	"marking":  "Marking name",
+	"body":     "Markdown task body",
+	"title":    "Task title",
+	"message":  "Markdown message",
+	"host":     "HTTP host to bind (default: 127.0.0.1)",
+	"port":     "HTTP port to bind (default: 44547)",
+	"db":       "SQLite database path (default: the Gilir data directory)",
 }
 
 var flagPlaceholders = map[string]string{
-	"project":     "id",
-	"repo":        "id",
-	"status":      "status",
-	"priority":    "priority",
-	"marking":     "marking",
-	"description": "markdown",
-	"title":       "title",
-	"message":     "markdown",
-	"host":        "host",
-	"port":        "port",
-	"db":          "path",
+	"project":  "id",
+	"repo":     "id",
+	"status":   "status",
+	"priority": "priority",
+	"marking":  "marking",
+	"body":     "markdown",
+	"title":    "title",
+	"message":  "markdown",
+	"host":     "host",
+	"port":     "port",
+	"db":       "path",
 }
 
 var groupSummaries = map[string]string{

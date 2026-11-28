@@ -27,7 +27,7 @@ var schemaStatements = []string{
 		project_id INTEGER NOT NULL,
 		repo_id INTEGER NOT NULL,
 		title TEXT NOT NULL CHECK (length(trim(title)) > 0),
-		description TEXT NOT NULL DEFAULT '',
+		body TEXT NOT NULL DEFAULT '',
 		status TEXT NOT NULL DEFAULT 'backlog'
 			CHECK (status IN ('backlog', 'todo', 'in-progress', 'in-review', 'done')),
 		priority TEXT NOT NULL DEFAULT 'medium'

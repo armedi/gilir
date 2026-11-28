@@ -46,7 +46,7 @@ export default function QueuePage() {
               <p>
                 {shell.hasFilters() && shell.tasks().length === 0
                   ? 'Adjust or reset your filters in the queue panel to inspect other tasks.'
-                  : 'Select a task from the queue panel to inspect its description, OpenCode sessions, and activity, or queue new work.'}
+                  : 'Select a task from the queue panel to inspect its body, OpenCode sessions, and activity, or queue new work.'}
               </p>
               <div class="overview-actions">
                 <Show

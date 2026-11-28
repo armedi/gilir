@@ -109,7 +109,7 @@ export function normalizeTask(task) {
   if (!task || typeof task !== 'object') return null;
   return {
     ...task,
-    description: typeof task.description === 'string' ? task.description : '',
+    body: typeof task.body === 'string' ? task.body : '',
     markings: asArray(task.markings).filter((marking) => typeof marking === 'string'),
   };
 }

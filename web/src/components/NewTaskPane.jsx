@@ -18,7 +18,7 @@ import Markdown from './Markdown';
 
 const EMPTY_FORM = {
   title: '',
-  description: '',
+  body: '',
   status: 'todo',
   priority: 'medium',
   repo_id: '',
@@ -29,7 +29,7 @@ const DRAFT_KEY = draftKey('new-task');
 
 export default function NewTaskPane(props) {
   const titleId = createUniqueId();
-  const descriptionId = createUniqueId();
+  const bodyId = createUniqueId();
   const statusId = createUniqueId();
   const priorityId = createUniqueId();
   const repoId = createUniqueId();
@@ -38,7 +38,7 @@ export default function NewTaskPane(props) {
   let titleInput;
 
   const [form, setForm] = createStore({ ...EMPTY_FORM });
-  const [descMode, setDescMode] = createSignal('write');
+  const [bodyMode, setBodyMode] = createSignal('write');
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal(null);
 
@@ -66,7 +66,7 @@ export default function NewTaskPane(props) {
     const repos = asArray(untrack(() => props.repos));
     const next = {
       title: '',
-      description: '',
+      body: '',
       status: defaults?.status || 'todo',
       priority: defaults?.priority || 'medium',
       repo_id: defaults?.repo_id || '',
@@ -74,7 +74,7 @@ export default function NewTaskPane(props) {
     };
     if (stored && typeof stored === 'object') {
       if (typeof stored.title === 'string') next.title = stored.title;
-      if (typeof stored.description === 'string') next.description = stored.description;
+      if (typeof stored.body === 'string') next.body = stored.body;
       if (STATUSES.includes(stored.status)) next.status = stored.status;
       if (PRIORITIES.includes(stored.priority)) next.priority = stored.priority;
       if (stored.repo_id != null) next.repo_id = String(stored.repo_id);
@@ -147,7 +147,7 @@ export default function NewTaskPane(props) {
       priority: form.priority,
     };
     if (needsProjectChoice()) args.project_id = Number(form.project_id);
-    if (form.description.trim()) args.description = form.description;
+    if (form.body.trim()) args.body = form.body;
     setBusy(true);
     setError(null);
     try {
@@ -209,53 +209,53 @@ export default function NewTaskPane(props) {
 
             <div class="field">
               <div class="field-label-row">
-                <label class="field-label" for={descriptionId}>
-                  Description
+                <label class="field-label" for={bodyId}>
+                  Body
                 </label>
                 <div
                   class="segmented segmented-compact"
                   role="tablist"
-                  aria-label="Description mode"
+                  aria-label="Body mode"
                 >
                   <button
                     type="button"
                     role="tab"
-                    aria-selected={descMode() === 'write' ? 'true' : 'false'}
-                    class={['segmented-item', { active: descMode() === 'write' }]}
-                    onClick={() => setDescMode('write')}
+                    aria-selected={bodyMode() === 'write' ? 'true' : 'false'}
+                    class={['segmented-item', { active: bodyMode() === 'write' }]}
+                    onClick={() => setBodyMode('write')}
                   >
                     Write
                   </button>
                   <button
                     type="button"
                     role="tab"
-                    aria-selected={descMode() === 'preview' ? 'true' : 'false'}
-                    class={['segmented-item', { active: descMode() === 'preview' }]}
-                    onClick={() => setDescMode('preview')}
+                    aria-selected={bodyMode() === 'preview' ? 'true' : 'false'}
+                    class={['segmented-item', { active: bodyMode() === 'preview' }]}
+                    onClick={() => setBodyMode('preview')}
                   >
                     Preview
                   </button>
                 </div>
               </div>
               <Show
-                when={descMode() === 'write'}
+                when={bodyMode() === 'write'}
                 fallback={
                   <div class="markdown-preview-well">
                     <Show
-                      when={form.description.trim()}
+                      when={form.body.trim()}
                       fallback={<p class="muted-small">Nothing to preview yet.</p>}
                     >
-                      <Markdown source={form.description} />
+                      <Markdown source={form.body} />
                     </Show>
                   </div>
                 }
               >
                 <textarea
-                  id={descriptionId}
+                  id={bodyId}
                   class="textarea"
                   rows="6"
-                  value={form.description}
-                  onInput={(event) => update('description', event.currentTarget.value)}
+                  value={form.body}
+                  onInput={(event) => update('body', event.currentTarget.value)}
                   placeholder="Describe the goal, constraints, and acceptance criteria…"
                   disabled={busy()}
                 />

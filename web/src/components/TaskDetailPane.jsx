@@ -39,7 +39,7 @@ function focusSoon(target) {
   });
 }
 
-function readDescription(editor) {
+function readBody(editor) {
   const isParagraph = (node) => node.nodeName === 'DIV' || node.nodeName === 'P';
   const children = Array.from(editor.childNodes);
   if (children.some(isParagraph)) {
@@ -48,7 +48,7 @@ function readDescription(editor) {
     return children.map((child, index) => {
       const paragraph = isParagraph(child);
       const boundary = index > 0 && (paragraph || isParagraph(children[index - 1]));
-      const text = paragraph ? readDescription(child) : child.nodeValue ?? child.innerText ?? '\n';
+      const text = paragraph ? readBody(child) : child.nodeValue ?? child.innerText ?? '\n';
       return boundary ? `\n${text}` : text;
     }).join('');
   }
@@ -63,12 +63,12 @@ function readDescription(editor) {
 
 export default function TaskDetailPane(props) {
   const titleErrorId = createUniqueId();
-  const descErrorId = createUniqueId();
+  const bodyErrorId = createUniqueId();
   const commentId = createUniqueId();
   const commentErrorId = createUniqueId();
   let commentInput;
   let activeTaskKey = null;
-  let activeDescKey = null;
+  let activeBodyKey = null;
   let activeCommentKey = null;
   // Solid 2 commits signal writes on flush, so a read right after a write can
   // see the old value. Guard delete requests with a plain flag to stop double
@@ -81,10 +81,10 @@ export default function TaskDetailPane(props) {
   const [titleBusy, setTitleBusy] = createSignal(false);
   const [titleError, setTitleError] = createSignal(null);
 
-  const [editingDesc, setEditingDesc] = createSignal(false);
-  const [descDraft, setDescDraft] = createSignal('');
-  const [descBusy, setDescBusy] = createSignal(false);
-  const [descError, setDescError] = createSignal(null);
+  const [editingBody, setEditingBody] = createSignal(false);
+  const [bodyDraft, setBodyDraft] = createSignal('');
+  const [bodyBusy, setBodyBusy] = createSignal(false);
+  const [bodyError, setBodyError] = createSignal(null);
 
   const [actionBusy, setActionBusy] = createSignal(null);
   const [comment, setComment] = createSignal('');
@@ -119,20 +119,20 @@ export default function TaskDetailPane(props) {
 
   function loadTaskState(current) {
     activeTaskKey = `task:${current.id}`;
-    activeDescKey = draftKey('task-description', current.id);
+    activeBodyKey = draftKey('task-body', current.id);
     activeCommentKey = draftKey('comment', current.id);
 
     setEditingTitle(false);
     setTitleBusy(false);
     setTitleError(null);
 
-    const baseDesc = asText(current.description);
-    const storedDesc = loadDraft(activeDescKey);
-    const hasDescDraft = typeof storedDesc === 'string' && storedDesc !== baseDesc;
-    setDescDraft(hasDescDraft ? storedDesc : baseDesc);
-    setEditingDesc(hasDescDraft);
-    setDescBusy(false);
-    setDescError(null);
+    const baseBody = asText(current.body);
+    const storedBody = loadDraft(activeBodyKey);
+    const hasBodyDraft = typeof storedBody === 'string' && storedBody !== baseBody;
+    setBodyDraft(hasBodyDraft ? storedBody : baseBody);
+    setEditingBody(hasBodyDraft);
+    setBodyBusy(false);
+    setBodyError(null);
 
     const storedComment = loadDraft(activeCommentKey);
     setComment(typeof storedComment === 'string' ? storedComment : '');
@@ -147,15 +147,15 @@ export default function TaskDetailPane(props) {
   createEffect(
     () => ({
       current: task(),
-      isEditingDesc: editingDesc(),
+      isEditingBody: editingBody(),
     }),
-    ({ current, isEditingDesc }) => {
+    ({ current, isEditingBody }) => {
       if (!current) return;
       if (loadedTaskId() !== String(current.id)) {
         loadTaskState(current);
         return;
       }
-      if (!isEditingDesc) setDescDraft(asText(current.description));
+      if (!isEditingBody) setBodyDraft(asText(current.body));
     },
   );
 
@@ -220,83 +220,83 @@ export default function TaskDetailPane(props) {
     }
   }
 
-  function startDescEdit() {
+  function startBodyEdit() {
     const current = task();
-    if (!current || descBusy()) return;
-    setDescDraft(asText(current.description));
-    setDescError(null);
-    setEditingDesc(true);
+    if (!current || bodyBusy()) return;
+    setBodyDraft(asText(current.body));
+    setBodyError(null);
+    setEditingBody(true);
   }
 
-  function handleDescriptionClick() {
+  function handleBodyClick() {
     if (window.getSelection && window.getSelection().toString()) return;
-    startDescEdit();
+    startBodyEdit();
   }
 
-  function handleDescriptionKeyDown(event) {
+  function handleBodyKeyDown(event) {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
-      startDescEdit();
+      startBodyEdit();
     }
   }
 
-  function updateDesc(value) {
-    setDescDraft(value);
-    setDescError(null);
-    if (!activeDescKey) return;
-    if (value !== asText(task()?.description)) {
-      saveDraft(activeDescKey, value);
+  function updateBody(value) {
+    setBodyDraft(value);
+    setBodyError(null);
+    if (!activeBodyKey) return;
+    if (value !== asText(task()?.body)) {
+      saveDraft(activeBodyKey, value);
     } else {
-      clearDraft(activeDescKey);
+      clearDraft(activeBodyKey);
     }
   }
 
-  function cancelDescEdit() {
-    if (activeDescKey) clearDraft(activeDescKey);
-    setDescDraft(asText(task()?.description));
-    setDescError(null);
-    setEditingDesc(false);
+  function cancelBodyEdit() {
+    if (activeBodyKey) clearDraft(activeBodyKey);
+    setBodyDraft(asText(task()?.body));
+    setBodyError(null);
+    setEditingBody(false);
   }
 
-  async function saveDesc(event) {
-    if (descBusy() || !editingDesc()) return;
+  async function saveBody(event) {
+    if (bodyBusy() || !editingBody()) return;
     const current = task();
     if (!current || loadedTaskId() !== String(current.id)) return;
-    const next = readDescription(event.currentTarget);
-    if (next === asText(current.description)) {
-      cancelDescEdit();
+    const next = readBody(event.currentTarget);
+    if (next === asText(current.body)) {
+      cancelBodyEdit();
       return;
     }
     const taskId = current.id;
     const taskKey = activeTaskKey;
-    const descKey = activeDescKey;
-    setDescBusy(true);
-    setDescError(null);
+    const bodyKey = activeBodyKey;
+    setBodyBusy(true);
+    setBodyError(null);
     try {
-      await command('task.update', { id: taskId, description: next });
-      if (descKey) clearDraft(descKey);
+      await command('task.update', { id: taskId, body: next });
+      if (bodyKey) clearDraft(bodyKey);
       await props.onRefresh();
       if (activeTaskKey === taskKey) {
-        setEditingDesc(false);
-        props.notify('Description updated');
+        setEditingBody(false);
+        props.notify('Body updated');
       }
     } catch (requestError) {
       if (activeTaskKey === taskKey) {
-        setDescError(errorText(requestError));
+        setBodyError(errorText(requestError));
       }
     } finally {
-      if (activeTaskKey === taskKey) setDescBusy(false);
+      if (activeTaskKey === taskKey) setBodyBusy(false);
     }
   }
 
-  function handleDescEditorKeyDown(event) {
-    if (descBusy() || event.isComposing || event.keyCode === 229) return;
+  function handleBodyEditorKeyDown(event) {
+    if (bodyBusy() || event.isComposing || event.keyCode === 229) return;
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault();
-      saveDesc(event);
+      saveBody(event);
     } else if (event.key === 'Escape') {
       event.preventDefault();
-      cancelDescEdit();
+      cancelBodyEdit();
     }
   }
 
@@ -681,47 +681,47 @@ export default function TaskDetailPane(props) {
           return (
             <div class="center-scroll">
               <div class="stream-column">
-                <section class="description-block" aria-label="Task description">
+                <section class="task-body-block" aria-label="Task body">
                   <Show
-                    when={editingDesc() && loadedTaskId() === String(current().id)}
+                    when={editingBody() && loadedTaskId() === String(current().id)}
                     fallback={
                       <div
-                        class="description-display"
+                        class="task-body-display"
                         role="button"
                         tabindex="0"
-                        aria-label="Edit task description"
-                        title="Click to edit description"
-                        onClick={handleDescriptionClick}
-                        onKeyDown={handleDescriptionKeyDown}
+                        aria-label="Edit task body"
+                        title="Click to edit body"
+                        onClick={handleBodyClick}
+                        onKeyDown={handleBodyKeyDown}
                       >
-                        <span class={{ 'description-empty': !current().description }}>
-                          {current().description || 'Add a description…'}
+                        <span class={{ 'task-body-empty': !current().body }}>
+                          {current().body || 'Add a body…'}
                         </span>
                       </div>
                     }
                   >
                     <div
                       ref={(editor) => {
-                        const value = descDraft();
+                        const value = bodyDraft();
                         editor.textContent = value;
                         if (value.endsWith('\n')) editor.append(document.createElement('br'));
                         focusEditor(editor);
                       }}
-                      class={['description-display description-textbox', { 'is-empty': descDraft() === '' }]}
+                      class={['task-body-display task-body-textbox', { 'is-empty': bodyDraft() === '' }]}
                       role="textbox"
-                      aria-label="Task description"
+                      aria-label="Task body"
                       aria-multiline="true"
-                      aria-readonly={descBusy()}
-                      aria-describedby={descError() ? descErrorId : undefined}
-                      contenteditable={descBusy() ? 'false' : 'plaintext-only'}
-                      data-placeholder="Add a description…"
-                      onInput={(event) => updateDesc(readDescription(event.currentTarget))}
-                      onKeyDown={handleDescEditorKeyDown}
-                      onBlur={saveDesc}
+                      aria-readonly={bodyBusy()}
+                      aria-describedby={bodyError() ? bodyErrorId : undefined}
+                      contenteditable={bodyBusy() ? 'false' : 'plaintext-only'}
+                      data-placeholder="Add a body…"
+                      onInput={(event) => updateBody(readBody(event.currentTarget))}
+                      onKeyDown={handleBodyEditorKeyDown}
+                      onBlur={saveBody}
                     />
-                    <Show when={descError()}>
-                      <p id={descErrorId} class="field-error" role="alert">
-                        {descError()}
+                    <Show when={bodyError()}>
+                      <p id={bodyErrorId} class="field-error" role="alert">
+                        {bodyError()}
                       </p>
                     </Show>
                   </Show>

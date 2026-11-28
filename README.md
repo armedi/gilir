@@ -190,11 +190,10 @@ default port still works with it. Any other port requires setting `GILIR_URL` to
 an address the service accepts. If the service binds `[::1]` specifically, set
 `GILIR_URL` to that address too, because the client default is IPv4 loopback.
 
-The schema is upgraded automatically. Version 5 adds a durable per-database ID
-that namespaces worktrees; version 4 added the per-task worktree, so a version 3
-or 4 database is migrated in place. Version 2 and earlier, which used bare
-integer task IDs, are rejected instead: delete the file and restart the service
-to recreate it (task history is not migrated).
+The schema is not migrated. A database file from any other schema version is
+refused at startup with an error naming the version; delete the file and
+restart the service to recreate it. Task history is not carried across schema
+versions.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

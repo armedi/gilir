@@ -13,7 +13,7 @@ import (
 	"github.com/armedi/gilir/internal/taskid"
 )
 
-const taskColumns = `id, project_id, repo_id, title, description, status, priority, worktree, created_at, updated_at`
+const taskColumns = `id, project_id, repo_id, title, body, status, priority, worktree, created_at, updated_at`
 
 func scanTask(sc scanner) (Task, error) {
 	var (
@@ -25,7 +25,7 @@ func scanTask(sc scanner) (Task, error) {
 		updatedAt string
 	)
 	if err := sc.Scan(
-		&task.ID, &task.ProjectID, &task.RepoID, &task.Title, &task.Description,
+		&task.ID, &task.ProjectID, &task.RepoID, &task.Title, &task.Body,
 		&status, &priority, &worktree, &createdAt, &updatedAt,
 	); err != nil {
 		return Task{}, err
@@ -234,9 +234,9 @@ func (s *Store) CreateTask(ctx context.Context, actor string, in CreateTaskParam
 
 		now := nowUTC()
 		result, err := tx.ExecContext(ctx, `
-			INSERT INTO tasks (project_id, repo_id, title, description, status, priority, created_at, updated_at)
+			INSERT INTO tasks (project_id, repo_id, title, body, status, priority, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			projectID, in.RepoID, title, in.Description, string(status), string(priority),
+			projectID, in.RepoID, title, in.Body, string(status), string(priority),
 			formatTime(now), formatTime(now),
 		)
 		if err != nil {
@@ -248,16 +248,16 @@ func (s *Store) CreateTask(ctx context.Context, actor string, in CreateTaskParam
 		}
 		id := taskid.Format(seq)
 		created = Task{
-			ID:          id,
-			ProjectID:   projectID,
-			RepoID:      in.RepoID,
-			Title:       title,
-			Description: in.Description,
-			Status:      status,
-			Priority:    priority,
-			CreatedAt:   now,
-			UpdatedAt:   now,
-			Markings:    []string{},
+			ID:        id,
+			ProjectID: projectID,
+			RepoID:    in.RepoID,
+			Title:     title,
+			Body:      in.Body,
+			Status:    status,
+			Priority:  priority,
+			CreatedAt: now,
+			UpdatedAt: now,
+			Markings:  []string{},
 		}
 		_, err = appendActivity(ctx, tx, activityInput{
 			Type:      ActivityTaskCreated,
@@ -266,11 +266,11 @@ func (s *Store) CreateTask(ctx context.Context, actor string, in CreateTaskParam
 			ProjectID: int64Pointer(projectID),
 			Timestamp: now,
 			Data: map[string]any{
-				"repo_id":     in.RepoID,
-				"title":       title,
-				"description": in.Description,
-				"status":      string(status),
-				"priority":    string(priority),
+				"repo_id":  in.RepoID,
+				"title":    title,
+				"body":     in.Body,
+				"status":   string(status),
+				"priority": string(priority),
 			},
 		})
 		return err
@@ -416,15 +416,15 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID string, pat
 		}
 
 		newTitle := old.Title
-		newDescription := old.Description
+		newBody := old.Body
 		newPriority := old.Priority
 		newRepoID := old.RepoID
 		newStatus := old.Status
 		if patch.Title != nil {
 			newTitle = *patch.Title
 		}
-		if patch.Description != nil {
-			newDescription = *patch.Description
+		if patch.Body != nil {
+			newBody = *patch.Body
 		}
 		if patch.Priority != nil {
 			newPriority = *patch.Priority
@@ -463,7 +463,7 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID string, pat
 
 		statusChanged := newStatus != old.Status
 		titleChanged := newTitle != old.Title
-		descriptionChanged := newDescription != old.Description
+		bodyChanged := newBody != old.Body
 		priorityChanged := newPriority != old.Priority
 
 		// A blocked task waits for a human decision, so it must not be moved to
@@ -486,7 +486,7 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID string, pat
 			return fmt.Errorf("%w: a message is only valid when requesting changes", ErrInvalid)
 		}
 
-		if !statusChanged && !titleChanged && !descriptionChanged && !priorityChanged && !repoChanged {
+		if !statusChanged && !titleChanged && !bodyChanged && !priorityChanged && !repoChanged {
 			updated = old
 			return nil
 		}
@@ -494,23 +494,23 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID string, pat
 		now := nowUTC()
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE tasks
-			SET title = ?, description = ?, priority = ?, repo_id = ?, status = ?, updated_at = ?
+			SET title = ?, body = ?, priority = ?, repo_id = ?, status = ?, updated_at = ?
 			WHERE id = ?`,
-			newTitle, newDescription, string(newPriority), newRepoID, string(newStatus), formatTime(now), taskID,
+			newTitle, newBody, string(newPriority), newRepoID, string(newStatus), formatTime(now), taskID,
 		); err != nil {
 			return fmt.Errorf("store: update task %s: %w", taskID, err)
 		}
 
-		if titleChanged || descriptionChanged || priorityChanged || repoChanged {
+		if titleChanged || bodyChanged || priorityChanged || repoChanged {
 			oldFields := map[string]any{}
 			newFields := map[string]any{}
 			if titleChanged {
 				oldFields["title"] = old.Title
 				newFields["title"] = newTitle
 			}
-			if descriptionChanged {
-				oldFields["description"] = old.Description
-				newFields["description"] = newDescription
+			if bodyChanged {
+				oldFields["body"] = old.Body
+				newFields["body"] = newBody
 			}
 			if priorityChanged {
 				oldFields["priority"] = string(old.Priority)

@@ -456,7 +456,7 @@ func TestCompositeOwnershipAndForeignKeys(t *testing.T) {
 	}
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO tasks (project_id, repo_id, title, description, status, priority, created_at, updated_at)
+		INSERT INTO tasks (project_id, repo_id, title, body, status, priority, created_at, updated_at)
 		VALUES (?, ?, 'raw', '', 'backlog', 'medium', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 		projectA.ID, repoB.ID,
 	)

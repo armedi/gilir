@@ -26,10 +26,10 @@ func TestCreateTaskDefaultsJSONAndDetailArrays(t *testing.T) {
 	}
 
 	task := mustCreateTask(t, s, CreateTaskParams{
-		ProjectID:   project.ID,
-		RepoID:      repo.ID,
-		Title:       "  first task  ",
-		Description: "",
+		ProjectID: project.ID,
+		RepoID:    repo.ID,
+		Title:     "  first task  ",
+		Body:      "",
 	})
 	if task.Title != "first task" {
 		t.Fatalf("title = %q, want trimmed title", task.Title)
@@ -53,7 +53,7 @@ func TestCreateTaskDefaultsJSONAndDetailArrays(t *testing.T) {
 		t.Fatalf("unmarshal task: %v", err)
 	}
 	for _, key := range []string{
-		"id", "project_id", "repo_id", "title", "description", "status",
+		"id", "project_id", "repo_id", "title", "body", "status",
 		"priority", "created_at", "updated_at", "markings",
 	} {
 		if _, ok := object[key]; !ok {
@@ -396,22 +396,22 @@ func TestUpdateTaskPatchNoOpAndAudit(t *testing.T) {
 	project, repo := seedProjectRepo(t, s)
 	otherRepo := mustAddRepo(t, s, project.ID, newGitRepo(t))
 	task := mustCreateTask(t, s, CreateTaskParams{
-		ProjectID: project.ID, RepoID: repo.ID, Title: "original", Description: "body",
+		ProjectID: project.ID, RepoID: repo.ID, Title: "original", Body: "body",
 	})
 	originalDetail := mustShow(t, s, task.ID)
 	originalUpdatedAt := task.UpdatedAt
 
 	sameTitle := task.Title
-	sameDescription := task.Description
+	sameBody := task.Body
 	samePriority := task.Priority
 	sameStatus := task.Status
 	sameRepo := task.RepoID
 	unchanged, err := s.UpdateTask(ctx, "bob", task.ID, TaskPatch{
-		Title:       &sameTitle,
-		Description: &sameDescription,
-		Priority:    &samePriority,
-		Status:      &sameStatus,
-		RepoID:      &sameRepo,
+		Title:    &sameTitle,
+		Body:     &sameBody,
+		Priority: &samePriority,
+		Status:   &sameStatus,
+		RepoID:   &sameRepo,
 	})
 	if err != nil {
 		t.Fatalf("no-op UpdateTask: %v", err)
@@ -426,18 +426,18 @@ func TestUpdateTaskPatchNoOpAndAudit(t *testing.T) {
 	}
 
 	newTitle := "  renamed task  "
-	emptyDescription := ""
+	emptyBody := ""
 	priority := PriorityUrgent
 	updated, err := s.UpdateTask(ctx, "bob", task.ID, TaskPatch{
-		Title:       &newTitle,
-		Description: &emptyDescription,
-		Priority:    &priority,
-		RepoID:      &otherRepo.ID,
+		Title:    &newTitle,
+		Body:     &emptyBody,
+		Priority: &priority,
+		RepoID:   &otherRepo.ID,
 	})
 	if err != nil {
 		t.Fatalf("UpdateTask: %v", err)
 	}
-	if updated.Title != "renamed task" || updated.Description != "" ||
+	if updated.Title != "renamed task" || updated.Body != "" ||
 		updated.Priority != PriorityUrgent || updated.RepoID != otherRepo.ID {
 		t.Fatalf("updated task = %+v", updated)
 	}
@@ -481,8 +481,8 @@ func TestUpdateTaskPatchNoOpAndAudit(t *testing.T) {
 	if oldFields["title"] != "original" || newFields["title"] != "renamed task" {
 		t.Fatalf("title audit old/new = %#v / %#v", oldFields["title"], newFields["title"])
 	}
-	if oldFields["description"] != "body" || newFields["description"] != "" {
-		t.Fatalf("description audit old/new = %#v / %#v", oldFields["description"], newFields["description"])
+	if oldFields["body"] != "body" || newFields["body"] != "" {
+		t.Fatalf("body audit old/new = %#v / %#v", oldFields["body"], newFields["body"])
 	}
 	if oldFields["priority"] != "medium" || newFields["priority"] != "urgent" {
 		t.Fatalf("priority audit old/new = %#v / %#v", oldFields["priority"], newFields["priority"])
@@ -492,8 +492,8 @@ func TestUpdateTaskPatchNoOpAndAudit(t *testing.T) {
 	}
 
 	beforeLength := len(detail.Activity)
-	if _, err := s.UpdateTask(ctx, "bob", task.ID, TaskPatch{Description: &emptyDescription}); err != nil {
-		t.Fatalf("no-op empty description: %v", err)
+	if _, err := s.UpdateTask(ctx, "bob", task.ID, TaskPatch{Body: &emptyBody}); err != nil {
+		t.Fatalf("no-op empty body: %v", err)
 	}
 	if after := mustShow(t, s, task.ID); len(after.Activity) != beforeLength {
 		t.Fatalf("explicit empty no-op wrote activity: %v", activityTypes(after.Activity))
