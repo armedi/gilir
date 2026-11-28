@@ -2,6 +2,47 @@ import { For, Show, createMemo, createSignal } from 'solid-js';
 import { command } from '../api';
 import { errorText } from '../utils';
 
+function BrandMark() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+      <defs>
+        <linearGradient
+          id="gilir-header-mark-bg"
+          x1="8"
+          y1="2"
+          x2="56"
+          y2="62"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset="0%" stop-color="#14805e" />
+          <stop offset="55%" stop-color="#0f6b4e" />
+          <stop offset="100%" stop-color="#094c37" />
+        </linearGradient>
+      </defs>
+      <rect width="64" height="64" rx="15" fill="url(#gilir-header-mark-bg)" />
+      <rect
+        x="0.75"
+        y="0.75"
+        width="62.5"
+        height="62.5"
+        rx="14.25"
+        fill="none"
+        stroke="#ffffff"
+        stroke-opacity="0.12"
+        stroke-width="1.5"
+      />
+      <path
+        d="M24 13H49C50.1046 13 51 13.8954 51 15V19C51 20.1046 50.1046 21 49 21H24C22.3431 21 21 22.3431 21 24V40C21 41.6569 22.3431 43 24 43H32.6L30.2 51H24C17.9249 51 13 46.0751 13 40V24C13 17.9249 17.9249 13 24 13Z"
+        fill="#ffffff"
+      />
+      <path
+        d="M31.4 28H47C49.2091 28 51 29.7909 51 32V40C51 46.0751 46.0751 51 40 51H35.2L37.6 43H40C41.6569 43 43 41.6569 43 40V37.5C43 36.6716 42.3284 36 41.5 36H29L31.4 28Z"
+        fill="#86efc7"
+      />
+    </svg>
+  );
+}
+
 function LeftPanelIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -122,15 +163,7 @@ export default function Header(props) {
 
           <div class="brand">
             <span class="brand-mark" aria-hidden="true">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                <path
-                  d="M2.5 5.25H11.5L9 2.75M13.5 10.75H4.5L7 13.25"
-                  stroke="currentColor"
-                  stroke-width="1.7"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
+              <BrandMark />
             </span>
             <h1 class="brand-name">Gilir</h1>
           </div>

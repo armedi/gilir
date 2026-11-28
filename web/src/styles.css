@@ -623,8 +623,12 @@ p {
   height: 24px;
   flex: none;
   border-radius: 6px;
-  background: var(--ink);
-  color: #ffffff;
+}
+
+.brand-mark svg {
+  display: block;
+  width: 24px;
+  height: 24px;
 }
 
 /* Exempt from 3-size body limit per masthead typography rules */

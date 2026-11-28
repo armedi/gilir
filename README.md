@@ -1,4 +1,10 @@
-# Gilir
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg" />
+    <img alt="Gilir" src="assets/logo-light.svg" height="44" />
+  </picture>
+</h1>
 
 Gilir is a task queue for coding agents. Tasks live in a SQLite database owned
 by a single background service. The service dispatches ready tasks to an
