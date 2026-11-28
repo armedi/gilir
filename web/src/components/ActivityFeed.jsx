@@ -20,7 +20,8 @@ const EVENT_TITLES = {
   'task.status_changed': 'Status',
   'task.priority_changed': 'Priority',
   'task.marking_changed': 'Marking',
-  'task.worktree_recorded': 'Worktree prepared',  'task.comment_added': 'Comment',
+  'task.worktree_recorded': 'Worktree prepared',
+  'task.commented': 'Comment',
   'task.dependency_added': 'Added blocker',
   'task.dependency_removed': 'Removed blocker',
   'task.review_approved': 'Approved',
@@ -55,14 +56,13 @@ function eventTone(event) {
 }
 
 // Comment records carry their prose under "message", the same name block and
-// review take, because they all become comments. "body" is reserved for
-// task.body so an event's key alone identifies what it holds.
+// review take, because they all become comments. Reading only that key keeps
+// "body" free for task.body, so an event's payload alone identifies what it
+// holds and a task body can never render as a comment bubble.
 function commentMessage(data) {
   if (!data || typeof data !== 'object') return '';
-  for (const key of ['message', 'comment', 'content']) {
-    if (typeof data[key] === 'string' && data[key].trim()) return data[key];
-  }
-  return '';
+  const message = data.message;
+  return typeof message === 'string' && message.trim() ? message : '';
 }
 
 function shortId(value) {

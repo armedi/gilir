@@ -363,11 +363,14 @@ silently creating a replacement. Restore it, or recreate the task. Gilir never
 deletes worktrees, not even when a task is `done` or deleted; clean them up
 yourself.
 
-Tasks that were already `in-progress` when the schema was upgraded have no
-worktree yet, so their next attempt creates one; uncommitted work in the main
-checkout is not carried over. An existing OpenCode session under the next
-attempt's deterministic ID but in another directory also fails the attempt
-closed, so upgrade stalls stay visible instead of blocking the queue.
+Gilir never migrates a database across schema versions: a file from any other
+version is refused at startup naming that version. The worktree rules below
+describe a database that carries task history; after a schema change the file is
+recreated empty.
+
+An existing OpenCode session under the next attempt's deterministic ID but in
+another directory fails the attempt closed, so a stale session stays visible
+instead of blocking the queue.
 
 ## Hooks
 
@@ -387,6 +390,11 @@ is optional. It defaults to the task, dependency and session events.
 - Delivery is at least once. A per-hook cursor advances only after success, so
   handlers must be idempotent. Use the `id` in the payload, the
   `X-Gilir-Event-ID` header or `GILIR_EVENT_ID` to drop duplicates.
+- `task.commented` carries a person's wording under `data.message`; `body` is
+  reserved for `task.body`. `task.created` records only `repo_id`, `title`,
+  `status` and `priority`, and `task.updated` carries `old.body`/`new.body`. A
+  handler that needs the task text should read it by `task_id`; that returns the
+  current body, not the value at creation, which no event preserves.
 - Failures are retried with backoff (up to 30s apart) and logged to stderr. A
   failing hook blocks only its own later events. To skip an event, fix the
   handler so it succeeds.

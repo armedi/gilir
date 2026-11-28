@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -549,4 +552,76 @@ func TestDatabaseIDIsDurableAndUniquePerFile(t *testing.T) {
 	if otherID, err := other.DatabaseID(ctx); err != nil || otherID == id {
 		t.Fatalf("second database ID = %q, %v; want a distinct ID from %q", otherID, err, id)
 	}
+}
+
+// TestOpenRejectsOtherSchemaVersionWithoutModifyingTheFile pins the refusal
+// contract: a database from another schema version is rejected, and the file is
+// left byte-identical so the operator can simply delete it. The version check
+// therefore runs before the connection switches the file to WAL.
+func TestOpenRejectsOtherSchemaVersionWithoutModifyingTheFile(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "old.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		fmt.Sprintf("PRAGMA user_version = %d", schemaVersion-1),
+	); err != nil {
+		t.Fatalf("set user_version: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	before := fileDigest(t, path)
+	refused, err := Open(path)
+	if err == nil {
+		_ = refused.Close()
+		t.Fatal("Open accepted a database from another schema version")
+	}
+	if !strings.Contains(err.Error(), "not supported") ||
+		!strings.Contains(err.Error(), "delete the database file") {
+		t.Fatalf("error = %v, want an actionable refusal", err)
+	}
+	if after := fileDigest(t, path); after != before {
+		t.Fatalf("refusal modified the database file: %s -> %s", before, after)
+	}
+}
+
+// TestOpenRejectsForeignNonEmptyFile checks that gilir does not stamp its schema
+// onto a version-less file that already holds someone else's tables.
+func TestOpenRejectsForeignNonEmptyFile(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "foreign.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DROP TABLE activity`); err != nil {
+		t.Fatalf("drop table: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA user_version = 0`); err != nil {
+		t.Fatalf("set user_version: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if refused, err := Open(path); err == nil {
+		_ = refused.Close()
+		t.Fatal("Open initialized a non-empty file with no schema version")
+	} else if !strings.Contains(err.Error(), "not empty") {
+		t.Fatalf("error = %v, want a non-empty refusal", err)
+	}
+}
+
+func fileDigest(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }

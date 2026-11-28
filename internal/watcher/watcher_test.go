@@ -978,9 +978,9 @@ func TestUnknownRepositoryLocationFailsClosed(t *testing.T) {
 
 func TestPreExistingSessionInAnotherDirectoryFailsClosed(t *testing.T) {
 	e := setup(t, 1, 1)
-	// After a database upgrade a task has no recorded worktree, but the
-	// deterministic session ID for its reserved attempt may already exist in
-	// OpenCode from a pre-upgrade run in the main checkout. OpenCode returns it
+	// A task can have no recorded worktree, but the deterministic session ID for
+	// its reserved attempt may already exist in OpenCode from an earlier run in
+	// the main checkout. OpenCode returns it
 	// unchanged and the mismatch must fail the attempt instead of stalling
 	// every later dispatch on the same error.
 	attempt, err := e.st.Reserve(e.ctx, e.url, 100)

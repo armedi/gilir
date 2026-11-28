@@ -345,9 +345,9 @@ export default function TaskDetailPane(props) {
     if (actionBusy() !== null) return;
     const current = task();
     if (!current) return;
-    const body = comment().trim();
+    const message = comment().trim();
 
-    if (!approve && !body) {
+    if (!approve && !message) {
       setCommentError('Explain what needs to change before requesting changes.');
       commentInput?.focus();
       return;
@@ -362,10 +362,10 @@ export default function TaskDetailPane(props) {
       // The review message is part of the review command so the server records
       // it as a comment and enforces it for request-changes from every client.
       const args = { id: taskId, approve };
-      if (body) args.message = body;
+      if (message) args.message = message;
       await command('task.review', args);
-      if (body && commentKey) clearDraft(commentKey);
-      if (body && activeTaskKey === taskKey) setComment('');
+      if (message && commentKey) clearDraft(commentKey);
+      if (message && activeTaskKey === taskKey) setComment('');
       await props.onRefresh();
       if (activeTaskKey === taskKey) {
         props.notify(approve ? 'Task approved' : 'Changes requested');
@@ -386,9 +386,9 @@ export default function TaskDetailPane(props) {
     if (actionBusy() !== null) return;
     const current = task();
     if (!current) return;
-    const body = comment().trim();
+    const message = comment().trim();
 
-    if (!unblock && !body) {
+    if (!unblock && !message) {
       setCommentError('Explain why this task is blocked.');
       commentInput?.focus();
       return;
@@ -401,10 +401,10 @@ export default function TaskDetailPane(props) {
     setCommentError(null);
     try {
       const args = { id: taskId };
-      if (body) args.message = body;
+      if (message) args.message = message;
       await command(unblock ? 'task.unblock' : 'task.block', args);
-      if (body && commentKey) clearDraft(commentKey);
-      if (body && activeTaskKey === taskKey) setComment('');
+      if (message && commentKey) clearDraft(commentKey);
+      if (message && activeTaskKey === taskKey) setComment('');
       await props.onRefresh();
       if (activeTaskKey === taskKey) {
         props.notify(unblock ? 'Task unblocked' : 'Task blocked');

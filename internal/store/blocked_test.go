@@ -96,6 +96,8 @@ func TestUnblockRequiresBlockedAndRequeuesOnlyIdleInProgress(t *testing.T) {
 	}
 	if detail := mustShow(t, s, backlog.ID); countActivityType(detail.Activity, ActivityTaskCommented) != 2 {
 		t.Fatalf("block and unblock comments = %v", activityTypes(detail.Activity))
+	} else {
+		assertCommentMessages(t, detail.Activity, "hold", "resumed")
 	}
 
 	// todo keeps todo and gets the boost. A blank message writes no comment.

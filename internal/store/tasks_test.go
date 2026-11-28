@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -140,6 +142,12 @@ func TestEventDataReservesBodyForKey(t *testing.T) {
 	if _, ok := created.Data["body"]; ok {
 		t.Fatalf("task.created data carries body: %#v", created.Data)
 	}
+	// A stray message would render creation as a comment bubble, so pin the whole
+	// payload rather than only checking for body.
+	wantCreated := []string{"priority", "repo_id", "status", "title"}
+	if got := sortedKeys(created.Data); !slices.Equal(got, wantCreated) {
+		t.Fatalf("task.created keys = %v, want exactly %v", got, wantCreated)
+	}
 	if created.Data["title"] != "audited" {
 		t.Fatalf("task.created title = %#v, want audited", created.Data["title"])
 	}
@@ -149,9 +157,19 @@ func TestEventDataReservesBodyForKey(t *testing.T) {
 	if _, ok := commented.Data["body"]; ok {
 		t.Fatalf("comment data carries body: %#v", commented.Data)
 	}
-	if task.Body != "long task body" {
-		t.Fatalf("task body = %q, want it preserved on the task row", task.Body)
+	// Read the stored row, not the create response, which copies its input.
+	if detail.Task.Body != "long task body" {
+		t.Fatalf("stored task body = %q, want it preserved on the task row", detail.Task.Body)
 	}
+}
+
+func sortedKeys(data map[string]any) []string {
+	keys := make([]string, 0, len(data))
+	for key := range data {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func TestListTasksFilters(t *testing.T) {
@@ -610,6 +628,7 @@ func TestUpdateTaskPatchNoOpAndAudit(t *testing.T) {
 	if countActivityType(detail.Activity, ActivityTaskCommented) != 1 {
 		t.Fatalf("review comment events = %v, want one", activityTypes(detail.Activity))
 	}
+	assertCommentMessages(t, detail.Activity, "please add tests")
 }
 
 func TestReviewAndReworkTransitions(t *testing.T) {
@@ -999,5 +1018,26 @@ func TestTaskIDLookupsAreCaseInsensitiveAndRejectBareNumbers(t *testing.T) {
 	}
 	if err := s.SetDependency(ctx, "alice", "gilir-1", "gilir-1", true); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("lower-case self dependency error = %v, want ErrInvalid", err)
+	}
+}
+
+// assertCommentMessages checks that the comment records carry the given prose in
+// order under the message key. Block, unblock and review all funnel their prose
+// into comment records, so this is where their wording is pinned.
+func assertCommentMessages(t *testing.T, activities []Activity, want ...string) {
+	t.Helper()
+	got := []string{}
+	for _, activity := range activities {
+		if activity.Type != ActivityTaskCommented {
+			continue
+		}
+		if _, ok := activity.Data["body"]; ok {
+			t.Fatalf("comment data carries body: %#v", activity.Data)
+		}
+		message, _ := activity.Data["message"].(string)
+		got = append(got, message)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("comment messages = %v, want %v", got, want)
 	}
 }

@@ -1152,7 +1152,7 @@ func commentEventID(data map[string]any) (int64, bool) {
 
 // projectTaskActivity hides comment mutation events and folds the latest
 // mutation for each comment into its original task.commented event. An edit
-// updates the body and adds edited_at; removal hides the original comment. Raw
+// replaces the message and adds edited_at; removal hides the original comment. Raw
 // transaction history remains available through ActivityAfter.
 func projectTaskActivity(activities []Activity) []Activity {
 	latest := map[int64]Activity{}

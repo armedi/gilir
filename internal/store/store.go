@@ -64,12 +64,60 @@ func Open(path string) (*Store, error) {
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(0)
 
+	if err := checkDatabaseState(context.Background(), db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	s := &Store{db: db}
 	if err := s.initialize(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+// checkDatabaseState refuses a database before any write, including the WAL
+// switch in the DSN, so a rejected file is left byte-identical for the operator
+// to delete. It rejects a database from another schema version and a
+// non-empty file that carries no schema version at all; only an empty file is
+// initialized from scratch.
+func checkDatabaseState(ctx context.Context, db *sql.DB) error {
+	var version int
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("store: read schema version: %w", err)
+	}
+	switch {
+	case version == schemaVersion:
+		return nil
+	case version > schemaVersion:
+		return fmt.Errorf("store: database schema version %d is newer than supported version %d", version, schemaVersion)
+	case version != 0:
+		return fmt.Errorf("store: database schema version %d is not supported; delete the database file and restart to recreate it", version)
+	}
+
+	// Version 0 is either a fresh file or a foreign database that never recorded
+	// a version. Only an empty file may be initialized, or gilir would stamp its
+	// schema onto unrelated data.
+	empty, err := isDatabaseEmpty(ctx, db)
+	if err != nil {
+		return err
+	}
+	if !empty {
+		return errors.New("store: database file is not empty and carries no gilir schema version; delete the database file and restart to recreate it")
+	}
+	return nil
+}
+
+// isDatabaseEmpty reports whether the database has no schema objects at all.
+func isDatabaseEmpty(ctx context.Context, db *sql.DB) (bool, error) {
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'`,
+	).Scan(&count); err != nil {
+		return false, fmt.Errorf("store: inspect database schema: %w", err)
+	}
+	return count == 0, nil
 }
 
 // Close releases the database handle.
@@ -130,12 +178,13 @@ func (s *Store) initialize(ctx context.Context) error {
 		_ = tx.Rollback()
 	}()
 
+	// checkDatabaseState already refused every version but 0 and the current one,
+	// so reaching here with an empty schema means this is a fresh database.
 	var version int
 	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("store: read schema version: %w", err)
 	}
-	switch {
-	case version == 0:
+	if version == 0 {
 		for _, statement := range schemaStatements {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
 				return fmt.Errorf("store: create schema: %w", err)
@@ -163,12 +212,6 @@ func (s *Store) initialize(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 			return fmt.Errorf("store: set schema version: %w", err)
 		}
-	case version == schemaVersion:
-		// Current schema.
-	case version > schemaVersion:
-		return fmt.Errorf("store: database schema version %d is newer than supported version %d", version, schemaVersion)
-	default:
-		return fmt.Errorf("store: database schema version %d is not supported; delete the database file and restart to recreate it", version)
 	}
 
 	if err := tx.Commit(); err != nil {
