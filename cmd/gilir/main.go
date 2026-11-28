@@ -1,11 +1,10 @@
 // Command gilir is the Gilir CLI and background service.
 //
-// The service is the only process that opens SQLite. "gilir service start"
-// launches the detached process that serves the HTTP API and web UI and runs
-// the queue watcher and hooks; the service commands manage that process.
-// Every ordinary command and queue control sends one POST to that service's
-// HTTP command API at GILIR_URL, so help, skill and command failures never
-// create or open SQLite.
+// The service is the only process that opens SQLite. "gilir serve" runs it in
+// the foreground; "gilir service start" launches the same work as a detached
+// managed process. Every ordinary command and host-local queue control sends
+// one POST to that service's HTTP command API, so help, skill and command
+// failures never create or open SQLite.
 package main
 
 import (
@@ -27,7 +26,7 @@ func main() {
 	// marker is checked before CLI parsing so that path is private and cannot
 	// recurse into another launcher.
 	if len(os.Args) == 2 && os.Args[1] == serviceWorkerCommand {
-		if _, err := runDaemon(context.Background(), "", ""); err != nil {
+		if err := runServiceWorker(context.Background()); err != nil {
 			fmt.Fprintf(os.Stderr, "gilir: %v\n", err)
 			os.Exit(1)
 		}
@@ -36,11 +35,26 @@ func main() {
 	os.Exit(cli.Run(context.Background(), os.Args[1:], os.Stdout, os.Stderr, strings.TrimSpace(os.Getenv("GILIR_ACTOR")), execute))
 }
 
-// execute routes one parsed CLI command. Service lifecycle commands use local
-// state; every ordinary command and queue control is sent to the service at
-// GILIR_URL, so help, skill and command failures never create or open SQLite.
+// execute routes one parsed CLI command. `serve` runs in-process; service
+// lifecycle and queue-control commands use local state; every ordinary command
+// is sent to the service at GILIR_URL, so help, skill and command failures
+// never create or open SQLite.
 func execute(ctx context.Context, command, actor string, args map[string]any) (any, error) {
 	switch command {
+	case "serve":
+		host, err := hostArg(args)
+		if err != nil {
+			return nil, err
+		}
+		port, err := portArg(args)
+		if err != nil {
+			return nil, err
+		}
+		db, err := dbArg(args)
+		if err != nil {
+			return nil, err
+		}
+		return serveForeground(ctx, host, port, db)
 	case "service.start":
 		host, err := hostArg(args)
 		if err != nil {
@@ -50,7 +64,11 @@ func execute(ctx context.Context, command, actor string, args map[string]any) (a
 		if err != nil {
 			return nil, err
 		}
-		return startService(ctx, host, port)
+		db, err := dbArg(args)
+		if err != nil {
+			return nil, err
+		}
+		return startService(ctx, host, port, db)
 	case "service.stop":
 		return stopService(ctx)
 	case "service.restart":
@@ -62,11 +80,39 @@ func execute(ctx context.Context, command, actor string, args map[string]any) (a
 		if err != nil {
 			return nil, err
 		}
-		return restartService(ctx, host, port)
+		db, err := dbArg(args)
+		if err != nil {
+			return nil, err
+		}
+		return restartService(ctx, host, port, db)
 	case "service.status":
 		return queryServiceStatus(ctx)
+	case "service.pause":
+		return updateServiceQueue(ctx, actor, map[string]any{"paused": true}, "pause")
+	case "service.resume":
+		return updateServiceQueue(ctx, actor, map[string]any{"paused": false}, "resume")
+	case "service.concurrency":
+		return updateServiceQueue(ctx, actor, map[string]any{"max_concurrency": args["max_concurrency"]}, "concurrency")
 	}
 	return postCommand(ctx, command, actor, args)
+}
+
+// dbArg returns the optional --db value, trimmed. A present but blank value is
+// rejected so it never silently falls back to the default database.
+func dbArg(args map[string]any) (string, error) {
+	value, ok := args["db"]
+	if !ok {
+		return "", nil
+	}
+	db, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid database path %v", value)
+	}
+	db = strings.TrimSpace(db)
+	if db == "" {
+		return "", errors.New("flag --db requires a non-empty value")
+	}
+	return db, nil
 }
 
 // hostArg returns the optional --host value, leaving it empty so the service
@@ -101,8 +147,8 @@ func portArg(args map[string]any) (string, error) {
 // (0700) and the database file (0600) when missing, and returns the
 // canonical path. An existing file keeps its mode; SQLite gives the -wal and
 // -shm sidecars the main file's permissions.
-func prepareDatabase() (string, error) {
-	path, err := databasePath()
+func prepareDatabase(override string) (string, error) {
+	path, err := databasePath(override)
 	if err != nil {
 		return "", err
 	}
@@ -125,9 +171,12 @@ func prepareDatabase() (string, error) {
 	return canonical, nil
 }
 
-// databasePath returns the absolute database path from GILIR_DB or the
-// platform data directory.
-func databasePath() (string, error) {
+// databasePath returns the absolute database path from the --db override,
+// GILIR_DB, or the platform data directory.
+func databasePath(override string) (string, error) {
+	if override != "" {
+		return filepath.Abs(override)
+	}
 	if path := os.Getenv("GILIR_DB"); path != "" {
 		return filepath.Abs(path)
 	}

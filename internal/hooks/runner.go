@@ -60,21 +60,21 @@ var defaultEvents = []string{
 // report are serialized. Invalid configs are reported and nothing runs.
 //
 // Run does not configure GILIR_URL for command hooks; any inherited value is
-// filtered out. The daemon uses RunWithURL so hooks invoke the daemon that
+// filtered out. The service uses RunWithURL so hooks invoke the service that
 // delivered the event.
 func Run(ctx context.Context, configs []Config, source Source, report func(error)) {
 	run(ctx, configs, source, "", report)
 }
 
-// RunWithURL is Run with the daemon's own HTTP origin, for example
+// RunWithURL is Run with the service's own HTTP origin, for example
 // http://127.0.0.1:44547. Command hooks receive it as GILIR_URL, replacing any
-// inherited value, so a hook that invokes gilir reaches the daemon that
+// inherited value, so a hook that invokes gilir reaches the service that
 // delivered the event even when it listens on a custom port.
-func RunWithURL(ctx context.Context, configs []Config, source Source, daemonURL string, report func(error)) {
-	run(ctx, configs, source, daemonURL, report)
+func RunWithURL(ctx context.Context, configs []Config, source Source, serviceURL string, report func(error)) {
+	run(ctx, configs, source, serviceURL, report)
 }
 
-func run(ctx context.Context, configs []Config, source Source, daemonURL string, report func(error)) {
+func run(ctx context.Context, configs []Config, source Source, serviceURL string, report func(error)) {
 	var mu sync.Mutex
 	reportErr := func(err error) {
 		if report == nil {
@@ -90,7 +90,7 @@ func run(ctx context.Context, configs []Config, source Source, daemonURL string,
 	}
 	var wg sync.WaitGroup
 	for _, config := range configs {
-		w := &worker{config: config, source: source, report: reportErr, events: eventSet(config.Events), daemonURL: daemonURL}
+		w := &worker{config: config, source: source, report: reportErr, events: eventSet(config.Events), serviceURL: serviceURL}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -112,11 +112,11 @@ func eventSet(events []string) map[string]bool {
 }
 
 type worker struct {
-	config    Config
-	source    Source
-	report    func(error)
-	events    map[string]bool
-	daemonURL string
+	config     Config
+	source     Source
+	report     func(error)
+	events     map[string]bool
+	serviceURL string
 }
 
 func (w *worker) run(ctx context.Context) {
@@ -196,7 +196,7 @@ func (w *worker) deliver(ctx context.Context, event Event) error {
 	if w.config.URL != "" {
 		return postEvent(ctx, w.config.URL, event)
 	}
-	return runCommand(ctx, w.config, w.daemonURL, event)
+	return runCommand(ctx, w.config, w.serviceURL, event)
 }
 
 // retry runs fn until it succeeds, reporting each failure and backing off up

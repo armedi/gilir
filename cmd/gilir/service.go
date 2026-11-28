@@ -148,7 +148,7 @@ func requestedPort(port string) int {
 	return n
 }
 
-// serviceState is written by the running daemon and read by lifecycle
+// serviceState is written by the running managed worker and read by lifecycle
 // commands. It carries the private control credential, so the file is mode
 // 0600 and its contents never appear in command output.
 type serviceState struct {
@@ -162,6 +162,7 @@ type serviceState struct {
 	URL           string    `json:"url"`
 	ControlPort   int       `json:"control_port"`
 	Token         string    `json:"token"`
+	DBPath        string    `json:"db_path"`
 	LogPath       string    `json:"log_path"`
 	StartedAt     time.Time `json:"started_at"`
 }
@@ -173,6 +174,7 @@ type serviceStatus struct {
 	Host           string `json:"host,omitempty"`
 	Port           int    `json:"port,omitempty"`
 	URL            string `json:"url,omitempty"`
+	DBPath         string `json:"db_path,omitempty"`
 	StartedAt      string `json:"started_at,omitempty"`
 	LogPath        string `json:"log_path,omitempty"`
 	Paused         bool   `json:"paused"`
@@ -185,7 +187,7 @@ type serviceStopped struct {
 	Stopped bool `json:"stopped"`
 }
 
-type daemonStatusPayload struct {
+type serviceStatusPayload struct {
 	Paused         bool   `json:"paused"`
 	MaxConcurrency int    `json:"max_concurrency"`
 	ActiveParents  *int   `json:"active_parents"`
@@ -193,33 +195,41 @@ type daemonStatusPayload struct {
 	Instance       string `json:"instance"`
 }
 
-func serviceStatePath(dbPath string) string {
-	return dbPath + ".service.json"
+// servicePaths names the singleton managed-service files. They live in the
+// user data directory rather than beside the database, so one service is
+// managed per user and a foreground `gilir serve` never touches them.
+type servicePaths struct {
+	Dir    string
+	State  string
+	Log    string
+	OpLock string
 }
 
-func serviceLogPath(dbPath string) string {
-	return dbPath + ".service.log"
-}
-
-func serviceOpLockPath(dbPath string) string {
-	return dbPath + ".service.lock"
-}
-
-// serviceDatabasePath resolves the database path for read-only lifecycle
-// commands without creating the file, following symlinks when it exists.
-func serviceDatabasePath() (string, error) {
-	path, err := databasePath()
+func resolveServicePaths() (servicePaths, error) {
+	dir, err := dataDir()
 	if err != nil {
-		return "", err
+		return servicePaths{}, fmt.Errorf("locate data directory: %w", err)
 	}
-	if canonical, err := filepath.EvalSymlinks(path); err == nil {
-		return canonical, nil
-	}
-	return path, nil
+	dir = filepath.Join(dir, "gilir")
+	return servicePaths{
+		Dir:    dir,
+		State:  filepath.Join(dir, "service.json"),
+		Log:    filepath.Join(dir, "service.log"),
+		OpLock: filepath.Join(dir, "service.lock"),
+	}, nil
 }
 
-func readServiceState(dbPath string) (serviceState, bool) {
-	data, err := os.ReadFile(serviceStatePath(dbPath))
+// prepare creates the managed-service directory (0700) so state, log, and
+// operation lock files can be written there.
+func (p servicePaths) prepare() error {
+	if err := os.MkdirAll(p.Dir, 0o700); err != nil {
+		return fmt.Errorf("create service directory: %w", err)
+	}
+	return nil
+}
+
+func readServiceState(paths servicePaths) (serviceState, bool) {
+	data, err := os.ReadFile(paths.State)
 	if err != nil {
 		return serviceState{}, false
 	}
@@ -228,7 +238,7 @@ func readServiceState(dbPath string) (serviceState, bool) {
 		return serviceState{}, false
 	}
 	if state.Version != serviceVersion || state.Instance == "" || state.Port <= 0 ||
-		state.ControlPort <= 0 || state.Token == "" || state.URL == "" {
+		state.ControlPort <= 0 || state.Token == "" || state.URL == "" || state.DBPath == "" {
 		return serviceState{}, false
 	}
 	return state, true
@@ -236,13 +246,15 @@ func readServiceState(dbPath string) (serviceState, bool) {
 
 // writeServiceState publishes the state atomically so a concurrent read sees
 // either the old record or the new one, never a partial file.
-func writeServiceState(dbPath string, state serviceState) error {
+func writeServiceState(paths servicePaths, state serviceState) error {
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode service state: %w", err)
 	}
-	path := serviceStatePath(dbPath)
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".gilir-service-*")
+	if err := paths.prepare(); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(paths.Dir, ".gilir-service-*")
 	if err != nil {
 		return fmt.Errorf("create service state: %w", err)
 	}
@@ -259,20 +271,38 @@ func writeServiceState(dbPath string, state serviceState) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("write service state: %w", err)
 	}
-	if err := os.Rename(name, path); err != nil {
+	if err := os.Rename(name, paths.State); err != nil {
 		return fmt.Errorf("publish service state: %w", err)
 	}
 	return nil
 }
 
-func removeServiceState(dbPath string) {
-	_ = os.Remove(serviceStatePath(dbPath))
+func removeServiceState(paths servicePaths) {
+	_ = os.Remove(paths.State)
 }
 
-// daemonLockHeld reports whether a daemon currently owns the database. The
-// lock file is probed, never unlinked; the kernel releases the lock when the
+// removeServiceStateIf deletes the record only when it still names instance, so
+// an exiting worker never discards another worker's state after its own record
+// was lost and replaced.
+func removeServiceStateIf(paths servicePaths, instance string) {
+	state, ok := readServiceState(paths)
+	if ok && state.Instance != instance {
+		return
+	}
+	if !ok {
+		// Without a readable record there is nothing to protect; an unreadable
+		// file must not keep a dead service's record forever.
+		if _, err := os.Stat(paths.State); errors.Is(err, os.ErrNotExist) {
+			return
+		}
+	}
+	removeServiceState(paths)
+}
+
+// serviceLockHeld reports whether a service currently owns dbPath. The lock
+// file is probed, never unlinked; the kernel releases the lock when the
 // process exits.
-func daemonLockHeld(dbPath string) bool {
+func serviceLockHeld(dbPath string) bool {
 	path := dbPath + ".lock"
 	if _, err := os.Stat(path); err != nil {
 		return false
@@ -285,16 +315,23 @@ func daemonLockHeld(dbPath string) bool {
 	return false
 }
 
-func startService(ctx context.Context, host, port string) (any, error) {
+func startService(ctx context.Context, host, port, db string) (any, error) {
 	requested, err := resolveListen(host, port)
 	if err != nil {
 		return nil, err
 	}
-	dbPath, err := prepareDatabase()
+	paths, err := resolveServicePaths()
 	if err != nil {
 		return nil, err
 	}
-	lock, err := lockFile(serviceOpLockPath(dbPath))
+	dbPath, err := prepareDatabase(db)
+	if err != nil {
+		return nil, err
+	}
+	if err := paths.prepare(); err != nil {
+		return nil, err
+	}
+	lock, err := lockFile(paths.OpLock)
 	if errors.Is(err, errLocked) {
 		return nil, errors.New("another gilir service operation is in progress")
 	}
@@ -302,30 +339,36 @@ func startService(ctx context.Context, host, port string) (any, error) {
 		return nil, fmt.Errorf("lock service state: %w", err)
 	}
 	defer lock.Close()
-	return startServiceLocked(ctx, dbPath, requested)
+	return startServiceLocked(ctx, paths, dbPath, requested)
 }
 
-func startServiceLocked(ctx context.Context, dbPath string, requested listenConfig) (any, error) {
-	if state, ok := readServiceState(dbPath); ok {
-		if live, err := daemonStatusAt(ctx, state.URL); err == nil && live.Instance == state.Instance {
+func startServiceLocked(ctx context.Context, paths servicePaths, dbPath string, requested listenConfig) (any, error) {
+	if state, ok := readServiceState(paths); ok {
+		if live, err := serviceStatusAt(ctx, state.URL); err == nil && live.Instance == state.Instance {
 			current := listenConfig{host: state.RequestedHost, port: strconv.Itoa(state.RequestedPort)}
-			if current.matches(requested) {
+			if current.matches(requested) && state.DBPath == dbPath {
 				return statusFrom(state, live), nil
 			}
-			return nil, fmt.Errorf("gilir service is already running at %s; run \"gilir service stop\" first", state.URL)
+			return nil, fmt.Errorf("gilir service is already running at %s for %s; run \"gilir service stop\" first", state.URL, state.DBPath)
 		}
-		if daemonLockHeld(dbPath) {
-			return nil, fmt.Errorf("gilir service is running but not responding at %s (see %s)", state.URL, state.LogPath)
+		if serviceLockHeld(state.DBPath) {
+			return nil, fmt.Errorf("%s is in use by another gilir process (not the managed service at %s); stop it or run \"gilir service stop\" to clear the stale record %s", state.DBPath, state.URL, paths.State)
 		}
-		removeServiceState(dbPath)
-	} else if daemonLockHeld(dbPath) {
-		return nil, fmt.Errorf("gilir service is already running but its state file %s is missing or invalid", serviceStatePath(dbPath))
+		removeServiceState(paths)
+	} else if serviceLockHeld(dbPath) {
+		return nil, fmt.Errorf("%s is in use by another gilir process (not the managed service recorded in %s); stop it first", dbPath, paths.State)
 	} else {
-		removeServiceState(dbPath)
+		removeServiceState(paths)
 	}
 
-	logPath := serviceLogPath(dbPath)
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	// A foreground `gilir serve` (or another process) may own the database
+	// without publishing managed state. Refuse before spawning a worker that
+	// would only fail the same way.
+	if serviceLockHeld(dbPath) {
+		return nil, fmt.Errorf("another gilir process is already using %s; stop it or choose a different --db", dbPath)
+	}
+
+	logFile, err := os.OpenFile(paths.Log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open service log: %w", err)
 	}
@@ -373,26 +416,26 @@ func startServiceLocked(ctx context.Context, dbPath string, requested listenConf
 			return nil, ctx.Err()
 		case err := <-exited:
 			// The worker may have published its state just before exiting.
-			if state, ok := readServiceState(dbPath); ok && state.Instance == instance {
-				if live, probeErr := daemonStatusAt(ctx, state.URL); probeErr == nil {
+			if state, ok := readServiceState(paths); ok && state.Instance == instance {
+				if live, probeErr := serviceStatusAt(ctx, state.URL); probeErr == nil {
 					return statusFrom(state, live), nil
 				}
 			}
-			return nil, serviceStartError(logPath, offset, err)
+			return nil, serviceStartError(paths.Log, offset, err)
 		case <-ticker.C:
-			state, ok := readServiceState(dbPath)
+			state, ok := readServiceState(paths)
 			if !ok || state.Instance != instance {
 				continue
 			}
 			// Require the launched worker's identity: a stale state file may
 			// name a port that another database's service now answers on.
-			if live, probeErr := daemonStatusAt(ctx, state.URL); probeErr == nil && live.Instance == instance {
+			if live, probeErr := serviceStatusAt(ctx, state.URL); probeErr == nil && live.Instance == instance {
 				return statusFrom(state, live), nil
 			}
 		case <-deadline.C:
 			_ = cmd.Process.Kill()
 			return nil, fmt.Errorf("gilir service did not become ready within %s (see %s)%s",
-				serviceStartTimeout, logPath, tailSuffix(logPath, offset))
+				serviceStartTimeout, paths.Log, tailSuffix(paths.Log, offset))
 		}
 	}
 }
@@ -471,63 +514,74 @@ func logTail(path string, offset int64) string {
 }
 
 func stopService(ctx context.Context) (any, error) {
-	dbPath, err := serviceDatabasePath()
+	paths, err := resolveServicePaths()
 	if err != nil {
 		return nil, err
 	}
-	lock, err := lockFile(serviceOpLockPath(dbPath))
+	if _, err := os.Stat(paths.Dir); errors.Is(err, os.ErrNotExist) {
+		// The data directory was never created, so nothing can be running.
+		return serviceStopped{Stopped: false}, nil
+	}
+	lock, err := lockFile(paths.OpLock)
 	if errors.Is(err, errLocked) {
 		return nil, errors.New("another gilir service operation is in progress")
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		// The database directory was never created, so nothing can be running.
 		return serviceStopped{Stopped: false}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("lock service state: %w", err)
 	}
 	defer lock.Close()
-	return stopServiceLocked(ctx, dbPath)
+	return stopServiceLocked(ctx, paths)
 }
 
-func stopServiceLocked(ctx context.Context, dbPath string) (any, error) {
-	state, ok := readServiceState(dbPath)
+func stopServiceLocked(ctx context.Context, paths servicePaths) (any, error) {
+	state, ok := readServiceState(paths)
 	if !ok {
-		if daemonLockHeld(dbPath) {
-			return nil, fmt.Errorf("gilir service is running but its state file %s is missing or invalid", serviceStatePath(dbPath))
-		}
-		removeServiceState(dbPath)
+		removeServiceState(paths)
 		return serviceStopped{Stopped: false}, nil
 	}
 
-	if !daemonLockHeld(dbPath) {
-		removeServiceState(dbPath)
+	if !serviceLockHeld(state.DBPath) {
+		removeServiceState(paths)
 		return serviceStopped{Stopped: false}, nil
 	}
 
 	controlErr := requestStop(ctx, state)
+	if controlErr != nil {
+		// A stale record (the worker was killed, then a foreground serve took
+		// the database) cannot answer, and its lock will never be released by
+		// this record's owner. Verify the instance before waiting the full
+		// timeout: if the URL does not answer as this record's instance, drop
+		// the record instead of blocking on an unrelated process.
+		if live, probeErr := serviceStatusAt(ctx, state.URL); probeErr != nil || live.Instance != state.Instance {
+			removeServiceState(paths)
+			return serviceStopped{Stopped: false}, nil
+		}
+	}
 	// The listener is closed before watcher, hook, and store cleanup, so wait
 	// for the database lock to be released rather than for HTTP to fail.
-	if err := waitDaemonLockFree(ctx, dbPath, serviceStopTimeout); err != nil {
+	if err := waitServiceLockFree(ctx, state.DBPath, serviceStopTimeout); err != nil {
 		if controlErr != nil {
 			return nil, fmt.Errorf("stop gilir service at %s: %v (see %s)", state.URL, controlErr, state.LogPath)
 		}
 		return nil, fmt.Errorf("gilir service at %s did not stop within %s", state.URL, serviceStopTimeout)
 	}
-	removeServiceState(dbPath)
+	removeServiceState(paths)
 	return serviceStopped{Stopped: true}, nil
 }
 
-func restartService(ctx context.Context, host, port string) (any, error) {
-	dbPath, err := serviceDatabasePath()
+func restartService(ctx context.Context, host, port, db string) (any, error) {
+	paths, err := resolveServicePaths()
 	if err != nil {
 		return nil, err
 	}
-	if dbPath, err = prepareDatabase(); err != nil {
+	if err := paths.prepare(); err != nil {
 		return nil, err
 	}
 
-	lock, err := lockFile(serviceOpLockPath(dbPath))
+	lock, err := lockFile(paths.OpLock)
 	if errors.Is(err, errLocked) {
 		return nil, errors.New("another gilir service operation is in progress")
 	}
@@ -536,21 +590,26 @@ func restartService(ctx context.Context, host, port string) (any, error) {
 	}
 	defer lock.Close()
 
-	state, ok := readServiceState(dbPath)
+	state, ok := readServiceState(paths)
 	if ok {
-		// Only a live instance's address is worth keeping; a stale record must
-		// not make restart dial a port that no longer belongs to this database.
-		live, probeErr := daemonStatusAt(ctx, state.URL)
+		// Only a live instance's address and database are worth keeping; a
+		// stale record must not make restart dial a port that no longer
+		// belongs to this service.
+		live, probeErr := serviceStatusAt(ctx, state.URL)
 		ok = probeErr == nil && live.Instance == state.Instance
 	}
 	requested, err := resolveRestartListen(host, port, state, ok)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := stopServiceLocked(ctx, dbPath); err != nil {
+	dbPath, err := restartDatabasePath(db, state, ok)
+	if err != nil {
 		return nil, err
 	}
-	return startServiceLocked(ctx, dbPath, requested)
+	if _, err := stopServiceLocked(ctx, paths); err != nil {
+		return nil, err
+	}
+	return startServiceLocked(ctx, paths, dbPath, requested)
 }
 
 // resolveRestartListen keeps the running instance's requested address unless
@@ -567,41 +626,77 @@ func resolveRestartListen(host, port string, state serviceState, ok bool) (liste
 	return resolveListen(host, port)
 }
 
+// restartDatabasePath keeps the running instance's database unless --db
+// overrides it. A stopped service uses --db, GILIR_DB, or the default.
+func restartDatabasePath(db string, state serviceState, ok bool) (string, error) {
+	if ok && strings.TrimSpace(db) == "" {
+		return prepareDatabase(state.DBPath)
+	}
+	return prepareDatabase(db)
+}
+
 func queryServiceStatus(ctx context.Context) (any, error) {
-	dbPath, err := serviceDatabasePath()
+	paths, err := resolveServicePaths()
 	if err != nil {
 		return nil, err
 	}
-	out := serviceStatus{LogPath: serviceLogPath(dbPath)}
-	state, ok := readServiceState(dbPath)
+	out := serviceStatus{LogPath: paths.Log}
+	state, ok := readServiceState(paths)
 	if !ok {
-		if daemonLockHeld(dbPath) {
-			return nil, fmt.Errorf("gilir service is running but its state file %s is missing or invalid", serviceStatePath(dbPath))
-		}
 		return out, nil
 	}
-	live, err := daemonStatusAt(ctx, state.URL)
+	live, err := serviceStatusAt(ctx, state.URL)
 	if err != nil {
-		if daemonLockHeld(dbPath) {
+		if serviceLockHeld(state.DBPath) {
 			return nil, fmt.Errorf("gilir service is running but not responding at %s: %v (see %s)", state.URL, err, state.LogPath)
 		}
 		return out, nil
 	}
 	if live.Instance != state.Instance {
-		// Another database's service reused this address; this database's
+		// Another database's service reused this address; this service's
 		// state is stale.
 		return out, nil
 	}
 	return statusFrom(state, live), nil
 }
 
-func statusFrom(state serviceState, live daemonStatusPayload) serviceStatus {
+// updateServiceQueue is the host-local path for pause, resume, and concurrency.
+// It reads the singleton service.json and never GILIR_URL, verifies the
+// database lock and live instance identity, then forwards service.update.
+func updateServiceQueue(ctx context.Context, actor string, args map[string]any, action string) (any, error) {
+	paths, err := resolveServicePaths()
+	if err != nil {
+		return nil, err
+	}
+	state, ok := readServiceState(paths)
+	if !ok {
+		return nil, fmt.Errorf("gilir service is not running; start it with \"gilir service start\"")
+	}
+	if !serviceLockHeld(state.DBPath) {
+		return nil, fmt.Errorf("gilir service is not running (stale state file %s); start it with \"gilir service start\"", paths.State)
+	}
+	live, err := serviceStatusAt(ctx, state.URL)
+	if err != nil {
+		return nil, fmt.Errorf("gilir service is not responding at %s: %v", state.URL, err)
+	}
+	if live.Instance != state.Instance {
+		return nil, fmt.Errorf("gilir service at %s is not the one recorded in %s; run \"gilir service status\"", state.URL, paths.State)
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return nil, fmt.Errorf("encode %s: %w", action, err)
+	}
+	return callService(ctx, state.URL, "service.update", actor, raw, statusTimeout)
+}
+
+func statusFrom(state serviceState, live serviceStatusPayload) serviceStatus {
 	return serviceStatus{
 		Running:        true,
 		PID:            state.PID,
 		Host:           state.Host,
 		Port:           state.Port,
 		URL:            state.URL,
+		DBPath:         state.DBPath,
 		StartedAt:      state.StartedAt.UTC().Format(time.RFC3339),
 		LogPath:        state.LogPath,
 		Paused:         live.Paused,
@@ -611,24 +706,25 @@ func statusFrom(state serviceState, live daemonStatusPayload) serviceStatus {
 	}
 }
 
-// daemonStatusAt asks a running daemon for daemon.status over its public API.
-func daemonStatusAt(ctx context.Context, baseURL string) (daemonStatusPayload, error) {
-	raw, err := callDaemon(ctx, baseURL, "daemon.status", json.RawMessage(`{}`), statusTimeout)
+// serviceStatusAt asks a running service for service.status over its public API.
+func serviceStatusAt(ctx context.Context, baseURL string) (serviceStatusPayload, error) {
+	raw, err := callService(ctx, baseURL, "service.status", "", json.RawMessage(`{}`), statusTimeout)
 	if err != nil {
-		return daemonStatusPayload{}, err
+		return serviceStatusPayload{}, err
 	}
-	var payload daemonStatusPayload
+	var payload serviceStatusPayload
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return daemonStatusPayload{}, fmt.Errorf("decode daemon status: %w", err)
+		return serviceStatusPayload{}, fmt.Errorf("decode service status: %w", err)
 	}
 	return payload, nil
 }
 
-func callDaemon(ctx context.Context, baseURL, command string, args json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
+func callService(ctx context.Context, baseURL, command, actor string, args json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
 	body, err := json.Marshal(struct {
 		Command string          `json:"command"`
+		Actor   string          `json:"actor,omitempty"`
 		Args    json.RawMessage `json:"args"`
-	}{Command: command, Args: args})
+	}{Command: command, Actor: actor, Args: args})
 	if err != nil {
 		return nil, fmt.Errorf("encode %s: %w", command, err)
 	}
@@ -646,12 +742,12 @@ func callDaemon(ctx context.Context, baseURL, command string, args json.RawMessa
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("daemon is not running at %s (start it with \"gilir service start\"): %w", baseURL, err)
+		return nil, fmt.Errorf("service is not running at %s (start it with \"gilir service start\"): %w", baseURL, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxStatusBytes))
 	if err != nil {
-		return nil, fmt.Errorf("read daemon status: %w", err)
+		return nil, fmt.Errorf("read service status: %w", err)
 	}
 	var envelope struct {
 		Data  json.RawMessage `json:"data"`
@@ -660,14 +756,14 @@ func callDaemon(ctx context.Context, baseURL, command string, args json.RawMessa
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
-		return nil, fmt.Errorf("daemon at %s returned HTTP %d without a Gilir response", baseURL, resp.StatusCode)
+		return nil, fmt.Errorf("service at %s returned HTTP %d without a Gilir response", baseURL, resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK || envelope.Error != nil || len(envelope.Data) == 0 {
 		message := http.StatusText(resp.StatusCode)
 		if envelope.Error != nil && envelope.Error.Message != "" {
 			message = envelope.Error.Message
 		}
-		return nil, fmt.Errorf("daemon status failed: %s", message)
+		return nil, fmt.Errorf("service request failed: %s", message)
 	}
 	return envelope.Data, nil
 }
@@ -728,10 +824,10 @@ func requestStop(ctx context.Context, state serviceState) error {
 	return nil
 }
 
-func waitDaemonLockFree(ctx context.Context, dbPath string, timeout time.Duration) error {
+func waitServiceLockFree(ctx context.Context, dbPath string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
-		if !daemonLockHeld(dbPath) {
+		if !serviceLockHeld(dbPath) {
 			return nil
 		}
 		if time.Now().After(deadline) {

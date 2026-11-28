@@ -247,22 +247,22 @@ func TestRejectsUnknownArgsAndRemovedCommands(t *testing.T) {
 	}
 	_, err := f.run(t, "task.mark", map[string]any{"id": f.task, "marking": "triage", "present": false, "extra": 1})
 	requireInvalid(t, err)
-	if _, err := f.service.Execute(context.Background(), "daemon.run", "alice", mustJSON(t, map[string]any{})); err == nil {
-		t.Fatal("daemon.run was accepted")
+	if _, err := f.service.Execute(context.Background(), "service.run", "alice", mustJSON(t, map[string]any{})); err == nil {
+		t.Fatal("service.run was accepted")
 	} else {
 		requireInvalid(t, err)
 	}
 }
 
-func TestDaemonStatusShape(t *testing.T) {
+func TestServiceStatusShape(t *testing.T) {
 	parents := 3
 	f := newFixture(t, func() Snapshot {
 		return Snapshot{ActiveParents: &parents, WatcherError: "watcher crashed", Instance: "inst-1"}
 	})
 
-	result, err := f.run(t, "daemon.status", map[string]any{})
+	result, err := f.run(t, "service.status", map[string]any{})
 	if err != nil {
-		t.Fatalf("daemon.status: %v", err)
+		t.Fatalf("service.status: %v", err)
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
@@ -291,13 +291,13 @@ func TestDaemonStatusShape(t *testing.T) {
 		t.Fatalf("instance = %v, want inst-1", decoded["instance"])
 	}
 
-	_, err = f.run(t, "daemon.update", map[string]any{"paused": true, "max_concurrency": 2})
+	_, err = f.run(t, "service.update", map[string]any{"paused": true, "max_concurrency": 2})
 	if err != nil {
-		t.Fatalf("daemon.update: %v", err)
+		t.Fatalf("service.update: %v", err)
 	}
-	result, err = f.run(t, "daemon.status", map[string]any{})
+	result, err = f.run(t, "service.status", map[string]any{})
 	if err != nil {
-		t.Fatalf("daemon.status after update: %v", err)
+		t.Fatalf("service.status after update: %v", err)
 	}
 	encoded, err = json.Marshal(result)
 	if err != nil {
@@ -312,14 +312,14 @@ func TestDaemonStatusShape(t *testing.T) {
 	}
 }
 
-func TestDaemonStatusUnknownHealthStaysNull(t *testing.T) {
+func TestServiceStatusUnknownHealthStaysNull(t *testing.T) {
 	f := newFixture(t, func() Snapshot {
 		return Snapshot{ActiveParents: nil, WatcherError: "watcher crashed"}
 	})
 
-	result, err := f.run(t, "daemon.status", map[string]any{})
+	result, err := f.run(t, "service.status", map[string]any{})
 	if err != nil {
-		t.Fatalf("daemon.status: %v", err)
+		t.Fatalf("service.status: %v", err)
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
@@ -340,15 +340,15 @@ func TestDaemonStatusUnknownHealthStaysNull(t *testing.T) {
 	}
 }
 
-func TestDaemonStatusZeroParentsIsNotUnknown(t *testing.T) {
+func TestServiceStatusZeroParentsIsNotUnknown(t *testing.T) {
 	parents := 0
 	f := newFixture(t, func() Snapshot {
 		return Snapshot{ActiveParents: &parents}
 	})
 
-	result, err := f.run(t, "daemon.status", map[string]any{})
+	result, err := f.run(t, "service.status", map[string]any{})
 	if err != nil {
-		t.Fatalf("daemon.status: %v", err)
+		t.Fatalf("service.status: %v", err)
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
@@ -366,12 +366,12 @@ func TestDaemonStatusZeroParentsIsNotUnknown(t *testing.T) {
 	}
 }
 
-func TestDaemonStatusWithoutProviderReportsNullParents(t *testing.T) {
+func TestServiceStatusWithoutProviderReportsNullParents(t *testing.T) {
 	f := newFixture(t, nil)
 
-	result, err := f.run(t, "daemon.status", map[string]any{})
+	result, err := f.run(t, "service.status", map[string]any{})
 	if err != nil {
-		t.Fatalf("daemon.status: %v", err)
+		t.Fatalf("service.status: %v", err)
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
@@ -392,21 +392,21 @@ func TestDaemonStatusWithoutProviderReportsNullParents(t *testing.T) {
 func TestPausedFalseIsApplied(t *testing.T) {
 	f := newFixture(t, nil)
 
-	result, err := f.run(t, "daemon.update", map[string]any{"paused": true})
+	result, err := f.run(t, "service.update", map[string]any{"paused": true})
 	if err != nil {
 		t.Fatalf("pause: %v", err)
 	}
 	if !result.(store.QueueSettings).Paused {
 		t.Fatal("paused = false after pause request")
 	}
-	result, err = f.run(t, "daemon.update", map[string]any{"paused": false})
+	result, err = f.run(t, "service.update", map[string]any{"paused": false})
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	if result.(store.QueueSettings).Paused {
 		t.Fatal("paused = true after resume request")
 	}
-	if _, err := f.run(t, "daemon.update", map[string]any{}); err != nil {
+	if _, err := f.run(t, "service.update", map[string]any{}); err != nil {
 		t.Fatalf("empty update: %v", err)
 	}
 }

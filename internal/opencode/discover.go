@@ -175,7 +175,7 @@ func firstLine(out []byte) string {
 	return ""
 }
 
-// Describe renders err for daemon status and startup logs. Known failures get
+// Describe renders err for service status and startup logs. Known failures get
 // an actionable message instead of a raw protocol error.
 func Describe(err error) string {
 	switch {

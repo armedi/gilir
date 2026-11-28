@@ -34,7 +34,7 @@ type Connection interface {
 	Redact(text string) string
 }
 
-// Snapshot is the watcher's latest view for the daemon. ActiveParents is the
+// Snapshot is the watcher's latest view for the service. ActiveParents is the
 // number of root sessions observed running on the server, including ones Gilir
 // did not start; it is nil when the last tick could not establish it. Error is
 // the last tick's error, already redacted and phrased for humans.

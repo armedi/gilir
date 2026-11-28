@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -26,7 +27,13 @@ type command struct {
 	positionals []string
 	flags       []string
 	required    []string
-	build       func(positionals []string, flags map[string]string) (map[string]any, error)
+	// noJSON rejects the global --json flag, for commands whose result is not
+	// a value (a foreground server, for example).
+	noJSON bool
+	// silent suppresses the result on stdout for commands whose completion is
+	// not a value to print (a foreground server exits 0 with no output).
+	silent bool
+	build  func(positionals []string, flags map[string]string) (map[string]any, error)
 	// human renders a non-JSON result when the generic key-sorted dump would
 	// bury the important sections. JSON output is unaffected.
 	human func(w io.Writer, value any) error
@@ -395,20 +402,32 @@ var commandSpecs = []command{
 		},
 	},
 	{
+		path:    "serve",
+		wire:    "serve",
+		usage:   "gilir serve [--host <host>] [--port <port>] [--db <path>]",
+		summary: "Run the service in the foreground.",
+		flags:   []string{"host", "port", "db"},
+		noJSON:  true,
+		silent:  true,
+		build: func(_ []string, flags map[string]string) (map[string]any, error) {
+			return buildServeArgs(flags)
+		},
+	},
+	{
 		path:    "service start",
 		wire:    "service.start",
-		usage:   "gilir service start [--host <host>] [--port <port>]",
-		summary: "Start the background service.",
-		flags:   []string{"host", "port"},
+		usage:   "gilir service start [--host <host>] [--port <port>] [--db <path>]",
+		summary: "Start the managed background service.",
+		flags:   []string{"host", "port", "db"},
 		build: func(_ []string, flags map[string]string) (map[string]any, error) {
-			return buildServiceListen(flags)
+			return buildServeArgs(flags)
 		},
 	},
 	{
 		path:    "service stop",
 		wire:    "service.stop",
 		usage:   "gilir service stop",
-		summary: "Stop the background service.",
+		summary: "Stop the managed background service.",
 		build: func(_ []string, _ map[string]string) (map[string]any, error) {
 			return map[string]any{}, nil
 		},
@@ -416,44 +435,44 @@ var commandSpecs = []command{
 	{
 		path:    "service restart",
 		wire:    "service.restart",
-		usage:   "gilir service restart [--host <host>] [--port <port>]",
-		summary: "Restart the background service.",
-		flags:   []string{"host", "port"},
+		usage:   "gilir service restart [--host <host>] [--port <port>] [--db <path>]",
+		summary: "Restart the managed background service.",
+		flags:   []string{"host", "port", "db"},
 		build: func(_ []string, flags map[string]string) (map[string]any, error) {
-			return buildServiceListen(flags)
+			return buildServeArgs(flags)
 		},
 	},
 	{
 		path:    "service status",
 		wire:    "service.status",
 		usage:   "gilir service status",
-		summary: "Show background service status.",
+		summary: "Show managed background service status.",
 		build: func(_ []string, _ map[string]string) (map[string]any, error) {
 			return map[string]any{}, nil
 		},
 	},
 	{
-		path:    "daemon pause",
-		wire:    "daemon.update",
-		usage:   "gilir daemon pause",
+		path:    "service pause",
+		wire:    "service.pause",
+		usage:   "gilir service pause",
 		summary: "Pause task dispatch.",
 		build: func(_ []string, _ map[string]string) (map[string]any, error) {
-			return map[string]any{"paused": true}, nil
+			return map[string]any{}, nil
 		},
 	},
 	{
-		path:    "daemon resume",
-		wire:    "daemon.update",
-		usage:   "gilir daemon resume",
+		path:    "service resume",
+		wire:    "service.resume",
+		usage:   "gilir service resume",
 		summary: "Resume task dispatch.",
 		build: func(_ []string, _ map[string]string) (map[string]any, error) {
-			return map[string]any{"paused": false}, nil
+			return map[string]any{}, nil
 		},
 	},
 	{
-		path:        "daemon concurrency",
-		wire:        "daemon.update",
-		usage:       "gilir daemon concurrency <positive-integer>",
+		path:        "service concurrency",
+		wire:        "service.concurrency",
+		usage:       "gilir service concurrency <positive-integer>",
 		summary:     "Set the maximum number of concurrent tasks.",
 		positionals: []string{"<positive-integer>"},
 		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
@@ -483,7 +502,6 @@ var commandByPath = func() map[string]*command {
 var commandGroupNames = map[string]bool{
 	"project": true,
 	"repo":    true,
-	"daemon":  true,
 	"service": true,
 }
 
@@ -498,6 +516,9 @@ var knownCommandFlags = func() map[string]bool {
 }()
 
 func (c *command) validate(positionals []string, inv *arguments) error {
+	if c.noJSON && inv.json {
+		return fmt.Errorf("%s: flag --json is not valid", c.path)
+	}
 	if len(positionals) < len(c.positionals) {
 		return fmt.Errorf("%s: missing %s", c.path, c.positionals[len(positionals)])
 	}
@@ -581,12 +602,15 @@ func addStringFlag(args map[string]any, flags map[string]string, flag, key strin
 	}
 }
 
-func buildServiceListen(flags map[string]string) (map[string]any, error) {
+func buildServeArgs(flags map[string]string) (map[string]any, error) {
 	args := map[string]any{}
 	if err := addHostFlag(args, flags); err != nil {
 		return nil, err
 	}
 	if err := addPortFlag(args, flags); err != nil {
+		return nil, err
+	}
+	if err := addDBFlag(args, flags); err != nil {
 		return nil, err
 	}
 	return args, nil
@@ -633,6 +657,21 @@ func addPortFlag(args map[string]any, flags map[string]string) error {
 		return fmt.Errorf("invalid port %q: must be a number from 1 to 65535", value)
 	}
 	args["port"] = port
+	return nil
+}
+
+// addDBFlag forwards an explicit --db path. A blank value is rejected here so
+// it never reaches the service and silently falls back to the default database.
+func addDBFlag(args map[string]any, flags map[string]string) error {
+	value, ok := flags["db"]
+	if !ok {
+		return nil
+	}
+	path := strings.TrimSpace(value)
+	if path == "" {
+		return errors.New("flag --db requires a non-empty value")
+	}
+	args["db"] = path
 	return nil
 }
 

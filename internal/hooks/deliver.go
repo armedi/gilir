@@ -37,14 +37,14 @@ var hiddenEnv = map[string]bool{
 // that must detach work should start a new session, e.g. with setsid).
 // WaitDelay bounds how long Wait blocks on descendants that still hold the
 // output pipes.
-func runCommand(ctx context.Context, config Config, daemonURL string, event Event) error {
+func runCommand(ctx context.Context, config Config, serviceURL string, event Event) error {
 	cmd := exec.CommandContext(ctx, config.Command[0], config.Command[1:]...)
 	cmd.Stdin = bytes.NewReader(event.Payload)
 	output := &cappedBuffer{limit: outputLimit}
 	cmd.Stdout = output
 	cmd.Stderr = output
 	cmd.WaitDelay = waitDelay
-	cmd.Env = commandEnv(config.Name, daemonURL, event.ID)
+	cmd.Env = commandEnv(config.Name, serviceURL, event.ID)
 	useProcessGroup(cmd)
 	err := cmd.Run()
 	killProcessGroup(cmd)
@@ -65,7 +65,7 @@ func runCommand(ctx context.Context, config Config, daemonURL string, event Even
 	return nil
 }
 
-func commandEnv(name, daemonURL string, eventID int64) []string {
+func commandEnv(name, serviceURL string, eventID int64) []string {
 	env := make([]string, 0, len(os.Environ())+3)
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
@@ -74,8 +74,8 @@ func commandEnv(name, daemonURL string, eventID int64) []string {
 		}
 	}
 	env = append(env, "GILIR_ACTOR=hook:"+name, "GILIR_EVENT_ID="+strconv.FormatInt(eventID, 10))
-	if daemonURL != "" {
-		env = append(env, "GILIR_URL="+daemonURL)
+	if serviceURL != "" {
+		env = append(env, "GILIR_URL="+serviceURL)
 	}
 	return env
 }
