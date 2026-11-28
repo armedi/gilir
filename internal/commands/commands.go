@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/armedi/gilir/internal/store"
 	"github.com/armedi/gilir/internal/taskid"
@@ -25,18 +26,25 @@ type Snapshot struct {
 	ActiveParents *int
 	WatcherError  string
 	Instance      string
+	Revision      uint64
+	Changed       <-chan struct{}
 }
 
 // Service executes wire commands against an open store.
 type Service struct {
-	store  *store.Store
-	status func() Snapshot
+	store       *store.Store
+	status      func() Snapshot
+	startedAt   string
+	pollingDone chan struct{}
 }
 
 // New returns a command service. status is optional; without it
 // service.status reports an unknown (null) active parent count.
 func New(st *store.Store, status func() Snapshot) *Service {
-	return &Service{store: st, status: status}
+	return &Service{
+		store: st, status: status,
+		startedAt: time.Now().UTC().Format(time.RFC3339Nano), pollingDone: make(chan struct{}),
+	}
 }
 
 // Execute runs one wire command with strict argument decoding. Store
@@ -44,6 +52,9 @@ func New(st *store.Store, status func() Snapshot) *Service {
 // transports can classify them with Classify.
 func (s *Service) Execute(ctx context.Context, command, actor string, args json.RawMessage) (any, error) {
 	switch command {
+	case "web.changes":
+		return s.waitForChanges(ctx, args)
+
 	case "project.list":
 		var in projectListArgs
 		if err := decodeArgs(args, &in); err != nil {

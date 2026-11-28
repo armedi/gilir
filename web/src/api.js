@@ -13,10 +13,10 @@ export class CommandError extends Error {
   }
 }
 
-function requestSignal(signal) {
+function requestSignal(signal, timeoutMs) {
   if (typeof AbortSignal === 'undefined') return signal;
   const timeout =
-    typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(REQUEST_TIMEOUT_MS) : null;
+    typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(timeoutMs) : null;
   if (signal && timeout && typeof AbortSignal.any === 'function') {
     return AbortSignal.any([signal, timeout]);
   }
@@ -33,7 +33,7 @@ export async function command(name, args = {}, options = {}) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ command: name, actor: ACTOR, args }),
-      signal: requestSignal(options.signal),
+      signal: requestSignal(options.signal, options.timeoutMs ?? REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
     if (options.signal?.aborted) {

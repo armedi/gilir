@@ -243,6 +243,8 @@ func serve(parent context.Context, listen listenConfig, dbPath string, managed b
 			ActiveParents: snap.ActiveParents,
 			WatcherError:  snap.Error,
 			Instance:      instance,
+			Revision:      snap.Revision,
+			Changed:       snap.Changed,
 		}
 	})
 	server := &http.Server{
@@ -254,6 +256,7 @@ func serve(parent context.Context, listen listenConfig, dbPath string, managed b
 		MaxHeaderBytes:    64 << 10,
 		ErrorLog:          log.New(os.Stderr, "gilir: http: ", 0),
 	}
+	server.RegisterOnShutdown(service.StopPolling)
 
 	ctx, cancel := context.WithCancel(sigCtx)
 	defer cancel()

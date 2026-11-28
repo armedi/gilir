@@ -61,7 +61,7 @@ func nullableText(value sql.NullString) *string {
 	return stringPointer(value.String)
 }
 
-func loadMarkings(ctx context.Context, tx *sql.Tx, taskID string) ([]string, error) {
+func loadMarkings(ctx context.Context, tx *transaction, taskID string) ([]string, error) {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT marking FROM task_markings WHERE task_id = ? ORDER BY marking`, taskID,
 	)
@@ -84,7 +84,7 @@ func loadMarkings(ctx context.Context, tx *sql.Tx, taskID string) ([]string, err
 	return markings, nil
 }
 
-func taskByID(ctx context.Context, tx *sql.Tx, taskID string) (Task, error) {
+func taskByID(ctx context.Context, tx *transaction, taskID string) (Task, error) {
 	task, err := scanTask(tx.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = ?`, taskID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, fmt.Errorf("%w: task %s", ErrNotFound, taskID)
@@ -110,7 +110,7 @@ func normalizeMarking(marking string) (string, error) {
 // setMarkingTx adds or removes a marking inside an existing transaction. It
 // returns false without writing an event when the requested state already
 // holds.
-func setMarkingTx(ctx context.Context, tx *sql.Tx, actor string, taskID string, marking string, present bool, at time.Time) (bool, error) {
+func setMarkingTx(ctx context.Context, tx *transaction, actor string, taskID string, marking string, present bool, at time.Time) (bool, error) {
 	marking, err := normalizeMarking(marking)
 	if err != nil {
 		return false, err
@@ -201,7 +201,7 @@ func (s *Store) CreateTask(ctx context.Context, actor string, in CreateTaskParam
 	}
 
 	var created Task
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *transaction) error {
 		projectID := in.ProjectID
 		if projectID > 0 {
 			if _, err := requireProjectName(ctx, tx, projectID); err != nil {
@@ -294,7 +294,7 @@ func (s *Store) DeleteTask(ctx context.Context, actor string, taskID string) err
 		return err
 	}
 
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	return s.withTx(ctx, func(tx *transaction) error {
 		task, err := taskByID(ctx, tx, taskID)
 		if err != nil {
 			return err
@@ -411,7 +411,7 @@ func (s *Store) UpdateTask(ctx context.Context, actor string, taskID string, pat
 	}
 
 	var updated Task
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *transaction) error {
 		old, err := taskByID(ctx, tx, taskID)
 		if err != nil {
 			return err
@@ -608,7 +608,7 @@ func (s *Store) Block(ctx context.Context, actor string, taskID, message string)
 	}
 
 	var task Task
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *transaction) error {
 		current, err := taskByID(ctx, tx, taskID)
 		if err != nil {
 			return err
@@ -665,7 +665,7 @@ func (s *Store) Unblock(ctx context.Context, actor string, taskID, message strin
 	message = strings.TrimSpace(message)
 
 	var task Task
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *transaction) error {
 		current, err := taskByID(ctx, tx, taskID)
 		if err != nil {
 			return err
@@ -748,7 +748,7 @@ func blockable(status Status) bool {
 }
 
 // hasOpenAttempt reports whether the task has a reserved dispatch attempt.
-func hasOpenAttempt(ctx context.Context, tx *sql.Tx, taskID string) (bool, error) {
+func hasOpenAttempt(ctx context.Context, tx *transaction, taskID string) (bool, error) {
 	var open bool
 	if err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS (
@@ -773,7 +773,7 @@ func (s *Store) AbandonAttemptBeforePrompt(ctx context.Context, attemptID string
 	}
 
 	var abandoned bool
-	err := s.withTx(ctx, func(tx *sql.Tx) error {
+	err := s.withTx(ctx, func(tx *transaction) error {
 		attempt, _, err := s.attemptByID(ctx, tx, attemptID)
 		if err != nil {
 			return err
@@ -865,7 +865,7 @@ func (s *Store) SetMarking(ctx context.Context, actor string, taskID string, mar
 	}
 
 	var task Task
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *transaction) error {
 		if _, err := taskByID(ctx, tx, taskID); err != nil {
 			return err
 		}
@@ -900,7 +900,7 @@ func (s *Store) SetDependency(ctx context.Context, actor string, taskID, depends
 		return fmt.Errorf("%w: a task cannot depend on itself", ErrInvalid)
 	}
 
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	return s.withTx(ctx, func(tx *transaction) error {
 		projectID, err := requireTask(ctx, tx, taskID)
 		if err != nil {
 			return err
@@ -984,7 +984,7 @@ func (s *Store) SetDependency(ctx context.Context, actor string, taskID, depends
 	})
 }
 
-func dependencyCreatesCycle(ctx context.Context, tx *sql.Tx, taskID, dependsOnTaskID string) (bool, error) {
+func dependencyCreatesCycle(ctx context.Context, tx *transaction, taskID, dependsOnTaskID string) (bool, error) {
 	var found int
 	err := tx.QueryRowContext(ctx, `
 		WITH RECURSIVE reachable(id) AS (
@@ -1021,7 +1021,7 @@ func (s *Store) Comment(ctx context.Context, actor string, taskID string, messag
 	}
 
 	var comment Activity
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *transaction) error {
 		projectID, err := requireTask(ctx, tx, taskID)
 		if err != nil {
 			return err
@@ -1078,7 +1078,7 @@ func (s *Store) mutateComment(ctx context.Context, actor string, taskID string, 
 	}
 
 	var mutation Activity
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *transaction) error {
 		projectID, err := commentProjectID(ctx, tx, actor, taskID, commentID)
 		if err != nil {
 			return err
@@ -1108,7 +1108,7 @@ func (s *Store) mutateComment(ctx context.Context, actor string, taskID string, 
 
 // commentProjectID verifies that commentID is a task.commented event on taskID
 // owned by actor and returns the project to record on the mutation.
-func commentProjectID(ctx context.Context, tx *sql.Tx, actor string, taskID string, commentID int64) (int64, error) {
+func commentProjectID(ctx context.Context, tx *transaction, actor string, taskID string, commentID int64) (int64, error) {
 	var projectID sql.NullInt64
 	err := tx.QueryRowContext(ctx, `
 		SELECT project_id
@@ -1128,7 +1128,7 @@ func commentProjectID(ctx context.Context, tx *sql.Tx, actor string, taskID stri
 	return projectID.Int64, nil
 }
 
-func commentRemoved(ctx context.Context, tx *sql.Tx, taskID string, commentKey string) (bool, error) {
+func commentRemoved(ctx context.Context, tx *transaction, taskID string, commentKey string) (bool, error) {
 	var removed bool
 	err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS (
@@ -1219,7 +1219,7 @@ func (s *Store) Review(ctx context.Context, actor string, taskID string, decisio
 	}
 
 	var task Task
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *transaction) error {
 		current, err := taskByID(ctx, tx, taskID)
 		if err != nil {
 			return err
@@ -1303,7 +1303,7 @@ func (s *Store) ListTasks(ctx context.Context, filter TaskFilter) ([]Task, error
 	}
 
 	var tasks []Task
-	err := s.withTx(ctx, func(tx *sql.Tx) error {
+	err := s.withTx(ctx, func(tx *transaction) error {
 		query := `SELECT ` + taskColumns + ` FROM tasks`
 		conditions := []string{}
 		args := []any{}
@@ -1375,7 +1375,7 @@ func (s *Store) Show(ctx context.Context, taskID string) (TaskDetail, error) {
 	taskID = normalized
 
 	var detail TaskDetail
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *transaction) error {
 		task, err := taskByID(ctx, tx, taskID)
 		if err != nil {
 			return err

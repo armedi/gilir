@@ -23,8 +23,10 @@ Back/Forward:
 - `/projects` - combined Projects & Repos management
 - `/projects/repos/new` - the add-repository form inside that screen
 
-`App.jsx` is the router's root layout and owns the queue, service status, and
-detail polling plus the panel chrome; `src/pages/` holds the per-URL views. The
+`App.jsx` owns the panel chrome and keeps one `web.changes` long poll per visible tab.
+The poll returns on committed activity, a watcher status change, or after 25
+seconds of idle time. The dashboard refreshes its data when the cursor changes.
+`src/pages/` holds the per-URL views. The
 header's dispatch controls call the `service.status` and `service.update` wire
 commands, which the Go service also exposes to the CLI. The Go
 server answers direct loads and refreshes of these paths with `index.html`

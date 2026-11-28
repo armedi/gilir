@@ -28,7 +28,7 @@ func (s *Store) UpdateQueueSettings(ctx context.Context, actor string, patch Que
 	}
 
 	var result QueueSettings
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *transaction) error {
 		current, err := readQueueSettings(ctx, tx.QueryRowContext(ctx,
 			`SELECT paused, max_concurrency, updated_at FROM queue_settings WHERE id = 1`,
 		))
@@ -133,7 +133,7 @@ func (s *Store) Reserve(ctx context.Context, serverURL string, serverPID int64) 
 	actor := ActorSystem
 
 	var reserved *DispatchAttempt
-	err := s.withTx(ctx, func(tx *sql.Tx) error {
+	err := s.withTx(ctx, func(tx *transaction) error {
 		settings, err := readQueueSettings(ctx, tx.QueryRowContext(ctx,
 			`SELECT paused, max_concurrency, updated_at FROM queue_settings WHERE id = 1`,
 		))
@@ -320,7 +320,7 @@ func (s *Store) ListOpenAttempts(ctx context.Context) ([]DispatchAttempt, error)
 	return attempts, nil
 }
 
-func (s *Store) attemptByID(ctx context.Context, tx *sql.Tx, attemptID string) (DispatchAttempt, int64, error) {
+func (s *Store) attemptByID(ctx context.Context, tx *transaction, attemptID string) (DispatchAttempt, int64, error) {
 	var (
 		attempt   DispatchAttempt
 		seq       int64
@@ -436,7 +436,7 @@ func (s *Store) SetTaskWorktree(ctx context.Context, attemptID, directory string
 	directory = filepath.Clean(directory)
 
 	var recorded string
-	err := s.withTx(ctx, func(tx *sql.Tx) error {
+	err := s.withTx(ctx, func(tx *transaction) error {
 		attempt, _, err := s.attemptByID(ctx, tx, attemptID)
 		if err != nil {
 			return err
@@ -523,7 +523,7 @@ func (s *Store) LinkSession(ctx context.Context, attemptID, sessionID, url, work
 	worktree = filepath.Clean(worktree)
 	actor := ActorSystem
 
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	return s.withTx(ctx, func(tx *transaction) error {
 		attempt, _, err := s.attemptByID(ctx, tx, attemptID)
 		if err != nil {
 			return err
@@ -599,7 +599,7 @@ func (s *Store) FinishAttempt(ctx context.Context, attemptID string, outcome Att
 	}
 	actor := ActorSystem
 
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	return s.withTx(ctx, func(tx *transaction) error {
 		attempt, seq, err := s.attemptByID(ctx, tx, attemptID)
 		if err != nil {
 			return err
