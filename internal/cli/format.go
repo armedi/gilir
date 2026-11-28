@@ -52,30 +52,41 @@ func writeText(w io.Writer, text string) {
 }
 
 func writeHuman(w io.Writer, value any) {
+	if humanText(w, value) {
+		return
+	}
+	for _, line := range formatValue(normalize(value), 0) {
+		fmt.Fprintln(w, line)
+	}
+}
+
+// humanText handles the values that need no structural formatting.
+func humanText(w io.Writer, value any) bool {
 	if value == nil {
 		fmt.Fprintln(w, "ok")
-		return
+		return true
 	}
 	if text, ok := value.(string); ok {
 		writeText(w, text)
-		return
+		return true
 	}
+	return false
+}
 
+// normalize decodes any JSON-carrying value into generic Go values with exact
+// numbers, so the text formatter can walk it.
+func normalize(value any) any {
 	data, err := json.Marshal(value)
 	if err != nil {
-		fmt.Fprintln(w, value)
-		return
+		return value
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	var normalized any
 	if err := decoder.Decode(&normalized); err != nil {
-		fmt.Fprintln(w, value)
-		return
+		return value
 	}
-	for _, line := range formatValue(normalized, 0) {
-		fmt.Fprintln(w, line)
-	}
+	return normalized
 }
 
 func formatValue(value any, depth int) []string {
@@ -139,4 +150,57 @@ func isInlineValue(value any) bool {
 	default:
 		return true
 	}
+}
+
+// detailFieldIndex lists the sections in reading order. The generic formatter
+// sorts keys alphabetically, which buries the task below its activity.
+var detailFieldIndex = map[string]int{
+	"task":     0,
+	"blockers": 1,
+	"sessions": 2,
+	"activity": 3,
+}
+
+// writeTaskDetail prints a TaskDetail in reading order: the task, then its
+// blockers, sessions (including each session's worktree) and activity. The
+// JSON form is unchanged and remains the machine-readable contract.
+func writeTaskDetail(w io.Writer, value any) error {
+	normalized := normalize(value)
+	detail, ok := normalized.(map[string]any)
+	if !ok {
+		return writeHumanErr(w, value)
+	}
+
+	sections := make([]string, 0, len(detail))
+	for key := range detail {
+		if _, known := detailFieldIndex[key]; known {
+			sections = append(sections, key)
+		}
+	}
+	sort.Slice(sections, func(i, j int) bool { return detailFieldIndex[sections[i]] < detailFieldIndex[sections[j]] })
+	for _, key := range sections {
+		for _, line := range formatValue(map[string]any{key: detail[key]}, 0) {
+			fmt.Fprintln(w, line)
+		}
+	}
+
+	// Any unexpected field still prints, after the known sections.
+	rest := map[string]any{}
+	for key, item := range detail {
+		if _, known := detailFieldIndex[key]; !known {
+			rest[key] = item
+		}
+	}
+	if len(rest) > 0 {
+		for _, line := range formatValue(rest, 0) {
+			fmt.Fprintln(w, line)
+		}
+	}
+	return nil
+}
+
+// writeHumanErr falls back to the generic renderer for an unexpected shape.
+func writeHumanErr(w io.Writer, value any) error {
+	writeHuman(w, value)
+	return nil
 }

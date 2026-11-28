@@ -225,6 +225,103 @@ func (c *Client) ServerPID(ctx context.Context) (int64, error) {
 	return *body.PID, nil
 }
 
+// ProjectID resolves the OpenCode project that owns directory, through
+// GET /api/location. The directory must be absolute and should be a resolved
+// Git root; errors from a missing or non-directory location surface here.
+func (c *Client) ProjectID(ctx context.Context, directory string) (string, error) {
+	if !filepath.IsAbs(directory) {
+		return "", fmt.Errorf("opencode: location directory %q is not absolute", directory)
+	}
+	directory = filepath.Clean(directory)
+	query := url.Values{}
+	query.Set("location[directory]", directory)
+	var body struct {
+		Directory *string `json:"directory"`
+		Project   *struct {
+			ID string `json:"id"`
+		} `json:"project"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/location?"+query.Encode(), nil, &body); err != nil {
+		return "", err
+	}
+	switch {
+	case body.Project == nil || body.Project.ID == "":
+		return "", fmt.Errorf("opencode: GET /api/location: missing project for %q", directory)
+	case body.Directory == nil || filepath.Clean(*body.Directory) != directory:
+		resolved := ""
+		if body.Directory != nil {
+			resolved = *body.Directory
+		}
+		return "", fmt.Errorf("opencode: GET /api/location: resolved %q, want %q", resolved, directory)
+	}
+	return body.Project.ID, nil
+}
+
+// Worktree is one sandbox worktree of a project.
+type Worktree struct {
+	Directory string `json:"directory"`
+	Strategy  string `json:"strategy"`
+}
+
+// ListWorktrees returns the project's sandbox worktrees, including the main
+// checkout. An empty projectID is rejected so a caller cannot enumerate every
+// project's sandboxes.
+func (c *Client) ListWorktrees(ctx context.Context, projectID string) ([]Worktree, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return nil, errors.New("opencode: worktree list requires a project ID")
+	}
+	query := url.Values{}
+	query.Set("projectID", projectID)
+	path := "/api/worktree?" + query.Encode()
+	var body []struct {
+		Directory *string `json:"directory"`
+		Strategy  string  `json:"strategy"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &body); err != nil {
+		return nil, err
+	}
+	worktrees := make([]Worktree, 0, len(body))
+	for _, item := range body {
+		if item.Directory == nil || !filepath.IsAbs(*item.Directory) {
+			return nil, fmt.Errorf("opencode: GET %s: invalid worktree directory %v", path, item.Directory)
+		}
+		worktrees = append(worktrees, Worktree{Directory: filepath.Clean(*item.Directory), Strategy: item.Strategy})
+	}
+	return worktrees, nil
+}
+
+// CreateWorktree creates a detached sandbox worktree for the project. name
+// selects the directory slug and lets a retry recognize an earlier creation
+// through ListWorktrees; OpenCode itself is not idempotent and suffixes a
+// duplicate name. The call runs the project's setup script, so it may take
+// much longer than a plain request.
+func (c *Client) CreateWorktree(ctx context.Context, projectID, name string) (Worktree, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return Worktree{}, errors.New("opencode: worktree creation requires a project ID")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return Worktree{}, errors.New("opencode: worktree creation requires a name")
+	}
+	req := struct {
+		ProjectID string `json:"projectID"`
+		Name      string `json:"name"`
+	}{projectID, name}
+	var body struct {
+		Directory *string `json:"directory"`
+		Strategy  string  `json:"strategy"`
+	}
+	if err := c.doLong(ctx, http.MethodPost, "/api/worktree", req, &body); err != nil {
+		return Worktree{}, err
+	}
+	if body.Directory == nil || !filepath.IsAbs(*body.Directory) {
+		return Worktree{}, fmt.Errorf("opencode: POST /api/worktree: invalid worktree directory %v", body.Directory)
+	}
+	return Worktree{Directory: filepath.Clean(*body.Directory), Strategy: body.Strategy}, nil
+}
+
 // ActiveParents returns the IDs of running root sessions (no parentID). Any
 // malformed entry or failed lookup fails the whole call.
 func (c *Client) ActiveParents(ctx context.Context) (map[string]struct{}, error) {
@@ -474,7 +571,27 @@ func checkID(kind, id, prefix string) error {
 	return nil
 }
 
+// createWorktreeTimeout bounds POST /api/worktree, which runs the project's
+// setup script after creating the checkout.
+const createWorktreeTimeout = 5 * time.Minute
+
+// do sends one request with the client's standard timeout.
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
+	return c.doWith(ctx, c.http, method, path, in, out)
+}
+
+// doLong sends one request with a longer timeout, for calls that run project
+// scripts. It shares the client's transport and redirect policy.
+func (c *Client) doLong(ctx context.Context, method, path string, in, out any) error {
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) > createWorktreeTimeout {
+		return c.doWith(ctx, c.http, method, path, in, out)
+	}
+	client := *c.http
+	client.Timeout = createWorktreeTimeout
+	return c.doWith(ctx, &client, method, path, in, out)
+}
+
+func (c *Client) doWith(ctx context.Context, client *http.Client, method, path string, in, out any) error {
 	var reqBody io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -494,7 +611,7 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	if c.password != "" {
 		req.SetBasicAuth(basicAuthUser, c.password)
 	}
-	resp, err := c.http.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("opencode: %s %s: %w", method, path, err)
 	}

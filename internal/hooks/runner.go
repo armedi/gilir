@@ -48,6 +48,7 @@ var defaultEvents = []string{
 	"task.marking_changed",
 	"task.commented",
 	"task.claimed",
+	"task.worktree_recorded",
 	"dependency.added",
 	"dependency.removed",
 	"session.linked",

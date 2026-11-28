@@ -75,6 +75,13 @@ func Run(ctx context.Context, argv []string, stdout, stderr io.Writer, defaultAc
 		}
 		return 0
 	}
+	if spec.human != nil {
+		if err := spec.human(stdout, result); err != nil {
+			writeFailure(stderr, false, "format result: "+err.Error())
+			return 1
+		}
+		return 0
+	}
 	writeHuman(stdout, result)
 	return 0
 }

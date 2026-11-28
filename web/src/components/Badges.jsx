@@ -17,3 +17,14 @@ export function PriorityBadge(props) {
     </span>
   );
 }
+
+// BlockedBadge marks a task that is deliberately paused, distinct from a
+// status badge because the task keeps its status while blocked.
+export function BlockedBadge() {
+  return (
+    <span class="semantic-tag semantic-blocked">
+      <span class="semantic-dot" aria-hidden="true" />
+      Blocked
+    </span>
+  );
+}

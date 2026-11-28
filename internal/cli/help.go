@@ -14,7 +14,7 @@ var flagDescriptions = map[string]string{
 	"marking":     "Marking name",
 	"description": "Markdown description",
 	"title":       "Task title",
-	"message":     "Markdown review message",
+	"message":     "Markdown message",
 	"host":        "HTTP host to bind (default: 127.0.0.1)",
 	"port":        "HTTP port to bind (default: 44547)",
 }

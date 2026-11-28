@@ -266,6 +266,31 @@ func (s *Service) Execute(ctx context.Context, command, actor string, args json.
 		}
 		return s.store.SetMarking(ctx, actor, id, in.Marking, *in.Present)
 
+	case "task.block":
+		var in taskBlockArgs
+		if err := decodeArgs(args, &in); err != nil {
+			return nil, err
+		}
+		id, err := requireTaskID("id", in.ID)
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(in.Message) == "" {
+			return nil, fmt.Errorf("%w: message is required when blocking a task", store.ErrInvalid)
+		}
+		return s.store.Block(ctx, actor, id, in.Message)
+
+	case "task.unblock":
+		var in taskUnblockArgs
+		if err := decodeArgs(args, &in); err != nil {
+			return nil, err
+		}
+		id, err := requireTaskID("id", in.ID)
+		if err != nil {
+			return nil, err
+		}
+		return s.store.Unblock(ctx, actor, id, in.Message)
+
 	case "task.depend":
 		var in taskDependArgs
 		if err := decodeArgs(args, &in); err != nil {
@@ -568,6 +593,16 @@ type taskDependArgs struct {
 	ID        string `json:"id"`
 	BlockerID string `json:"blocker_id"`
 	Present   *bool  `json:"present"`
+}
+
+type taskBlockArgs struct {
+	ID      string `json:"id"`
+	Message string `json:"message"`
+}
+
+type taskUnblockArgs struct {
+	ID      string `json:"id"`
+	Message string `json:"message"`
 }
 
 type taskCommentArgs struct {

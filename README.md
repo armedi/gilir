@@ -39,7 +39,7 @@ when `NODE_ENV=production`. Run the CLI from that install as `pnpm exec vp` in
 `web` when you need it directly.
 
 Put `gilir` on your `PATH`. The service prompts each agent to run `gilir show
-GILIR-<n> --json`, so the binary must also be available where the OpenCode
+GILIR-<n>`, so the binary must also be available where the OpenCode
 server runs its agents, with `GILIR_URL` pointing at the service when it is not
 using the default address.
 
@@ -117,9 +117,10 @@ it. Any other port requires setting `GILIR_URL` to an address the service
 accepts. If the service binds `[::1]` specifically, set `GILIR_URL` to that
 address too, because the client default is IPv4 loopback.
 
-The schema version changed when task IDs gained their `GILIR-` prefix. A
-database created by an older Gilir is rejected with an error; delete the file
-and restart the service to recreate it (task history is not migrated).
+The schema is upgraded automatically. Version 4 adds the per-task worktree, so a
+version 3 database is migrated in place. Version 2 and earlier, which used bare
+integer task IDs, are rejected instead: delete the file and restart the service
+to recreate it (task history is not migrated).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -174,9 +175,12 @@ gilir create "Fix rounding" --repo 1 --status todo --priority high   # -> GILIR-
 gilir create "Ship release notes" --repo 1 --project 1 --status todo   # -> GILIR-2
 gilir list --status todo                         # tasks across all projects
 gilir list --project 1 --status todo
+gilir show GILIR-1                               # task, blockers, sessions, activity
 gilir show GILIR-1 --json
 gilir depend GILIR-2 GILIR-1                     # GILIR-2 waits for GILIR-1
 gilir comment GILIR-1 "Repro in **ledger_test.go**" --actor agent:me
+gilir block GILIR-1 --message "Waiting on **ledger**"   # stop dispatch, keep dependents held
+gilir unblock GILIR-1 --message "Migration landed"      # optionally re-queue immediately
 gilir edit-comment GILIR-1 12 "Narrowed to **rounding**" --actor agent:me
 gilir remove-comment GILIR-1 12 --actor agent:me
 gilir approve GILIR-1                            # or: gilir request-changes GILIR-1 --message "Add tests"
@@ -186,7 +190,7 @@ gilir daemon resume
 gilir daemon concurrency 2
 gilir delete GILIR-1                             # keep the audit history
 gilir --help
-gilir skill                                      # agent workflow instructions
+gilir skill                                      # embedded agent manual
 ```
 
 Task IDs carry a `GILIR-` prefix, for example `GILIR-1`. The prefix is stored
@@ -238,27 +242,52 @@ GILIR_URL=http://127.0.0.1:9000 gilir list
 ## Queue semantics
 
 - Only `todo` tasks are dispatched. A task is ready when the queue is not
-  paused, the task has no open attempt, and every task it depends on is
-  `in-review` or `done`.
-- Ready tasks are ordered by priority (urgent, high, medium, low). Ties go
-  first to `changes-requested` tasks, then to tasks with fewer blockers still in
-  review, then to the lowest ID.
+  paused, the task is not `blocked`, the task has no open attempt, and every
+  task it depends on is `in-review` or `done`.
+- Ready tasks are ordered by priority (urgent, high, medium, low). Ties go first
+  to `changes-requested` and just-unblocked tasks, then to tasks with fewer
+  blockers still in review, then to the lowest ID.
 - `max_concurrency` (default 1) is compared with the parent (root) session
   runs Gilir sees on the OpenCode server. That count includes sessions you
   started by hand. Gilir only waits for free capacity. It never interrupts,
   steers or prompts sessions it did not start. If it cannot read OpenCode
   state, it dispatches nothing.
-- Every dispatch creates a new OpenCode session. Sessions from earlier attempts
-  and review cycles stay in the task's history.
+- Every dispatch gets its own OpenCode session inside the task's worktree.
+  Sessions from earlier attempts and review cycles stay in the task's history.
+  See [Worktrees](#worktrees).
 - A dispatched task moves to `in-progress`. A successful session moves it to
-  `in-review`. A failed session leaves it `in-progress` and marks it `error`.
-  To retry, move it back to `todo`.
+  `in-review`, unless the task is `blocked`, in which case it stays
+  `in-progress` so its dependents remain held. A failed session leaves it
+  `in-progress` and marks it `error`. To retry, move it back to `todo`.
+- `block` requires a message, records it as a comment, and marks the task
+  `blocked`; it is refused for `in-review` and `done` tasks. `unblock` clears
+  the marking and optionally records a message. Unblocking an idle
+  `in-progress` task moves it back to `todo` and re-queues it ahead of other
+  tasks at the same priority; an actively running task keeps running.
 - `approve` moves an `in-review` task to `done`. `request-changes` requires a
   message, moves the task to `todo`, marks it `changes-requested`, and records
   the message as a comment. The same message requirement applies to
   `gilir update GILIR-<n> --status todo --message "..."` from `in-review`, because it
   applies the same marking. The store enforces both paths, so CLI and HTTP
   callers cannot request changes without a message.
+
+## Worktrees
+
+Each task owns one OpenCode worktree, created on its first dispatch through
+`POST /api/worktree` and passed to the session as its location. Gilir records
+the directory in SQLite before it creates the session, so a watcher restart or
+retry reuses the same worktree instead of leaking another one. Review cycles
+and retries reuse it too, and the agent picks its own branch inside it — Gilir
+does not create or track branches.
+
+If a recorded worktree has disappeared by the time the task resumes, the
+attempt fails with an error naming the missing path instead of silently
+creating a replacement. Restore it, or recreate the task. Gilir never deletes
+worktrees, not even when a task is `done` or deleted; clean them up yourself.
+
+Tasks that were already `in-progress` when the schema was upgraded have no
+worktree yet, so their next attempt creates one; uncommitted work in the main
+checkout is not carried over.
 
 ## Hooks
 

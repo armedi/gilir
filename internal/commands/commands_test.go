@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -996,5 +997,102 @@ func TestOptionalProjectIDRejectsExplicitZeroNegativeAndNull(t *testing.T) {
 			}
 			requireInvalid(t, err)
 		})
+	}
+}
+
+func TestBlockAndUnblockWireCommands(t *testing.T) {
+	f := newFixture(t, nil)
+
+	if _, err := f.run(t, "task.block", map[string]any{"id": f.task}); err == nil {
+		t.Fatal("task.block without a message was accepted")
+	} else {
+		requireInvalid(t, err)
+	}
+	if _, err := f.run(t, "task.block", map[string]any{"id": f.task, "message": "  "}); err == nil {
+		t.Fatal("task.block with a blank message was accepted")
+	} else {
+		requireInvalid(t, err)
+	}
+
+	blocked, err := f.run(t, "task.block", map[string]any{"id": f.task, "message": "Waiting on **ledger**"})
+	if err != nil {
+		t.Fatalf("task.block: %v", err)
+	}
+	task := blocked.(store.Task)
+	if !slices.Contains(task.Markings, store.MarkingBlocked) {
+		t.Fatalf("markings = %v, want blocked", task.Markings)
+	}
+	detail, err := f.service.Execute(context.Background(), "task.show", "alice", mustJSON(t, map[string]any{"id": f.task}))
+	if err != nil {
+		t.Fatalf("task.show: %v", err)
+	}
+	comments := 0
+	for _, activity := range detail.(store.TaskDetail).Activity {
+		if activity.Type == store.ActivityTaskCommented {
+			comments++
+			if body, _ := activity.Data["body"].(string); body != "Waiting on **ledger**" {
+				t.Fatalf("block comment = %q", body)
+			}
+		}
+	}
+	if comments != 1 {
+		t.Fatalf("block comments = %d, want 1", comments)
+	}
+	if _, err := f.run(t, "task.block", map[string]any{"id": f.task, "message": "again"}); err == nil {
+		t.Fatal("double block was accepted")
+	} else if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("double block error = %v, want ErrConflict", err)
+	}
+
+	// Unblock without a message is allowed and clears the marking.
+	unblocked, err := f.run(t, "task.unblock", map[string]any{"id": f.task})
+	if err != nil {
+		t.Fatalf("task.unblock: %v", err)
+	}
+	task = unblocked.(store.Task)
+	if slices.Contains(task.Markings, store.MarkingBlocked) {
+		t.Fatalf("markings = %v, want blocked cleared", task.Markings)
+	}
+	if _, err := f.run(t, "task.unblock", map[string]any{"id": f.task}); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("unblock when not blocked error = %v, want ErrConflict", err)
+	}
+
+	// A review task cannot be blocked, and the refusal must not add a comment.
+	if _, err := f.run(t, "task.update", map[string]any{"id": f.task, "status": "in-review"}); err != nil {
+		t.Fatalf("move to in-review: %v", err)
+	}
+	if _, err := f.run(t, "task.block", map[string]any{"id": f.task, "message": "late"}); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("block in-review error = %v, want ErrConflict", err)
+	}
+}
+
+func TestTaskShowIncludesWorktreeOnSessions(t *testing.T) {
+	f := newFixture(t, nil)
+	ctx := context.Background()
+	if _, err := f.service.Execute(ctx, "task.update", "alice", mustJSON(t, map[string]any{"id": f.task, "status": "todo"})); err != nil {
+		t.Fatalf("task.update: %v", err)
+	}
+	attempt, err := f.store.Reserve(ctx, "http://127.0.0.1:4096", 100)
+	if err != nil || attempt == nil {
+		t.Fatalf("Reserve = %+v, %v", attempt, err)
+	}
+	worktree, err := f.store.SetTaskWorktree(ctx, attempt.ID, "/work/gilir-1")
+	if err != nil {
+		t.Fatalf("SetTaskWorktree: %v", err)
+	}
+	if err := f.store.LinkSession(ctx, attempt.ID, "ses_gilir_1", "http://127.0.0.1:4096/session/x", worktree); err != nil {
+		t.Fatalf("LinkSession: %v", err)
+	}
+
+	result, err := f.run(t, "task.show", map[string]any{"id": f.task})
+	if err != nil {
+		t.Fatalf("task.show: %v", err)
+	}
+	detail := result.(store.TaskDetail)
+	if detail.Task.Worktree == nil || *detail.Task.Worktree != worktree {
+		t.Fatalf("task worktree = %v, want %q", detail.Task.Worktree, worktree)
+	}
+	if len(detail.Sessions) != 1 || detail.Sessions[0].Worktree == nil || *detail.Sessions[0].Worktree != worktree {
+		t.Fatalf("session worktree = %+v, want %q", detail.Sessions, worktree)
 	}
 }
