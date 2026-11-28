@@ -104,11 +104,9 @@ export default function TaskDetailPane(props) {
   // Block or an Unblock instead of an ordinary comment.
   const blockable = () =>
     ['backlog', 'todo', 'in-progress'].includes(task()?.status) && !blocked();
-  // An idle in-progress task has no session still running: unblocking it puts it
+  // An idle in-progress task has no open dispatch attempt: unblocking it puts it
   // back in the queue rather than only clearing the marking.
-  const idleInProgress = () =>
-    task()?.status === 'in-progress' &&
-    !asArray(props.detail?.sessions).some((session) => session.state === 'linked');
+  const idleInProgress = () => task()?.status === 'in-progress' && !props.detail?.attempt;
 
   const projectName = createMemo(() => {
     const current = task();

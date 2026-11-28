@@ -1298,6 +1298,24 @@ func (s *Store) Show(ctx context.Context, taskID string) (TaskDetail, error) {
 			Activity: []Activity{},
 		}
 
+		var openAttemptID string
+		err = tx.QueryRowContext(ctx,
+			`SELECT id FROM dispatch_attempts WHERE task_id = ? AND state = 'reserved' ORDER BY seq LIMIT 1`,
+			taskID,
+		).Scan(&openAttemptID)
+		switch {
+		case err == nil:
+			attempt, _, err := s.attemptByID(ctx, tx, openAttemptID)
+			if err != nil {
+				return err
+			}
+			detail.Attempt = &attempt
+		case errors.Is(err, sql.ErrNoRows):
+			// No running attempt.
+		default:
+			return fmt.Errorf("store: load open task attempt: %w", err)
+		}
+
 		blockerRows, err := tx.QueryContext(ctx,
 			`SELECT depends_on_id FROM task_dependencies WHERE task_id = ? ORDER BY length(depends_on_id), depends_on_id`, taskID,
 		)

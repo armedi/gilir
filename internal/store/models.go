@@ -112,12 +112,15 @@ type Activity struct {
 	Data      map[string]any `json:"data"`
 }
 
-// TaskDetail is the complete view of a task returned by Show.
+// TaskDetail is the complete view of a task returned by Show. Attempt is the
+// task's open dispatch attempt, when one exists, so clients can tell a running
+// task from an idle in-progress one without loading the queue.
 type TaskDetail struct {
-	Task     Task       `json:"task"`
-	Blockers []string   `json:"blockers"`
-	Sessions []Session  `json:"sessions"`
-	Activity []Activity `json:"activity"`
+	Task     Task             `json:"task"`
+	Blockers []string         `json:"blockers"`
+	Sessions []Session        `json:"sessions"`
+	Attempt  *DispatchAttempt `json:"attempt,omitempty"`
+	Activity []Activity       `json:"activity"`
 }
 
 // Audit event types recorded by the store.

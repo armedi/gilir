@@ -73,6 +73,9 @@ func TestUnblockRequiresBlockedAndRequeuesOnlyIdleInProgress(t *testing.T) {
 	if _, err := s.Unblock(ctx, "alice", never.ID, ""); !errors.Is(err, ErrConflict) {
 		t.Fatalf("Unblock unblocked error = %v, want ErrConflict", err)
 	}
+	if detail := mustShow(t, s, never.ID); detail.Attempt != nil {
+		t.Fatalf("idle task attempt = %+v, want nil", detail.Attempt)
+	}
 
 	// backlog keeps its status, records the optional comment, and gets no boost.
 	backlog := mustCreateTask(t, s, CreateTaskParams{
@@ -140,6 +143,9 @@ func TestUnblockRequiresBlockedAndRequeuesOnlyIdleInProgress(t *testing.T) {
 	}
 	if after := mustShow(t, s, running.ID); after.Task.Status != StatusInProgress {
 		t.Fatalf("status after blocking a claimed task = %s, want in-progress", after.Task.Status)
+	}
+	if after := mustShow(t, s, running.ID); after.Attempt == nil || after.Attempt.ID != active.ID {
+		t.Fatalf("claimed task attempt = %+v, want %s", after.Attempt, active.ID)
 	}
 	unblocked, err = s.Unblock(ctx, "alice", running.ID, "")
 	if err != nil {
