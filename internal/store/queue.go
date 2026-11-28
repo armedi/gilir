@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -112,10 +113,11 @@ func boolInt(value bool) int {
 
 // Reserve atomically selects and claims one eligible todo task. Eligibility
 // requires the queue to be unpaused, the task to have no unresolved attempt,
-// and every direct blocker to be in-review or done. Candidates are ordered by
-// strict priority (urgent, high, medium, low), changes-requested first, fewer
-// blockers currently in review, then task ID. Capacity and external service
-// health are scheduler concerns; this method only persists the reservation.
+// the task to not be blocked, and every direct blocker to be in-review or done.
+// Candidates are ordered by strict priority (urgent, high, medium, low), then
+// changes-requested or just-unblocked tasks, fewer blockers currently in
+// review, then task ID. Capacity and external service health are scheduler
+// concerns; this method only persists the reservation.
 //
 // serverURL and serverPID are stored on the attempt so a restarted scheduler
 // can fail closed against a different OpenCode process. A missing candidate or
@@ -145,12 +147,17 @@ func (s *Store) Reserve(ctx context.Context, serverURL string, serverPID int64) 
 		var (
 			taskID   string
 			repoPath string
+			worktree sql.NullString
 		)
 		err = tx.QueryRowContext(ctx, `
-			SELECT t.id, r.path
+			SELECT t.id, r.path, t.worktree
 			FROM tasks t
 			JOIN repos r ON r.id = t.repo_id
 			WHERE t.status = 'todo'
+				AND NOT EXISTS (
+					SELECT 1 FROM task_markings m
+					WHERE m.task_id = t.id AND m.marking = 'blocked'
+				)
 				AND NOT EXISTS (
 					SELECT 1 FROM dispatch_attempts a
 					WHERE a.task_id = t.id AND a.state = 'reserved'
@@ -172,7 +179,7 @@ func (s *Store) Reserve(ctx context.Context, serverURL string, serverPID int64) 
 				END,
 				CASE WHEN EXISTS (
 					SELECT 1 FROM task_markings m
-					WHERE m.task_id = t.id AND m.marking = 'changes-requested'
+					WHERE m.task_id = t.id AND m.marking IN ('changes-requested', 'unblocked')
 				) THEN 0 ELSE 1 END,
 				(
 					SELECT count(*)
@@ -182,7 +189,7 @@ func (s *Store) Reserve(ctx context.Context, serverURL string, serverPID int64) 
 				),
 				t.seq
 			LIMIT 1`,
-		).Scan(&taskID, &repoPath)
+		).Scan(&taskID, &repoPath, &worktree)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -252,7 +259,7 @@ func (s *Store) Reserve(ctx context.Context, serverURL string, serverPID int64) 
 		}); err != nil {
 			return err
 		}
-		for _, marking := range []string{MarkingChangesRequested, MarkingError} {
+		for _, marking := range []string{MarkingChangesRequested, MarkingError, MarkingUnblocked} {
 			if _, err := setMarkingTx(ctx, tx, actor, taskID, marking, false, now); err != nil {
 				return err
 			}
@@ -262,6 +269,7 @@ func (s *Store) Reserve(ctx context.Context, serverURL string, serverPID int64) 
 			ID:        attemptID,
 			TaskID:    taskID,
 			RepoPath:  repoPath,
+			Worktree:  nullableTextValue(worktree),
 			ServerURL: serverURL,
 			ServerPID: serverPID,
 			State:     AttemptStateReserved,
@@ -275,13 +283,22 @@ func (s *Store) Reserve(ctx context.Context, serverURL string, serverPID int64) 
 	return reserved, nil
 }
 
+// nullableTextValue is nullableText for a scan variable already in hand.
+func nullableTextValue(value sql.NullString) string {
+	if text := nullableText(value); text != nil {
+		return *text
+	}
+	return ""
+}
+
 // ListOpenAttempts returns unresolved attempts in reservation order.
 func (s *Store) ListOpenAttempts(ctx context.Context) ([]DispatchAttempt, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT a.id, a.task_id, a.repo_path, a.server_url, a.server_pid, a.state, a.outcome,
+		SELECT a.id, a.task_id, a.repo_path, t.worktree, a.server_url, a.server_pid, a.state, a.outcome,
 			a.detail, a.created_at, a.finished_at,
 			(SELECT s.id FROM sessions s WHERE s.attempt_id = a.id ORDER BY s.seq LIMIT 1)
 		FROM dispatch_attempts a
+		JOIN tasks t ON t.id = a.task_id
 		WHERE a.state = 'reserved'
 		ORDER BY a.seq`)
 	if err != nil {
@@ -307,6 +324,7 @@ func (s *Store) attemptByID(ctx context.Context, tx *sql.Tx, attemptID string) (
 	var (
 		attempt   DispatchAttempt
 		seq       int64
+		worktree  sql.NullString
 		state     string
 		outcome   sql.NullString
 		detail    sql.NullString
@@ -315,13 +333,14 @@ func (s *Store) attemptByID(ctx context.Context, tx *sql.Tx, attemptID string) (
 		sessionID sql.NullString
 	)
 	err := tx.QueryRowContext(ctx, `
-		SELECT a.seq, a.id, a.task_id, a.repo_path, a.server_url, a.server_pid, a.state,
+		SELECT a.seq, a.id, a.task_id, a.repo_path, t.worktree, a.server_url, a.server_pid, a.state,
 			a.outcome, a.detail, a.created_at, a.finished_at,
 			(SELECT s.id FROM sessions s WHERE s.attempt_id = a.id ORDER BY s.seq LIMIT 1)
 		FROM dispatch_attempts a
+		JOIN tasks t ON t.id = a.task_id
 		WHERE a.id = ?`, attemptID,
 	).Scan(
-		&seq, &attempt.ID, &attempt.TaskID, &attempt.RepoPath, &attempt.ServerURL,
+		&seq, &attempt.ID, &attempt.TaskID, &attempt.RepoPath, &worktree, &attempt.ServerURL,
 		&attempt.ServerPID, &state, &outcome, &detail, &created, &finished, &sessionID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -330,6 +349,7 @@ func (s *Store) attemptByID(ctx context.Context, tx *sql.Tx, attemptID string) (
 	if err != nil {
 		return DispatchAttempt{}, 0, fmt.Errorf("store: load dispatch attempt %s: %w", attemptID, err)
 	}
+	attempt.Worktree = nullableTextValue(worktree)
 	attempt.State = AttemptState(state)
 	if outcome.Valid {
 		attempt.Outcome = AttemptOutcome(outcome.String)
@@ -356,6 +376,7 @@ func (s *Store) attemptByID(ctx context.Context, tx *sql.Tx, attemptID string) (
 func scanAttempt(sc scanner) (DispatchAttempt, error) {
 	var (
 		attempt   DispatchAttempt
+		worktree  sql.NullString
 		state     string
 		outcome   sql.NullString
 		detail    sql.NullString
@@ -364,11 +385,12 @@ func scanAttempt(sc scanner) (DispatchAttempt, error) {
 		sessionID sql.NullString
 	)
 	if err := sc.Scan(
-		&attempt.ID, &attempt.TaskID, &attempt.RepoPath, &attempt.ServerURL,
+		&attempt.ID, &attempt.TaskID, &attempt.RepoPath, &worktree, &attempt.ServerURL,
 		&attempt.ServerPID, &state, &outcome, &detail, &created, &finished, &sessionID,
 	); err != nil {
 		return DispatchAttempt{}, err
 	}
+	attempt.Worktree = nullableTextValue(worktree)
 	attempt.State = AttemptState(state)
 	if outcome.Valid {
 		attempt.Outcome = AttemptOutcome(outcome.String)
@@ -393,13 +415,93 @@ func scanAttempt(sc scanner) (DispatchAttempt, error) {
 	return attempt, nil
 }
 
+// SetTaskWorktree records the OpenCode worktree directory reserved for a
+// task's attempts. It must be called while an attempt for the task is open and
+// before the session is created, so a scheduler retry finds the path instead of
+// creating another worktree. Repeating the same directory is a no-op without an
+// audit event; a different directory is a conflict because a task's worktree
+// never changes once recorded.
+func (s *Store) SetTaskWorktree(ctx context.Context, attemptID, directory string) (string, error) {
+	attemptID = strings.TrimSpace(attemptID)
+	if attemptID == "" {
+		return "", fmt.Errorf("%w: attempt ID is required", ErrInvalid)
+	}
+	directory = strings.TrimSpace(directory)
+	if directory == "" {
+		return "", fmt.Errorf("%w: worktree directory is required", ErrInvalid)
+	}
+	if !filepath.IsAbs(directory) {
+		return "", fmt.Errorf("%w: worktree directory %q is not absolute", ErrInvalid, directory)
+	}
+	directory = filepath.Clean(directory)
+
+	var recorded string
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		attempt, _, err := s.attemptByID(ctx, tx, attemptID)
+		if err != nil {
+			return err
+		}
+		if attempt.State != AttemptStateReserved {
+			return fmt.Errorf("%w: attempt %s is already finished", ErrConflict, attemptID)
+		}
+
+		var existing sql.NullString
+		if err := tx.QueryRowContext(ctx,
+			`SELECT worktree FROM tasks WHERE id = ?`, attempt.TaskID,
+		).Scan(&existing); err != nil {
+			return fmt.Errorf("store: load task %s worktree: %w", attempt.TaskID, err)
+		}
+		if current := nullableText(existing); current != nil {
+			if *current != directory {
+				return fmt.Errorf("%w: task %s already uses worktree %s", ErrConflict, attempt.TaskID, *current)
+			}
+			recorded = *current
+			return nil
+		}
+
+		now := nowUTC()
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE tasks SET worktree = ?, updated_at = ? WHERE id = ?`,
+			directory, formatTime(now), attempt.TaskID,
+		); err != nil {
+			return fmt.Errorf("store: record task %s worktree: %w", attempt.TaskID, err)
+		}
+		projectID, err := requireTask(ctx, tx, attempt.TaskID)
+		if err != nil {
+			return err
+		}
+		if _, err := appendActivity(ctx, tx, activityInput{
+			Type:      ActivityTaskWorktree,
+			Actor:     ActorSystem,
+			TaskID:    stringPointer(attempt.TaskID),
+			ProjectID: int64Pointer(projectID),
+			Timestamp: now,
+			Data: map[string]any{
+				"attempt_id": attemptID,
+				"worktree":   directory,
+			},
+		}); err != nil {
+			return err
+		}
+		recorded = directory
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return recorded, nil
+}
+
 // LinkSession durably records an OpenCode session against a reserved attempt.
-// Repeating the same link is a no-op without another audit event. The session
-// timeline is written before the scheduler prompts the model.
-func (s *Store) LinkSession(ctx context.Context, attemptID, sessionID, url string) error {
+// The session must run in the task's recorded worktree, which is copied onto
+// the session row for display. Repeating the same link is a no-op without
+// another audit event. The session timeline is written before the scheduler
+// prompts the model.
+func (s *Store) LinkSession(ctx context.Context, attemptID, sessionID, url, worktree string) error {
 	attemptID = strings.TrimSpace(attemptID)
 	sessionID = strings.TrimSpace(sessionID)
 	url = strings.TrimSpace(url)
+	worktree = strings.TrimSpace(worktree)
 	if attemptID == "" {
 		return fmt.Errorf("%w: attempt ID is required", ErrInvalid)
 	}
@@ -409,6 +511,13 @@ func (s *Store) LinkSession(ctx context.Context, attemptID, sessionID, url strin
 	if url == "" {
 		return fmt.Errorf("%w: session URL is required", ErrInvalid)
 	}
+	if worktree == "" {
+		return fmt.Errorf("%w: session worktree is required", ErrInvalid)
+	}
+	if !filepath.IsAbs(worktree) {
+		return fmt.Errorf("%w: session worktree %q is not absolute", ErrInvalid, worktree)
+	}
+	worktree = filepath.Clean(worktree)
 	actor := ActorSystem
 
 	return s.withTx(ctx, func(tx *sql.Tx) error {
@@ -416,13 +525,17 @@ func (s *Store) LinkSession(ctx context.Context, attemptID, sessionID, url strin
 		if err != nil {
 			return err
 		}
+		if attempt.Worktree != worktree {
+			return fmt.Errorf("%w: session worktree %s does not match task %s worktree %q",
+				ErrConflict, worktree, attempt.TaskID, attempt.Worktree)
+		}
 
-		var existingAttempt, existingURL string
+		var existingAttempt, existingURL, existingWorktree string
 		err = tx.QueryRowContext(ctx,
-			`SELECT attempt_id, url FROM sessions WHERE id = ?`, sessionID,
-		).Scan(&existingAttempt, &existingURL)
+			`SELECT attempt_id, url, coalesce(worktree, '') FROM sessions WHERE id = ?`, sessionID,
+		).Scan(&existingAttempt, &existingURL, &existingWorktree)
 		if err == nil {
-			if existingAttempt == attemptID && existingURL == url {
+			if existingAttempt == attemptID && existingURL == url && existingWorktree == worktree {
 				return nil
 			}
 			return fmt.Errorf("%w: session %s is already linked elsewhere", ErrConflict, sessionID)
@@ -436,9 +549,9 @@ func (s *Store) LinkSession(ctx context.Context, attemptID, sessionID, url strin
 
 		now := nowUTC()
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO sessions (id, url, state, attempt_id, created_at)
-			VALUES (?, ?, 'linked', ?, ?)`,
-			sessionID, url, attemptID, formatTime(now),
+			INSERT INTO sessions (id, url, state, attempt_id, worktree, created_at)
+			VALUES (?, ?, 'linked', ?, ?, ?)`,
+			sessionID, url, attemptID, worktree, formatTime(now),
 		); err != nil {
 			return fmt.Errorf("store: link session: %w", mapConstraintError(err))
 		}
@@ -456,6 +569,7 @@ func (s *Store) LinkSession(ctx context.Context, attemptID, sessionID, url strin
 				"attempt_id": attemptID,
 				"session_id": sessionID,
 				"url":        url,
+				"worktree":   worktree,
 			},
 		})
 		return err
@@ -466,9 +580,12 @@ func (s *Store) LinkSession(ctx context.Context, attemptID, sessionID, url strin
 // always audited, even if the task was edited manually. Only a success or
 // failure whose attempt is still the task's latest attempt and whose task is
 // still in progress mutates the task: success moves it to in-review and clears
-// the error marking, failure leaves it in progress and applies the error
-// marking. An abandoned outcome never changes task state or markings; it is
-// used when a reserved task was manually moved away before a prompt.
+// the error marking, unless the task is blocked, in which case it stays in
+// progress so its dependents stay held. A blocked task finishes with a clear
+// error marking too: the run succeeded. Failure leaves it in progress and
+// applies the error marking. An abandoned outcome never changes task state or
+// markings; it is used when a reserved task was manually moved away before a
+// prompt.
 func (s *Store) FinishAttempt(ctx context.Context, attemptID string, outcome AttemptOutcome, detail string) error {
 	attemptID = strings.TrimSpace(attemptID)
 	if attemptID == "" {
@@ -526,25 +643,28 @@ func (s *Store) FinishAttempt(ctx context.Context, attemptID string, outcome Att
 		switch outcome {
 		case OutcomeSuccess:
 			if mutable {
-				if _, err := tx.ExecContext(ctx,
-					`UPDATE tasks SET status = 'in-review', updated_at = ? WHERE id = ?`,
-					formatTime(now), task.ID,
-				); err != nil {
-					return fmt.Errorf("store: complete task %s: %w", task.ID, err)
-				}
-				if _, err := appendActivity(ctx, tx, activityInput{
-					Type:      ActivityTaskStatusChanged,
-					Actor:     actor,
-					TaskID:    stringPointer(task.ID),
-					ProjectID: int64Pointer(task.ProjectID),
-					Timestamp: now,
-					Data: map[string]any{
-						"old":    string(task.Status),
-						"new":    string(StatusInReview),
-						"reason": "dispatch_success",
-					},
-				}); err != nil {
-					return err
+				blocked := hasMarking(task.Markings, MarkingBlocked)
+				if !blocked {
+					if _, err := tx.ExecContext(ctx,
+						`UPDATE tasks SET status = 'in-review', updated_at = ? WHERE id = ?`,
+						formatTime(now), task.ID,
+					); err != nil {
+						return fmt.Errorf("store: complete task %s: %w", task.ID, err)
+					}
+					if _, err := appendActivity(ctx, tx, activityInput{
+						Type:      ActivityTaskStatusChanged,
+						Actor:     actor,
+						TaskID:    stringPointer(task.ID),
+						ProjectID: int64Pointer(task.ProjectID),
+						Timestamp: now,
+						Data: map[string]any{
+							"old":    string(task.Status),
+							"new":    string(StatusInReview),
+							"reason": "dispatch_success",
+						},
+					}); err != nil {
+						return err
+					}
 				}
 				if _, err := setMarkingTx(ctx, tx, actor, task.ID, MarkingError, false, now); err != nil {
 					return err

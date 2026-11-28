@@ -44,11 +44,17 @@ func (p Priority) Valid() bool {
 	}
 }
 
-// Well-known task markings. Markings are free-form nonblank strings; these two
+// Well-known task markings. Markings are free-form nonblank strings; these
 // participate in dispatch and review behavior.
 const (
 	MarkingChangesRequested = "changes-requested"
 	MarkingError            = "error"
+	// MarkingBlocked keeps a task out of dispatch and stops a successful run
+	// from advancing it to review until a human or agent unblocks it.
+	MarkingBlocked = "blocked"
+	// MarkingUnblocked is a transient within-priority dispatch boost set by
+	// Unblock and cleared when Reserve claims the task.
+	MarkingUnblocked = "unblocked"
 )
 
 // Project identifies a named Gilir project.
@@ -66,7 +72,9 @@ type Repo struct {
 	ProjectIDs []int64 `json:"project_ids"`
 }
 
-// Task is the task representation exposed by the store.
+// Task is the task representation exposed by the store. Worktree is the
+// OpenCode worktree directory reserved for this task; it is nil until the first
+// dispatch records one and never changes afterward.
 type Task struct {
 	ID          string    `json:"id"`
 	ProjectID   int64     `json:"project_id"`
@@ -75,18 +83,21 @@ type Task struct {
 	Description string    `json:"description"`
 	Status      Status    `json:"status"`
 	Priority    Priority  `json:"priority"`
+	Worktree    *string   `json:"worktree,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	Markings    []string  `json:"markings"`
 }
 
 // Session is an OpenCode session linked to a dispatch attempt. Sessions are
-// returned in link order.
+// returned in link order. Worktree is the task worktree directory the session
+// ran in; it is nil for sessions linked before worktrees were recorded.
 type Session struct {
 	ID        string    `json:"id"`
 	URL       string    `json:"url"`
 	State     string    `json:"state"`
 	AttemptID string    `json:"attempt_id"`
+	Worktree  *string   `json:"worktree,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -101,12 +112,15 @@ type Activity struct {
 	Data      map[string]any `json:"data"`
 }
 
-// TaskDetail is the complete view of a task returned by Show.
+// TaskDetail is the complete view of a task returned by Show. Attempt is the
+// task's open dispatch attempt, when one exists, so clients can tell a running
+// task from an idle in-progress one without loading the queue.
 type TaskDetail struct {
-	Task     Task       `json:"task"`
-	Blockers []string   `json:"blockers"`
-	Sessions []Session  `json:"sessions"`
-	Activity []Activity `json:"activity"`
+	Task     Task             `json:"task"`
+	Blockers []string         `json:"blockers"`
+	Sessions []Session        `json:"sessions"`
+	Attempt  *DispatchAttempt `json:"attempt,omitempty"`
+	Activity []Activity       `json:"activity"`
 }
 
 // Audit event types recorded by the store.
@@ -129,6 +143,7 @@ const (
 	ActivityTaskCommentEdited  = "task.comment_edited"
 	ActivityTaskCommentRemoved = "task.comment_removed"
 	ActivityTaskClaimed        = "task.claimed"
+	ActivityTaskWorktree       = "task.worktree_recorded"
 	ActivityDependencyAdded    = "dependency.added"
 	ActivityDependencyRemoved  = "dependency.removed"
 	ActivitySessionLinked      = "session.linked"
@@ -212,9 +227,12 @@ func (o AttemptOutcome) Valid() bool {
 // first session linked to the attempt, when one exists; ListOpenAttempts fills
 // it from the session table so watchers need not load TaskDetail.
 type DispatchAttempt struct {
-	ID         string         `json:"id"`
-	TaskID     string         `json:"task_id"`
-	RepoPath   string         `json:"repo_path"`
+	ID       string `json:"id"`
+	TaskID   string `json:"task_id"`
+	RepoPath string `json:"repo_path"`
+	// Worktree is the task's recorded worktree directory, read through from
+	// the task row; it is empty until the watcher records one.
+	Worktree   string         `json:"worktree,omitempty"`
 	ServerURL  string         `json:"server_url"`
 	ServerPID  int64          `json:"server_pid"`
 	State      AttemptState   `json:"state"`

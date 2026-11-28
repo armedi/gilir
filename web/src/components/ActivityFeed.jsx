@@ -20,7 +20,7 @@ const EVENT_TITLES = {
   'task.status_changed': 'Status',
   'task.priority_changed': 'Priority',
   'task.marking_changed': 'Marking',
-  'task.comment_added': 'Comment',
+  'task.worktree_recorded': 'Worktree prepared',  'task.comment_added': 'Comment',
   'task.dependency_added': 'Added blocker',
   'task.dependency_removed': 'Removed blocker',
   'task.review_approved': 'Approved',
@@ -146,6 +146,10 @@ function renderSummary(event) {
 
   if (type === 'task.claimed' && data.attempt_id) {
     return <span class="activity-inline-mono">attempt {shortId(data.attempt_id)}</span>;
+  }
+
+  if (type === 'task.worktree_recorded' && data.worktree) {
+    return <span class="activity-inline-mono">{asText(data.worktree)}</span>;
   }
 
   return null;

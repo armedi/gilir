@@ -15,6 +15,7 @@ import (
 
 type request struct {
 	Method, Path, Host, Auth string
+	Query                    string
 	Body                     map[string]any
 }
 
@@ -28,7 +29,7 @@ func fixture(t *testing.T, password string, routes map[string]reply) (*Client, *
 	t.Helper()
 	var got []request
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		req := request{Method: r.Method, Path: r.URL.EscapedPath(), Host: r.Host, Auth: r.Header.Get("Authorization")}
+		req := request{Method: r.Method, Path: r.URL.EscapedPath(), Host: r.Host, Auth: r.Header.Get("Authorization"), Query: r.URL.Query().Encode()}
 		if b, _ := io.ReadAll(r.Body); len(b) > 0 {
 			if err := json.Unmarshal(b, &req.Body); err != nil {
 				t.Errorf("request body is not JSON: %s", b)
@@ -190,8 +191,16 @@ func TestCreateSendsStableIDAndVerifiesResult(t *testing.T) {
 		"other directory": strings.Replace(sessionJSON("ses_new", "", ""), "/work/repo", "/elsewhere", 1),
 	} {
 		c, _, _ := fixture(t, "", map[string]reply{"POST /api/session": {200, body}})
-		if _, err := c.Create(context.Background(), "ses_new", "Task 1", "/work/repo"); err == nil {
+		_, err := c.Create(context.Background(), "ses_new", "Task 1", "/work/repo")
+		if err == nil {
 			t.Errorf("%s: Create succeeded, want error", name)
+		}
+		if name == "other directory" {
+			if got := SessionDirectoryMismatch(err); got != "/elsewhere" {
+				t.Errorf("SessionDirectoryMismatch = %q, want /elsewhere", got)
+			}
+		} else if got := SessionDirectoryMismatch(err); got != "" {
+			t.Errorf("%s: SessionDirectoryMismatch = %q, want empty", name, got)
 		}
 	}
 }
@@ -266,6 +275,122 @@ func TestInboxReturnsQueuedIDs(t *testing.T) {
 	_, err = c.Inbox(context.Background(), "ses_missing")
 	if !IsNotFound(err) || IsSessionNotFound(err) || IsMessageNotFound(err) {
 		t.Errorf("Inbox untagged 404 = %v, want IsNotFound only", err)
+	}
+}
+
+func TestProjectIDResolvesAbsoluteDirectory(t *testing.T) {
+	c, reqs, _ := fixture(t, "", map[string]reply{
+		"GET /api/location": {200, `{"directory":"/work/repo","project":{"id":"prj_1","directory":"/work/repo","canonical":"/work/repo"}}`},
+	})
+	got, err := c.ProjectID(context.Background(), "/work/repo/")
+	if err != nil || got != "prj_1" {
+		t.Fatalf("ProjectID = %q, %v", got, err)
+	}
+	if query := (*reqs)[0].Query; !strings.Contains(query, "location%5Bdirectory%5D=%2Fwork%2Frepo") {
+		t.Fatalf("ProjectID query = %q, want deep-object location", query)
+	}
+
+	for name, body := range map[string]string{
+		"no project":      `{"directory":"/work/repo"}`,
+		"blank project":   `{"directory":"/work/repo","project":{"id":"","canonical":"/work/repo"}}`,
+		"other directory": `{"directory":"/work/other","project":{"id":"prj_1"}}`,
+		"missing dir":     `{"project":{"id":"prj_1"}}`,
+	} {
+		c, _, _ := fixture(t, "", map[string]reply{"GET /api/location": {200, body}})
+		if _, err := c.ProjectID(context.Background(), "/work/repo"); err == nil {
+			t.Errorf("%s: ProjectID accepted a malformed response", name)
+		}
+	}
+	c, _, _ = fixture(t, "", map[string]reply{})
+	if _, err := c.ProjectID(context.Background(), "relative/repo"); err == nil {
+		t.Error("ProjectID accepted a relative directory")
+	}
+	if _, err := c.ProjectID(context.Background(), "/work/repo"); !IsNotFound(err) {
+		t.Errorf("ProjectID unknown route = %v, want a 404", err)
+	}
+}
+
+func TestListWorktreesRejectsBadDirectories(t *testing.T) {
+	c, reqs, _ := fixture(t, "", map[string]reply{
+		"GET /api/worktree": {200, `[{"directory":"/work/main"},{"directory":"/work/wt","strategy":"git"}]`},
+	})
+	got, err := c.ListWorktrees(context.Background(), "prj_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Worktree{{Directory: "/work/main"}, {Directory: "/work/wt", Strategy: "git"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListWorktrees = %+v, want %+v", got, want)
+	}
+	if query := (*reqs)[0].Query; query != "projectID=prj_1" {
+		t.Fatalf("ListWorktrees query = %q", query)
+	}
+
+	if _, err := c.ListWorktrees(context.Background(), "  "); err == nil {
+		t.Error("ListWorktrees accepted a blank project ID")
+	}
+	for name, body := range map[string]string{
+		"relative": `[{"directory":"work/wt"}]`,
+		"missing":  `[{"strategy":"git"}]`,
+		"not list": `{"directory":"/work/wt"}`,
+	} {
+		c, _, _ := fixture(t, "", map[string]reply{"GET /api/worktree": {200, body}})
+		if _, err := c.ListWorktrees(context.Background(), "prj_1"); err == nil {
+			t.Errorf("%s: ListWorktrees accepted a malformed response", name)
+		}
+	}
+}
+
+func TestCreateWorktreePassesNameAndReturnsDirectory(t *testing.T) {
+	c, reqs, _ := fixture(t, "", map[string]reply{
+		"POST /api/worktree": {200, `{"directory":"/work/gilir-1","strategy":"git"}`},
+	})
+	got, err := c.CreateWorktree(context.Background(), "prj_1", "gilir-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (Worktree{Directory: "/work/gilir-1", Strategy: "git"}); got != want {
+		t.Fatalf("CreateWorktree = %+v, want %+v", got, want)
+	}
+	if got, want := (*reqs)[0].Body, map[string]any{"projectID": "prj_1", "name": "gilir-1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("CreateWorktree body = %v, want %v", got, want)
+	}
+
+	// From names the starting checkout so a task on a linked worktree does not
+	// start from the project's canonical one.
+	c, reqs, _ = fixture(t, "", map[string]reply{
+		"POST /api/worktree": {200, `{"directory":"/work/gilir-1"}`},
+	})
+	if _, err := c.CreateWorktreeFrom(context.Background(), "prj_1", "/work/linked", "gilir-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := (*reqs)[0].Body, map[string]any{"projectID": "prj_1", "name": "gilir-1", "from": "/work/linked"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("CreateWorktreeFrom body = %v, want %v", got, want)
+	}
+	if _, err := c.CreateWorktreeFrom(context.Background(), "prj_1", "", "gilir-1"); err == nil {
+		t.Error("CreateWorktreeFrom accepted an empty source")
+	}
+	if _, err := c.CreateWorktreeFrom(context.Background(), "prj_1", "linked", "gilir-1"); err == nil {
+		t.Error("CreateWorktreeFrom accepted a relative source")
+	}
+
+	if _, err := c.CreateWorktree(context.Background(), "", "gilir-1"); err == nil {
+		t.Error("CreateWorktree accepted a blank project ID")
+	}
+	if _, err := c.CreateWorktree(context.Background(), "prj_1", "  "); err == nil {
+		t.Error("CreateWorktree accepted a blank name")
+	}
+
+	c, _, _ = fixture(t, "", map[string]reply{"POST /api/worktree": {200, `{"directory":"relative"}`}})
+	if _, err := c.CreateWorktree(context.Background(), "prj_1", "gilir-1"); err == nil {
+		t.Error("CreateWorktree accepted a relative directory")
+	}
+	c, _, _ = fixture(t, "", map[string]reply{
+		"POST /api/worktree": {400, `{"_tag":"WorktreeError","data":{"message":"not a git repository"}}`},
+	})
+	var se *StatusError
+	if _, err := c.CreateWorktree(context.Background(), "prj_1", "gilir-1"); !errors.As(err, &se) || se.StatusCode != 400 {
+		t.Errorf("CreateWorktree refusal = %v, want a 400 StatusError", err)
 	}
 }
 

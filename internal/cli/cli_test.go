@@ -30,6 +30,73 @@ func runCLI(argv []string, defaultActor string, executor *recordingExecutor) (in
 	return code, stdout.String(), stderr.String()
 }
 
+// taskDetailFixture is a TaskDetail as the service returns it, with the keys
+// deliberately inserted out of order.
+func taskDetailFixture() map[string]any {
+	return map[string]any{
+		"activity": []any{
+			map[string]any{"id": 2, "type": "task.commented", "actor": "agent:ses_1", "data": map[string]any{"body": "Progress"}},
+		},
+		"sessions": []any{
+			map[string]any{"id": "ses_gilir_1", "state": "linked", "attempt_id": "abc", "worktree": "/work/gilir-1", "url": "http://127.0.0.1:4096/session/x"},
+		},
+		"blockers": []any{"GILIR-1"},
+		"task": map[string]any{
+			"id": "GILIR-2", "title": "Ship", "status": "in-progress", "priority": "high",
+			"markings": []any{"blocked"}, "worktree": "/work/gilir-2", "repo_id": 1, "project_id": 1,
+		},
+	}
+}
+
+type detailExecutor struct{ detail map[string]any }
+
+func (d detailExecutor) execute(_ context.Context, command, actor string, args map[string]any) (any, error) {
+	return d.detail, nil
+}
+
+func TestRunShowPrintsSectionsInReadingOrder(t *testing.T) {
+	detail := taskDetailFixture()
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"show", "GILIR-2"}, &stdout, &stderr, "", detailExecutor{detail}.execute)
+	if code != 0 {
+		t.Fatalf("exit code = %d (stderr %q)", code, stderr.String())
+	}
+	out := stdout.String()
+	order := []string{"task:", "blockers:", "sessions:", "activity:"}
+	last := -1
+	for _, section := range order {
+		index := strings.Index(out, section)
+		if index <= last {
+			t.Fatalf("show output is out of order at %q:\n%s", section, out)
+		}
+		last = index
+	}
+	for _, want := range []string{"id: GILIR-2", "worktree: /work/gilir-2", "- GILIR-1", "sessions:\n  - attempt_id", "ses_gilir_1", "task.commented"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("show output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "error") {
+		t.Fatalf("show output reports an error:\n%s", out)
+	}
+
+	var jsonOut, jsonErr bytes.Buffer
+	code = Run(context.Background(), []string{"show", "GILIR-2", "--json"}, &jsonOut, &jsonErr, "", detailExecutor{detail}.execute)
+	if code != 0 {
+		t.Fatalf("json exit code = %d (stderr %q)", code, jsonErr.String())
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(jsonOut.Bytes(), &decoded); err != nil {
+		t.Fatalf("--json output is not JSON: %v", err)
+	}
+	if _, ok := decoded["task"]; !ok {
+		t.Fatalf("--json output lost the task section: %s", jsonOut.String())
+	}
+	if !strings.HasPrefix(strings.TrimSpace(jsonOut.String()), "{") {
+		t.Fatalf("--json output is not a single object: %s", jsonOut.String())
+	}
+}
+
 func TestRunFlagPlacementAndActorPrecedence(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -127,6 +194,27 @@ func TestRunFlagPlacementAndActorPrecedence(t *testing.T) {
 			wantActor:   "user",
 			wantCommand: "task.review",
 			wantArgs:    map[string]any{"id": "GILIR-7", "approve": false, "message": "add tests"},
+		},
+		{
+			name:        "block carries required message",
+			argv:        []string{"block", "GILIR-7", "--message", "Waiting on **ledger**"},
+			wantActor:   "user",
+			wantCommand: "task.block",
+			wantArgs:    map[string]any{"id": "GILIR-7", "message": "Waiting on **ledger**"},
+		},
+		{
+			name:        "unblock without message",
+			argv:        []string{"unblock", "GILIR-7"},
+			wantActor:   "user",
+			wantCommand: "task.unblock",
+			wantArgs:    map[string]any{"id": "GILIR-7"},
+		},
+		{
+			name:        "unblock with message",
+			argv:        []string{"unblock", "GILIR-7", "--message", "Migration landed"},
+			wantActor:   "user",
+			wantCommand: "task.unblock",
+			wantArgs:    map[string]any{"id": "GILIR-7", "message": "Migration landed"},
 		},
 		{
 			name:        "service start without flags",
@@ -390,6 +478,9 @@ func TestRunRejectsRequiredAndInvalidArguments(t *testing.T) {
 		{name: "extra argument", argv: []string{"show", "GILIR-1", "extra"}, want: "unexpected argument"},
 		{name: "request changes missing message", argv: []string{"request-changes", "GILIR-1"}, want: "missing required flag --message"},
 		{name: "request changes blank message", argv: []string{"request-changes", "GILIR-1", "--message", "   "}, want: "a message is required"},
+		{name: "block missing message", argv: []string{"block", "GILIR-1"}, want: "missing required flag --message"},
+		{name: "block blank message", argv: []string{"block", "GILIR-1", "--message", "   "}, want: "a message is required when blocking a task"},
+		{name: "block bare task id", argv: []string{"block", "1", "--message", "x"}, want: "GILIR-"},
 		{name: "edit comment invalid comment id", argv: []string{"edit-comment", "GILIR-1", "nope", "body"}, want: "invalid comment id"},
 		{name: "remove comment missing comment id", argv: []string{"remove-comment", "GILIR-1"}, want: "missing <comment-id>"},
 	}
@@ -449,32 +540,35 @@ func TestRunSkillObservableContract(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	if !strings.HasPrefix(plain, "---\nname: gilir\ndescription: ") {
-		t.Fatalf("skill is missing frontmatter:\n%s", plain)
+	// `gilir skill` prints a plain Markdown manual. Agent frontmatter belongs to
+	// skills/gilir/SKILL.md, not to the embedded text.
+	if strings.HasPrefix(strings.TrimSpace(plain), "---") {
+		t.Fatalf("skill still starts with frontmatter:\n%s", plain)
 	}
 	normalized := strings.Join(strings.Fields(plain), " ")
 	for _, want := range []string{
-		`gilir show "$task_id" --json`,
+		`gilir show GILIR-42`,
 		`gilir comment "$task_id"`,
 		`--actor "agent:$session_id"`,
 		`Progress:`,
-		`Blocked by:`,
-		`gilir update "$task_id" --status in-review --actor "agent:$session_id"`,
+		`gilir update "$task_id" --status in-review`,
 		`gilir --help`,
-		"gilir repo add ~/src/payments # auto-creates project",
-		"gilir repo add ~/src/payments --project 3",
+		"gilir repo add /srv/payments # auto-creates project",
+		"gilir repo add /srv/payments --project 3",
 		"gilir repo list",
-		"gilir repo list --project 3",
-		"gilir repo link 1 4",
-		"gilir repo unlink 1 4",
-		`gilir create "Fix rounding" --repo 1 --status todo --priority high`,
-		"gilir list --project 3",
+		"gilir create \"Fix rounding\" --repo 1 --status todo --priority high",
+		"gilir depend GILIR-7 GILIR-5",
+		"gilir block \"$task_id\" --message",
+		"gilir unblock \"$task_id\"",
+		"gilir request-changes GILIR-7 --message",
+		"never approve a task you worked on",
+		"worktree",
 	} {
 		if !strings.Contains(normalized, want) {
 			t.Fatalf("skill missing %q:\n%s", want, plain)
 		}
 	}
-	for _, unwanted := range []string{"gilir approve", "gilir mark", "--project 1 --repo 1"} {
+	for _, unwanted := range []string{"name: gilir", "--project 1 --repo 1"} {
 		if strings.Contains(plain, unwanted) {
 			t.Fatalf("skill still contains %q:\n%s", unwanted, plain)
 		}

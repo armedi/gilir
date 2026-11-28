@@ -24,10 +24,31 @@ var (
 	ErrConflict = errors.New("store: conflict")
 )
 
-// schemaVersion 3 stores task IDs as the self-describing "GILIR-<n>" text key.
+// schemaVersion 5 adds the durable per-database ID used to namespace external
+// resources such as OpenCode worktrees. Version 4 added the per-task worktree
+// directory and the per-session copy of the directory the session ran in.
+// Version 3 stores task IDs as the self-describing "GILIR-<n>" text key.
 // Version 2 and earlier used bare integers and are not migrated: an older
 // database is rejected at Open so the caller recreates it.
-const schemaVersion = 3
+const schemaVersion = 5
+
+// schemaMigrations upgrades a database from the map key version to
+// schemaVersion. They run inside the same transaction that records the new
+// version, so a failed migration leaves the database untouched.
+var schemaMigrations = map[int][]string{
+	3: {
+		`ALTER TABLE tasks ADD COLUMN worktree TEXT
+			CHECK (worktree IS NULL OR length(trim(worktree)) > 0)`,
+		`ALTER TABLE sessions ADD COLUMN worktree TEXT
+			CHECK (worktree IS NULL OR length(trim(worktree)) > 0)`,
+	},
+	4: {
+		`CREATE TABLE store_meta (
+			key TEXT PRIMARY KEY CHECK (length(trim(key)) > 0),
+			value TEXT NOT NULL
+		) STRICT`,
+	},
+}
 
 const databaseBusyTimeout = "5000"
 
@@ -154,13 +175,76 @@ func (s *Store) initialize(ctx context.Context) error {
 	case version > schemaVersion:
 		return fmt.Errorf("store: database schema version %d is newer than supported version %d", version, schemaVersion)
 	default:
-		return fmt.Errorf("store: database schema version %d is not supported; delete the database file and restart to recreate it with prefixed task IDs", version)
+		if _, ok := schemaMigrations[version]; !ok {
+			return fmt.Errorf("store: database schema version %d is not supported; delete the database file and restart to recreate it", version)
+		}
+		// Apply each missing version in order so an installation can cross
+		// several schema versions in one open.
+		for current := version; current < schemaVersion; current++ {
+			for _, statement := range schemaMigrations[current] {
+				if _, err := tx.ExecContext(ctx, statement); err != nil {
+					return fmt.Errorf("store: migrate schema from version %d: %w", current, err)
+				}
+			}
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+			return fmt.Errorf("store: set schema version: %w", err)
+		}
+	}
+	if !hasTable(ctx, tx, "store_meta") {
+		if _, err := tx.ExecContext(ctx, `CREATE TABLE store_meta (
+			key TEXT PRIMARY KEY CHECK (length(trim(key)) > 0),
+			value TEXT NOT NULL
+		) STRICT`); err != nil {
+			return fmt.Errorf("store: create store_meta: %w", err)
+		}
+	}
+
+	// A database created or migrated here has no ID yet. Recording one keeps
+	// externally created resources (worktrees) attributable to this database.
+	databaseID, err := randomHex(16)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO store_meta (key, value) VALUES ('database_id', ?)
+			ON CONFLICT (key) DO NOTHING`,
+		databaseID,
+	); err != nil {
+		return fmt.Errorf("store: initialize database ID: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit schema transaction: %w", err)
 	}
 	return nil
+}
+
+// DatabaseID returns the durable random identifier recorded for this database
+// file at creation. Callers namespace external resources with it so a recreated
+// database cannot adopt resources created by the one it replaced.
+func (s *Store) DatabaseID(ctx context.Context) (string, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT value FROM store_meta WHERE key = 'database_id'`, nil,
+	).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: database ID", ErrNotFound)
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: load database ID: %w", err)
+	}
+	return id, nil
+}
+
+// withTx runs fn in one immediate transaction, rolling back on any error.
+// hasTable reports whether the current transaction can see table.
+func hasTable(ctx context.Context, tx *sql.Tx, table string) bool {
+	var count int
+	err := tx.QueryRowContext(ctx,
+		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table,
+	).Scan(&count)
+	return err == nil && count > 0
 }
 
 func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {

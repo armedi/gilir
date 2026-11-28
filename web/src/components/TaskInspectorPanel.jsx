@@ -342,6 +342,13 @@ export default function TaskInspectorPanel(props) {
                               <span class="session-id">
                                 {session.id == null ? 'Session' : String(session.id)}
                               </span>
+                              <Show when={session.worktree}>
+                                {(worktree) => (
+                                  <span class="session-worktree" title={worktree()}>
+                                    {worktree()}
+                                  </span>
+                                )}
+                              </Show>
                               <div class="session-meta">
                                 <span
                                   class={`semantic-tag semantic-status-${sessionTone(session.state)}`}

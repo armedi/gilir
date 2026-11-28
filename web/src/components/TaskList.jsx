@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal, createUniqueId } from 'solid-js';
-import { knownPriority, markingTone } from '../tone';
+import { isBlocked, knownPriority, markingTone } from '../tone';
 import { taskPath } from '../shell';
 import {
   asArray,
@@ -45,7 +45,7 @@ function TaskRow(props) {
   };
 
   return (
-    <li class={['task-row', { selected: selected() }]}>
+    <li class={['task-row', { selected: selected(), 'is-blocked': isBlocked(task()) }]}>
       <a
         href={taskPath(task().id)}
         class="task-row-open"

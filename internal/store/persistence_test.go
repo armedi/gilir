@@ -39,7 +39,8 @@ func TestStateSurvivesCloseAndReopen(t *testing.T) {
 		t.Fatalf("attempt = %+v", attempt)
 	}
 	sessionID := "ses_gilir_" + attempt.ID
-	if err := s.LinkSession(ctx, attempt.ID, sessionID, "http://127.0.0.1:4096/session/persisted"); err != nil {
+	worktree := mustRecordWorktree(t, s, attempt.ID)
+	if err := s.LinkSession(ctx, attempt.ID, sessionID, "http://127.0.0.1:4096/session/persisted", worktree); err != nil {
 		t.Fatalf("LinkSession: %v", err)
 	}
 	paused := true
@@ -91,6 +92,10 @@ func TestStateSurvivesCloseAndReopen(t *testing.T) {
 	}
 	if len(detail.Sessions) != 1 || detail.Sessions[0].ID != sessionID || detail.Sessions[0].State != "linked" {
 		t.Fatalf("sessions after reopen = %+v", detail.Sessions)
+	}
+	if detail.Task.Worktree == nil || detail.Sessions[0].Worktree == nil ||
+		*detail.Sessions[0].Worktree != *detail.Task.Worktree {
+		t.Fatalf("worktree after reopen = task %v session %v", detail.Task.Worktree, detail.Sessions[0].Worktree)
 	}
 
 	openAttempts := mustListOpen(t, s)

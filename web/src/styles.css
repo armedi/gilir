@@ -36,6 +36,10 @@
   --warning: #92400e;
   --warning-soft: #fffbeb;
   --warning-border: #fde68a;
+  /* Blocked pauses a task deliberately: a slate, not a failure red. */
+  --blocked: #475569;
+  --blocked-soft: #f1f5f9;
+  --blocked-border: #cbd5e1;
   --priority-urgent: #b91c1c;
   --priority-high: #c2410c;
   --priority-medium: #545b66;
@@ -500,6 +504,15 @@ p {
 .semantic-status-backlog,
 .semantic-status-neutral {
   color: var(--status-backlog);
+}
+
+.semantic-blocked {
+  border: 1px solid var(--blocked-border);
+  border-radius: 999px;
+  background: var(--blocked-soft);
+  color: var(--blocked);
+  padding: 1px 9px 1px 7px;
+  font-weight: 650;
 }
 
 .semantic-status-done {
@@ -1197,6 +1210,19 @@ p {
   background: var(--accent);
 }
 
+/* A blocked row reads as a deliberate pause: a slate rail without a status tint. */
+.task-row.is-blocked::before {
+  background: var(--blocked);
+}
+
+.task-row.selected.is-blocked::before {
+  background: var(--blocked);
+}
+
+.task-row.is-blocked .task-title {
+  color: var(--ink-secondary);
+}
+
 .task-row-open {
   display: flex;
   width: 100%;
@@ -1300,6 +1326,17 @@ p {
 
 .marking-inline.tone-changes {
   color: var(--warning);
+}
+
+.marking-inline.tone-blocked {
+  color: var(--blocked);
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.marking-inline.tone-blocked::before {
+  background: var(--blocked);
+  box-shadow: 0 0 0 2px var(--blocked-soft);
 }
 
 .priority-mark {
@@ -1527,6 +1564,10 @@ p {
   border-bottom: 1px solid var(--border);
 }
 
+.composer-section.is-blocked {
+  border-bottom-color: var(--blocked-border);
+}
+
 .composer-review-head {
   display: flex;
   flex-wrap: wrap;
@@ -1539,6 +1580,10 @@ p {
   color: var(--status-review);
   font-size: var(--text-sm);
   font-weight: 650;
+}
+
+.composer-review-title.is-blocked {
+  color: var(--blocked);
 }
 
 .composer-review-sub {
@@ -1568,6 +1613,11 @@ p {
   box-shadow: inset 3px 0 0 var(--status-review);
 }
 
+.composer-box.is-blocked {
+  border-color: var(--blocked-border);
+  box-shadow: inset 3px 0 0 var(--blocked);
+}
+
 .composer-box:focus-within {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(15, 107, 78, 0.12);
@@ -1578,6 +1628,13 @@ p {
   box-shadow:
     inset 3px 0 0 var(--status-review),
     0 0 0 3px rgba(29, 78, 216, 0.12);
+}
+
+.composer-box.is-blocked:focus-within {
+  border-color: var(--blocked);
+  box-shadow:
+    inset 3px 0 0 var(--blocked),
+    0 0 0 3px rgba(71, 85, 105, 0.15);
 }
 
 .composer-textarea {
@@ -1814,6 +1871,14 @@ p {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
   overflow-wrap: anywhere;
+}
+
+.session-worktree {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
 }
 
 .session-meta {

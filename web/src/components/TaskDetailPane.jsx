@@ -15,8 +15,9 @@ import {
   formatFullDateTime,
   timeAttribute,
 } from '../utils';
-import { PriorityBadge, StatusBadge } from './Badges';
+import { PriorityBadge, StatusBadge, BlockedBadge } from './Badges';
 import ActivityFeed from './ActivityFeed';
+import { isBlocked } from '../tone';
 
 function focusEditor(editor, selectAll = false) {
   requestAnimationFrame(() => {
@@ -97,7 +98,15 @@ export default function TaskDetailPane(props) {
 
   const task = () => props.detail?.task;
   const inReview = () => task()?.status === 'in-review';
+  const blocked = () => isBlocked(task());
   const hasComment = () => comment().trim().length > 0;
+  // Blocked tasks are actionable like reviews, so the same composer serves a
+  // Block or an Unblock instead of an ordinary comment.
+  const blockable = () =>
+    ['backlog', 'todo', 'in-progress'].includes(task()?.status) && !blocked();
+  // An idle in-progress task has no open dispatch attempt: unblocking it puts it
+  // back in the queue rather than only clearing the marking.
+  const idleInProgress = () => task()?.status === 'in-progress' && !props.detail?.attempt;
 
   const projectName = createMemo(() => {
     const current = task();
@@ -370,6 +379,45 @@ export default function TaskDetailPane(props) {
     }
   }
 
+  // Blocking requires a message because it is the record of why the task
+  // stopped; unblocking accepts an optional one. Both run through the wire
+  // command so the store enforces the status rules for every client.
+  async function runBlock(unblock) {
+    if (actionBusy() !== null) return;
+    const current = task();
+    if (!current) return;
+    const body = comment().trim();
+
+    if (!unblock && !body) {
+      setCommentError('Explain why this task is blocked.');
+      commentInput?.focus();
+      return;
+    }
+
+    const taskId = current.id;
+    const taskKey = activeTaskKey;
+    const commentKey = activeCommentKey;
+    setActionBusy(unblock ? 'unblock' : 'block');
+    setCommentError(null);
+    try {
+      const args = { id: taskId };
+      if (body) args.message = body;
+      await command(unblock ? 'task.unblock' : 'task.block', args);
+      if (body && commentKey) clearDraft(commentKey);
+      if (body && activeTaskKey === taskKey) setComment('');
+      await props.onRefresh();
+      if (activeTaskKey === taskKey) {
+        props.notify(unblock ? 'Task unblocked' : 'Task blocked');
+      }
+    } catch (requestError) {
+      if (activeTaskKey === taskKey) {
+        setCommentError(errorText(requestError));
+      }
+    } finally {
+      if (activeTaskKey === taskKey) setActionBusy(null);
+    }
+  }
+
   // Comment rows own their editor state; this runs the command, refetches and
   // toasts. Errors propagate so the row can keep its draft and show them inline.
   async function mutateComment(name, commentId, args, notice) {
@@ -507,6 +555,9 @@ export default function TaskDetailPane(props) {
                 <div class="center-meta">
                   <span class="center-id">{props.taskId}</span>
                   <StatusBadge value={current().status} />
+                  <Show when={blocked()}>
+                    <BlockedBadge />
+                  </Show>
                   <PriorityBadge value={current().priority} />
                   <Show when={projectName()}>
                     <span class="center-project">{projectName()}</span>
@@ -677,9 +728,25 @@ export default function TaskDetailPane(props) {
                 </section>
 
                 <section
-                  class={['composer-section', { 'is-review': inReview() }]}
-                  aria-label={inReview() ? 'Review and comment' : 'Add comment'}
+                  class={[
+                    'composer-section',
+                    { 'is-review': inReview(), 'is-blocked': blocked() },
+                  ]}
+                  aria-label={
+                    blocked() ? 'Blocked task' : inReview() ? 'Review and comment' : 'Add comment'
+                  }
                 >
+                  <Show when={blocked()}>
+                    <div class="composer-review-head">
+                      <span class="composer-review-title is-blocked">Blocked</span>
+                      <span class="composer-review-sub">
+                        {idleInProgress()
+                          ? 'Unblock it to re-queue this task for dispatch, or add a comment.'
+                          : 'This task is not dispatched until it is unblocked. Add a comment or unblock it.'}
+                      </span>
+                    </div>
+                  </Show>
+
                   <Show when={inReview()}>
                     <div class="composer-review-head">
                       <span class="composer-review-title">Ready for review</span>
@@ -691,9 +758,14 @@ export default function TaskDetailPane(props) {
 
                   <form class="composer-form" onSubmit={submitComment}>
                     <label class="sr-only" for={commentId}>
-                      {inReview() ? 'Review comment' : 'Add a comment'}
+                      {blocked() ? 'Block comment' : inReview() ? 'Review comment' : 'Add a comment'}
                     </label>
-                    <div class={['composer-box', { 'is-review': inReview() }]}>
+                    <div
+                      class={[
+                        'composer-box',
+                        { 'is-review': inReview(), 'is-blocked': blocked() },
+                      ]}
+                    >
                       <textarea
                         ref={commentInput}
                         id={commentId}
@@ -703,32 +775,56 @@ export default function TaskDetailPane(props) {
                         onInput={(event) => updateComment(event.currentTarget.value)}
                         onKeyDown={handleCommentKeyDown}
                         placeholder={
-                          inReview()
-                            ? 'Write review notes or explain what needs to change…'
-                            : 'Add a comment or instructions for the next agent run…'
+                          blocked()
+                            ? 'Explain what is blocked, or what unblocked this task…'
+                            : inReview()
+                              ? 'Write review notes or explain what needs to change…'
+                              : 'Add a comment or instructions for the next agent run…'
                         }
                         disabled={actionBusy() !== null}
                       />
                       <div class="composer-toolbar">
                         <span class="composer-hint">
                           <Show
-                            when={inReview() && !hasComment()}
+                            when={(inReview() || blockable()) && !hasComment()}
                             fallback="Markdown supported · ⌘↵ to comment"
                           >
-                            Add a comment to request changes
+                            {inReview() ? 'Add a comment to request changes' : 'Explain why it is blocked'}
                           </Show>
                         </span>
                         <div class="action-group">
                           <Show
-                            when={inReview()}
+                            when={inReview() || blocked()}
                             fallback={
-                              <button
-                                class="btn btn-primary btn-sm"
-                                type="submit"
-                                disabled={actionBusy() !== null || !hasComment()}
+                              <Show
+                                when={blockable()}
+                                fallback={
+                                  <button
+                                    class="btn btn-primary btn-sm"
+                                    type="submit"
+                                    disabled={actionBusy() !== null || !hasComment()}
+                                  >
+                                    {actionBusy() === 'comment' ? 'Sending…' : 'Comment'}
+                                  </button>
+                                }
                               >
-                                {actionBusy() === 'comment' ? 'Sending…' : 'Comment'}
-                              </button>
+                                <button
+                                  class="btn btn-ghost btn-sm"
+                                  type="submit"
+                                  disabled={actionBusy() !== null || !hasComment()}
+                                >
+                                  {actionBusy() === 'comment' ? 'Sending…' : 'Comment'}
+                                </button>
+                                <button
+                                  class="btn btn-secondary btn-sm"
+                                  type="button"
+                                  onClick={() => runBlock(false)}
+                                  disabled={actionBusy() !== null || !hasComment()}
+                                  title={hasComment() ? 'Block this task' : 'Explain the block first'}
+                                >
+                                  {actionBusy() === 'block' ? 'Blocking…' : 'Block'}
+                                </button>
+                              </Show>
                             }
                           >
                             <button
@@ -738,27 +834,52 @@ export default function TaskDetailPane(props) {
                             >
                               {actionBusy() === 'comment' ? 'Sending…' : 'Comment'}
                             </button>
-                            <button
-                              class="btn btn-secondary btn-sm"
-                              type="button"
-                              onClick={() => runReview(false)}
-                              disabled={actionBusy() !== null || !hasComment()}
-                              title={
-                                hasComment()
-                                  ? 'Send comment and re-queue task'
-                                  : 'Write what needs to change first'
+                            <Show
+                              when={blocked()}
+                              fallback={
+                                <>
+                                  <button
+                                    class="btn btn-secondary btn-sm"
+                                    type="button"
+                                    onClick={() => runReview(false)}
+                                    disabled={actionBusy() !== null || !hasComment()}
+                                    title={
+                                      hasComment()
+                                        ? 'Send comment and re-queue task'
+                                        : 'Write what needs to change first'
+                                    }
+                                  >
+                                    {actionBusy() === 'changes' ? 'Requesting…' : 'Request changes'}
+                                  </button>
+                                  <button
+                                    class="btn btn-primary btn-sm"
+                                    type="button"
+                                    onClick={() => runReview(true)}
+                                    disabled={actionBusy() !== null}
+                                  >
+                                    {actionBusy() === 'approve' ? 'Approving…' : 'Approve'}
+                                  </button>
+                                </>
                               }
                             >
-                              {actionBusy() === 'changes' ? 'Requesting…' : 'Request changes'}
-                            </button>
-                            <button
-                              class="btn btn-primary btn-sm"
-                              type="button"
-                              onClick={() => runReview(true)}
-                              disabled={actionBusy() !== null}
-                            >
-                              {actionBusy() === 'approve' ? 'Approving…' : 'Approve'}
-                            </button>
+                              <button
+                                class="btn btn-primary btn-sm"
+                                type="button"
+                                onClick={() => runBlock(true)}
+                                disabled={actionBusy() !== null}
+                                title={
+                                  idleInProgress()
+                                    ? 'Clear the block and re-queue this task'
+                                    : 'Clear the block'
+                                }
+                              >
+                                {actionBusy() === 'unblock'
+                                  ? 'Unblocking…'
+                                  : idleInProgress()
+                                    ? 'Unblock & re-queue'
+                                    : 'Unblock'}
+                              </button>
+                            </Show>
                           </Show>
                         </div>
                       </div>

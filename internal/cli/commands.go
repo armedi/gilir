@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -26,6 +27,9 @@ type command struct {
 	flags       []string
 	required    []string
 	build       func(positionals []string, flags map[string]string) (map[string]any, error)
+	// human renders a non-JSON result when the generic key-sorted dump would
+	// bury the important sections. JSON output is unaffected.
+	human func(w io.Writer, value any) error
 }
 
 var commandSpecs = []command{
@@ -214,6 +218,7 @@ var commandSpecs = []command{
 			}
 			return map[string]any{"id": id}, nil
 		},
+		human: writeTaskDetail,
 	},
 	{
 		path:        "delete",
@@ -271,6 +276,29 @@ var commandSpecs = []command{
 		positionals: []string{"<task-id>", "<marking>"},
 		build: func(positionals []string, _ map[string]string) (map[string]any, error) {
 			return buildMark(positionals, false)
+		},
+	},
+	{
+		path:        "block",
+		wire:        "task.block",
+		usage:       "gilir block <task-id> --message <markdown>",
+		summary:     "Mark a task blocked with a required message so it is not dispatched.",
+		positionals: []string{"<task-id>"},
+		flags:       []string{"message"},
+		required:    []string{"message"},
+		build: func(positionals []string, flags map[string]string) (map[string]any, error) {
+			return buildBlock(positionals, flags, false)
+		},
+	},
+	{
+		path:        "unblock",
+		wire:        "task.unblock",
+		usage:       "gilir unblock <task-id> [--message <markdown>]",
+		summary:     "Clear a block, optionally with a message, and re-queue the task.",
+		positionals: []string{"<task-id>"},
+		flags:       []string{"message"},
+		build: func(positionals []string, flags map[string]string) (map[string]any, error) {
+			return buildBlock(positionals, flags, true)
 		},
 	},
 	{
@@ -523,6 +551,24 @@ func buildReview(positionals []string, flags map[string]string, approve bool) (m
 		return nil, fmt.Errorf("a message is required when requesting changes")
 	}
 	args := map[string]any{"id": id, "approve": approve}
+	if message != "" {
+		args["message"] = message
+	}
+	return args, nil
+}
+
+// buildBlock sends a block, whose message is required, or an unblock, whose
+// message is optional.
+func buildBlock(positionals []string, flags map[string]string, optional bool) (map[string]any, error) {
+	id, err := parseTaskID(positionals[0])
+	if err != nil {
+		return nil, err
+	}
+	message := strings.TrimSpace(flags["message"])
+	if !optional && message == "" {
+		return nil, fmt.Errorf("a message is required when blocking a task")
+	}
+	args := map[string]any{"id": id}
 	if message != "" {
 		args["message"] = message
 	}
