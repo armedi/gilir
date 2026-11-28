@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/armedi/gilir/internal/taskid"
@@ -41,6 +42,10 @@ const ActorSystem = "scheduler"
 // by multiple goroutines; access is serialized in-process.
 type Store struct {
 	db *sql.DB
+
+	activityMu       sync.Mutex
+	activityRevision uint64
+	activityChanged  chan struct{}
 }
 
 // Open opens or creates the SQLite database at path. It verifies the connection
@@ -69,7 +74,7 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 
-	s := &Store{db: db}
+	s := &Store{db: db, activityChanged: make(chan struct{})}
 	if err := s.initialize(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -236,12 +241,26 @@ func (s *Store) DatabaseID(ctx context.Context) (string, error) {
 	return id, nil
 }
 
+type transaction struct {
+	*sql.Tx
+	hasActivity bool
+}
+
+// ActivityChanges returns the current revision and a channel that closes after
+// a transaction commits new activity. Read both together to avoid missed wakes.
+func (s *Store) ActivityChanges() (uint64, <-chan struct{}) {
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	return s.activityRevision, s.activityChanged
+}
+
 // withTx runs fn in one immediate transaction, rolling back on any error.
-func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+func (s *Store) withTx(ctx context.Context, fn func(*transaction) error) error {
+	sqlTx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("store: begin transaction: %w", err)
 	}
+	tx := &transaction{Tx: sqlTx}
 	committed := false
 	defer func() {
 		if !committed {
@@ -256,6 +275,13 @@ func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
 		return fmt.Errorf("store: commit transaction: %w", err)
 	}
 	committed = true
+	if tx.hasActivity {
+		s.activityMu.Lock()
+		s.activityRevision++
+		close(s.activityChanged)
+		s.activityChanged = make(chan struct{})
+		s.activityMu.Unlock()
+	}
 	return nil
 }
 
@@ -337,7 +363,7 @@ type activityInput struct {
 	Data      map[string]any
 }
 
-func appendActivity(ctx context.Context, tx *sql.Tx, in activityInput) (Activity, error) {
+func appendActivity(ctx context.Context, tx *transaction, in activityInput) (Activity, error) {
 	if strings.TrimSpace(in.Type) == "" {
 		return Activity{}, fmt.Errorf("%w: activity type is required", ErrInvalid)
 	}
@@ -370,6 +396,7 @@ func appendActivity(ctx context.Context, tx *sql.Tx, in activityInput) (Activity
 	if err != nil {
 		return Activity{}, fmt.Errorf("store: read activity ID: %w", err)
 	}
+	tx.hasActivity = true
 	return Activity{
 		ID:        id,
 		Type:      in.Type,
@@ -456,7 +483,7 @@ func scanActivity(sc scanner) (Activity, error) {
 	return activity, nil
 }
 
-func requireTask(ctx context.Context, tx *sql.Tx, taskID string) (int64, error) {
+func requireTask(ctx context.Context, tx *transaction, taskID string) (int64, error) {
 	var projectID int64
 	err := tx.QueryRowContext(ctx, `SELECT project_id FROM tasks WHERE id = ?`, taskID).Scan(&projectID)
 	if errors.Is(err, sql.ErrNoRows) {

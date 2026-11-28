@@ -9,7 +9,6 @@ import {
 } from 'solid-js';
 import { useMatch, useNavigate, useRouteMatches } from '@solidjs/router';
 import { CommandError, command } from './api';
-import { POLL_INTERVAL } from './constants';
 import {
   asArray,
   errorText,
@@ -59,8 +58,8 @@ const LEFT_MAX = 460;
 const RIGHT_MIN = 250;
 const RIGHT_MAX = 420;
 
-// App is the router's root layout: it mounts once, owns the queue/service/
-// detail polling and the panel chrome, and renders the matched page in its
+// App is the router's root layout: it mounts once, owns live updates and
+// the panel chrome, and renders the matched page in its
 // center slot. The URL is the single source of truth for which page is shown
 // and which task is selected; everything that is presentation-only (panel
 // widths, inspector tab, inline edit state) stays in component-local state.
@@ -90,9 +89,10 @@ export default function App(props) {
   const [service, setService] = createSignal(null);
   const [serviceError, setServiceError] = createSignal(null);
   const [serviceReload, setServiceReload] = createSignal(0);
+  const [liveReady, setLiveReady] = createSignal(false);
+  const [liveError, setLiveError] = createSignal(null);
 
   const [detail, setDetail] = createSignal(null);
-  const [detailLoading, setDetailLoading] = createSignal(false);
   const [detailError, setDetailError] = createSignal(null);
   // Keyed to the ID it describes so navigating from a missing task does not
   // flash "Task not found" for the next one before the effect runs.
@@ -104,7 +104,7 @@ export default function App(props) {
     return taskId != null && String(missingTaskId()) === String(taskId);
   });
 
-  // Stale snapshots are never rendered: a poll that lands after navigation is
+  // Stale snapshots are never rendered: a request that lands after navigation is
   // dropped here even if the request guard let it through.
   const currentDetail = createMemo(() => {
     const value = detail();
@@ -112,10 +112,16 @@ export default function App(props) {
     return String(value.task?.id) === String(selectedTaskId() ?? '') ? value : null;
   });
 
+  const blockerProject = createMemo(() => currentDetail()?.task?.project_id);
   const [blockerSource, setBlockerSource] = createSignal({
+    project: null,
     tasks: [],
     loading: false,
     error: null,
+  });
+  const currentBlockerSource = createMemo(() => {
+    const source = blockerSource();
+    return source.project === blockerProject() ? source : { tasks: [], loading: true, error: null };
   });
   const [blockerReload, setBlockerReload] = createSignal(0);
 
@@ -149,6 +155,7 @@ export default function App(props) {
   );
 
   let noticeTimer;
+  let retryLiveUpdates;
   let projectAbort = null;
   let repoAbort = null;
   let lastTaskQuery = null;
@@ -186,7 +193,9 @@ export default function App(props) {
   });
 
   const watcherWarning = createMemo(() =>
-    service()?.watcher_error
+    liveError()
+      ? { title: 'Live updates unavailable.', body: liveError() }
+      : service()?.watcher_error
       ? { title: 'OpenCode warning.', body: service()?.watcher_error }
       : serviceError()
         ? { title: 'Queue status unavailable.', body: serviceError() }
@@ -278,7 +287,82 @@ export default function App(props) {
   onSettled(() => {
     loadProjects();
     loadRepos();
+    let controller;
+    let after = null;
+    let retry;
+    let delay = 1000;
+
+    async function watchChanges(poll) {
+      try {
+        const next = await command('web.changes', { after }, {
+          signal: poll.signal,
+          timeoutMs: after ? 35000 : undefined,
+        });
+        if (poll.signal.aborted) return;
+        if (
+          typeof next?.started_at !== 'string' ||
+          !Number.isSafeInteger(next.activity) ||
+          !Number.isSafeInteger(next.watcher)
+        ) {
+          throw new Error('The Gilir API returned an invalid change cursor.');
+        }
+        const reset = after?.started_at !== next.started_at;
+        const activityChanged = reset || after.activity !== next.activity;
+        const watcherChanged = reset || after.watcher !== next.watcher;
+        after = next;
+        delay = 1000;
+        if (liveReady()) {
+          if (activityChanged) refreshAfterTaskChange();
+          if (activityChanged || watcherChanged || serviceError()) refreshService();
+          if (!activityChanged && tasksError()) refreshTasks();
+          if (!activityChanged && detailError()) setDetailReload((value) => value + 1);
+          if (!activityChanged && blockerProject() != null && blockerSource().error) {
+            setBlockerReload((value) => value + 1);
+          }
+        }
+        setLiveError(null);
+        setLiveReady(true);
+        watchChanges(poll);
+      } catch (error) {
+        if (poll.signal.aborted) return;
+        after = null;
+        setLiveError(errorText(error));
+        setLiveReady(true);
+        retry = setTimeout(retryLiveUpdates, delay);
+        delay = Math.min(delay * 2, 15000);
+      }
+    }
+
+    retryLiveUpdates = () => {
+      if (retry === undefined || !controller) return;
+      clearTimeout(retry);
+      retry = undefined;
+      watchChanges(controller);
+    };
+
+    function pauseWatching() {
+      clearTimeout(retry);
+      retry = undefined;
+      controller?.abort();
+      controller = undefined;
+    }
+
+    function updateVisibility() {
+      // Hidden tabs should not occupy the origin's limited HTTP/1.1 connections.
+      if (document.visibilityState === 'hidden') {
+        pauseWatching();
+      } else if (!controller) {
+        controller = new AbortController();
+        watchChanges(controller);
+      }
+    }
+
+    document.addEventListener('visibilitychange', updateVisibility);
+    updateVisibility();
     return () => {
+      document.removeEventListener('visibilitychange', updateVisibility);
+      pauseWatching();
+      retryLiveUpdates = undefined;
       projectAbort?.abort();
       repoAbort?.abort();
     };
@@ -360,9 +444,10 @@ export default function App(props) {
       const priority = filters.priority;
       const marking = filters.marking;
       taskReload();
-      return { project, repo, status, priority, marking };
+      return { project, repo, status, priority, marking, ready: liveReady() };
     },
-    ({ project, repo, status, priority, marking }) => {
+    ({ project, repo, status, priority, marking, ready }) => {
+      if (!ready) return;
       const args = {};
       if (project) args.project_id = Number(project);
       if (repo) args.repo_id = Number(repo);
@@ -374,13 +459,12 @@ export default function App(props) {
       if (query !== lastTaskQuery) {
         lastTaskQuery = query;
         setTasks([]);
+        setTasksLoading(true);
       }
 
-      setTasksLoading(true);
       setTasksError(null);
       const controller = new AbortController();
       let cancelled = false;
-      let timer = null;
 
       const load = async () => {
         try {
@@ -406,15 +490,9 @@ export default function App(props) {
         }
       };
 
-      const tick = async () => {
-        await load();
-        if (!cancelled) timer = setTimeout(tick, POLL_INTERVAL);
-      };
-
-      tick();
+      load();
       return () => {
         cancelled = true;
-        clearTimeout(timer);
         controller.abort();
       };
     },
@@ -432,10 +510,10 @@ export default function App(props) {
     return () => clearTimeout(markingTimer);
   });
 
-  createEffect(serviceReload, () => {
+  createEffect(() => [serviceReload(), liveReady()], ([, ready]) => {
+    if (!ready) return;
     const controller = new AbortController();
     let cancelled = false;
-    let timer = null;
 
     const load = async () => {
       try {
@@ -449,28 +527,22 @@ export default function App(props) {
       }
     };
 
-    const tick = async () => {
-      await load();
-      if (!cancelled) timer = setTimeout(tick, POLL_INTERVAL);
-    };
-
-    tick();
+    load();
     return () => {
       cancelled = true;
-      clearTimeout(timer);
       controller.abort();
     };
   });
 
   createEffect(
-    () => [selectedTaskId(), detailReload()],
-    ([taskId]) => {
+    () => [selectedTaskId(), detailReload(), liveReady()],
+    ([taskId, , ready]) => {
+      if (!ready) return;
       if (taskId == null) {
         lastDetailSelection = null;
         setDetail(null);
         setDetailError(null);
         setMissingTaskId(null);
-        setDetailLoading(false);
         return;
       }
 
@@ -486,15 +558,11 @@ export default function App(props) {
         setDetail(null);
         setDetailError(null);
         setMissingTaskId(taskId);
-        setDetailLoading(false);
         return;
       }
 
-      setDetailLoading(true);
       const controller = new AbortController();
       let cancelled = false;
-      let stopped = false;
-      let timer = null;
 
       const load = async () => {
         try {
@@ -503,55 +571,45 @@ export default function App(props) {
           const normalized = normalizeDetail(data);
           if (!normalized) throw new Error('The task details were not returned.');
           setDetail(normalized);
+          setMissingTaskId(null);
           setDetailError(null);
         } catch (error) {
           if (cancelled || isAbortError(error)) return;
           if (String(selectedTaskId() ?? '') !== String(taskId)) return;
-          // IDs are never reused and a malformed ID cannot be fetched, so both
-          // are definitive: stop polling, drop the snapshot, and show the
-          // not-found state instead of reporting a paused live update.
+          // Drop the snapshot and show the not-found state.
           if (
             error instanceof CommandError &&
             (error.code === 'not_found' || error.code === 'invalid')
           ) {
-            stopped = true;
             setDetail(null);
             setDetailError(null);
             setMissingTaskId(taskId);
-            setDetailLoading(false);
             return;
           }
           setDetailError(errorText(error));
-        } finally {
-          if (!cancelled) setDetailLoading(false);
         }
       };
 
-      const tick = async () => {
-        await load();
-        if (!cancelled && !stopped) timer = setTimeout(tick, POLL_INTERVAL);
-      };
-
-      tick();
+      load();
       return () => {
         cancelled = true;
-        clearTimeout(timer);
         controller.abort();
       };
     },
   );
 
   createEffect(
-    () => [selectedTaskId(), currentDetail()?.task?.project_id, blockerReload()],
-    ([taskId, project]) => {
-      if (taskId == null || project == null) {
-        setBlockerSource({ tasks: [], loading: false, error: null });
-        return;
-      }
+    () => [blockerProject(), blockerReload()],
+    ([project]) => {
+      if (project == null) return;
 
       const controller = new AbortController();
       let cancelled = false;
-      setBlockerSource({ tasks: [], loading: true, error: null });
+      setBlockerSource((previous) =>
+        previous.project === project
+          ? previous
+          : { project, tasks: [], loading: true, error: null },
+      );
       (async () => {
         try {
           const data = await command(
@@ -559,20 +617,22 @@ export default function App(props) {
             { project_id: project },
             { signal: controller.signal },
           );
-          if (cancelled || String(selectedTaskId() ?? '') !== String(taskId)) return;
-          setBlockerSource({
-            tasks: sortTasks(
-              asArray(data)
-                .filter((item) => !deletedTaskIds.has(String(item?.id)))
-                .map((item) => normalizeTask(item))
-                .filter(Boolean),
-            ),
+          if (cancelled || blockerProject() !== project) return;
+          const list = sortTasks(
+            asArray(data)
+              .filter((item) => !deletedTaskIds.has(String(item?.id)))
+              .map((item) => normalizeTask(item))
+              .filter(Boolean),
+          );
+          setBlockerSource((previous) => ({
+            project,
+            tasks: mergeTasks(previous.tasks, list),
             loading: false,
             error: null,
-          });
+          }));
         } catch (error) {
-          if (cancelled || isAbortError(error)) return;
-          setBlockerSource({ tasks: [], loading: false, error: errorText(error) });
+          if (cancelled || blockerProject() !== project || isAbortError(error)) return;
+          setBlockerSource((previous) => ({ ...previous, loading: false, error: errorText(error) }));
         }
       })();
       return () => {
@@ -639,7 +699,6 @@ export default function App(props) {
       if (window.history.state?.fromProjects) navigate(-1);
       else navigate(PATHS.projects, { replace: true });
     }
-    refreshTasks();
     notify('Repository added');
     await Promise.all([loadRepos(), loadProjects()]);
   }
@@ -651,7 +710,6 @@ export default function App(props) {
     } else {
       goToQueue();
     }
-    refreshTasks();
     notify('Task created');
   }
 
@@ -666,41 +724,35 @@ export default function App(props) {
     // tombstone keeps any in-flight list response from putting it back.
     forgetTask(taskId);
     if (String(selectedTaskId() ?? '') === String(taskId)) goToQueue({ replace: true });
-    refreshAfterTaskChange();
     notify('Task deleted');
   }
 
   async function handleLinkRepo(repoId, projectId) {
     await command('repo.link', { repo_id: repoId, project_id: projectId });
-    refreshTasks();
     notify('Repository linked');
     await loadRepos();
   }
 
   async function handleUnlinkRepo(repoId, projectId) {
     await command('repo.unlink', { repo_id: repoId, project_id: projectId });
-    refreshTasks();
     notify('Repository unlinked');
     await loadRepos();
   }
 
   async function handleRemoveRepo(repoId) {
     await command('repo.remove', { id: repoId });
-    refreshTasks();
     notify('Repository removed');
     await loadRepos();
   }
 
   async function handleRenameProject(projectId, name) {
     await command('project.rename', { id: projectId, name });
-    refreshTasks();
     notify('Project renamed');
     await loadProjects();
   }
 
   async function handleRemoveProject(projectId) {
     await command('project.remove', { id: projectId });
-    refreshTasks();
     notify('Project removed');
     await Promise.all([loadProjects(), loadRepos()]);
   }
@@ -759,7 +811,6 @@ export default function App(props) {
     clearFilters,
     selectedTaskId,
     detail: currentDetail,
-    detailLoading,
     detailError,
     detailMissing,
     addingRepo,
@@ -768,7 +819,7 @@ export default function App(props) {
     closeTask,
     setAddingRepo,
     openMobileInspector: () => setMobileInspectorFor(selectedTaskId()),
-    refreshAfterTaskChange,
+    retryTaskDetail: () => setDetailReload((value) => value + 1),
     handleDeleteTask,
     handleTaskCreated,
     handleRepoAdded,
@@ -798,7 +849,6 @@ export default function App(props) {
           primaryHref={primaryHref()}
           onToggleLeft={() => setLeftOpen((open) => !open)}
           onToggleRight={() => setRightOpen((open) => !open)}
-          onRefreshService={refreshService}
           notify={notify}
         />
 
@@ -809,7 +859,11 @@ export default function App(props) {
               <span class="watcher-banner-text">
                 <strong>{warning().title}</strong> {warning().body}
               </span>
-              <button class="btn btn-ghost btn-sm" type="button" onClick={refreshService}>
+              <button
+                class="btn btn-ghost btn-sm"
+                type="button"
+                onClick={() => (liveError() ? retryLiveUpdates?.() : refreshService())}
+              >
                 Retry
               </button>
             </div>
@@ -926,9 +980,8 @@ export default function App(props) {
               taskId={selectedTaskId()}
               detail={currentDetail()}
               repos={repos()}
-              blockerSource={blockerSource()}
+              blockerSource={currentBlockerSource()}
               onCloseMobileInspector={() => setMobileInspectorFor(null)}
-              onRefresh={refreshAfterTaskChange}
               notify={notify}
             />
           </Show>

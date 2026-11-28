@@ -26,7 +26,6 @@ export const PRIORITY_LABELS = {
   low: 'Low',
 };
 
-export const POLL_INTERVAL = 2000;
 
 export const KNOWN_STATUSES = new Set(STATUSES);
 export const KNOWN_PRIORITIES = new Set(PRIORITIES);

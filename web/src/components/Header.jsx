@@ -118,7 +118,6 @@ export default function Header(props) {
     setPauseBusy(true);
     try {
       await command('service.update', { paused: !wasPaused });
-      await props.onRefreshService();
       props.notify(wasPaused ? 'Queue resumed' : 'Queue paused');
     } catch (requestError) {
       props.notify(errorText(requestError));
@@ -135,7 +134,6 @@ export default function Header(props) {
     setConcurrencyBusy(true);
     try {
       await command('service.update', { max_concurrency: next });
-      await props.onRefreshService();
       props.notify(`Max concurrency set to ${next}`);
     } catch (requestError) {
       props.notify(errorText(requestError));

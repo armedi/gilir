@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/armedi/gilir/internal/store"
 )
@@ -90,6 +91,55 @@ func requireInvalid(t *testing.T, err error) {
 	}
 	if status, code := Classify(err); status != 400 || code != "invalid" {
 		t.Fatalf("classify = (%d, %q), want (400, invalid)", status, code)
+	}
+}
+
+func TestWebChangesWaitsForCommittedActivity(t *testing.T) {
+	f := newFixture(t, nil)
+	before, err := f.run(t, "web.changes", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := mustJSON(t, map[string]any{"after": before})
+
+	// Neither a read nor a no-op update should wake a poll.
+	if _, err := f.run(t, "task.show", map[string]any{"id": f.task}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.run(t, "task.update", map[string]any{
+		"id": f.task, "title": "Ship commands",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idle, stopIdle := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer stopIdle()
+	if _, err := f.service.Execute(idle, "web.changes", "alice", args); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("unchanged poll returned before cancellation: %v", err)
+	}
+
+	type result struct {
+		cursor any
+		err    error
+	}
+	waiting, stopWaiting := context.WithTimeout(context.Background(), 3*time.Second)
+	defer stopWaiting()
+	returned := make(chan result, 1)
+	go func() {
+		cursor, err := f.service.Execute(waiting, "web.changes", "alice", args)
+		returned <- result{cursor: cursor, err: err}
+	}()
+	if _, err := f.run(t, "task.update", map[string]any{
+		"id": f.task, "title": "Wake the poll",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case next := <-returned:
+		if next.err != nil || string(mustJSON(t, next.cursor)) == string(mustJSON(t, before)) {
+			t.Fatalf("poll returned (%v, %v), want a new cursor after the update", next.cursor, next.err)
+		}
+	case <-waiting.Done():
+		t.Fatal("poll did not return after the task update")
 	}
 }
 

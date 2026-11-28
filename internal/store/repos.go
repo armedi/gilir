@@ -35,7 +35,7 @@ func (s *Store) AddRepo(ctx context.Context, actor string, projectID int64, path
 	}
 
 	var repo Repo
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *transaction) error {
 		if projectID > 0 {
 			if _, err := requireProjectName(ctx, tx, projectID); err != nil {
 				return err
@@ -108,7 +108,7 @@ func (s *Store) LinkRepo(ctx context.Context, actor string, repoID, projectID in
 	}
 
 	var linked Repo
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *transaction) error {
 		repo, err := repoByID(ctx, tx, repoID)
 		if err != nil {
 			return err
@@ -163,7 +163,7 @@ func (s *Store) UnlinkRepo(ctx context.Context, actor string, repoID, projectID 
 	}
 
 	var unlinked Repo
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *transaction) error {
 		repo, err := repoByID(ctx, tx, repoID)
 		if err != nil {
 			return err
@@ -224,7 +224,7 @@ func (s *Store) RemoveRepo(ctx context.Context, actor string, repoID int64) erro
 		return err
 	}
 
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	return s.withTx(ctx, func(tx *transaction) error {
 		repo, err := repoByID(ctx, tx, repoID)
 		if err != nil {
 			return err
@@ -310,7 +310,7 @@ func (s *Store) ListRepos(ctx context.Context, projectID int64) ([]Repo, error) 
 	return repos, nil
 }
 
-func repoByID(ctx context.Context, tx *sql.Tx, repoID int64) (Repo, error) {
+func repoByID(ctx context.Context, tx *transaction, repoID int64) (Repo, error) {
 	var path string
 	err := tx.QueryRowContext(ctx, `SELECT path FROM repos WHERE id = ?`, repoID).Scan(&path)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -326,7 +326,7 @@ func repoByID(ctx context.Context, tx *sql.Tx, repoID int64) (Repo, error) {
 	return Repo{ID: repoID, Path: path, ProjectIDs: projectIDs}, nil
 }
 
-func loadProjectIDs(ctx context.Context, tx *sql.Tx, repoID int64) ([]int64, error) {
+func loadProjectIDs(ctx context.Context, tx *transaction, repoID int64) ([]int64, error) {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT project_id FROM project_repos WHERE repo_id = ? ORDER BY project_id`, repoID,
 	)
@@ -349,7 +349,7 @@ func loadProjectIDs(ctx context.Context, tx *sql.Tx, repoID int64) ([]int64, err
 	return projectIDs, nil
 }
 
-func projectRepoLinked(ctx context.Context, tx *sql.Tx, projectID, repoID int64) (bool, error) {
+func projectRepoLinked(ctx context.Context, tx *transaction, projectID, repoID int64) (bool, error) {
 	var marker int
 	err := tx.QueryRowContext(ctx,
 		`SELECT 1 FROM project_repos WHERE project_id = ? AND repo_id = ?`, projectID, repoID,
@@ -363,7 +363,7 @@ func projectRepoLinked(ctx context.Context, tx *sql.Tx, projectID, repoID int64)
 	return true, nil
 }
 
-func autoProjectName(ctx context.Context, tx *sql.Tx, root string) (string, error) {
+func autoProjectName(ctx context.Context, tx *transaction, root string) (string, error) {
 	base := strings.TrimSpace(filepath.Base(root))
 	if base == "" {
 		base = "project"

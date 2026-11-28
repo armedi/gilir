@@ -20,7 +20,7 @@ func (s *Store) CreateProject(ctx context.Context, actor, name string) (Project,
 	}
 
 	var created Project
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *transaction) error {
 		taken, err := projectNameTaken(ctx, tx, name)
 		if err != nil {
 			return err
@@ -53,7 +53,7 @@ func (s *Store) RenameProject(ctx context.Context, actor string, projectID int64
 	}
 
 	var renamed Project
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *transaction) error {
 		oldName, err := requireProjectName(ctx, tx, projectID)
 		if err != nil {
 			return err
@@ -101,7 +101,7 @@ func (s *Store) DeleteProject(ctx context.Context, actor string, projectID int64
 		return err
 	}
 
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	return s.withTx(ctx, func(tx *transaction) error {
 		name, err := requireProjectName(ctx, tx, projectID)
 		if err != nil {
 			return err
@@ -170,7 +170,7 @@ func (s *Store) ListProjects(ctx context.Context) ([]Project, error) {
 	return projects, nil
 }
 
-func insertProjectTx(ctx context.Context, tx *sql.Tx, actor, name string) (Project, error) {
+func insertProjectTx(ctx context.Context, tx *transaction, actor, name string) (Project, error) {
 	result, err := tx.ExecContext(ctx, `INSERT INTO projects (name) VALUES (?)`, name)
 	if err != nil {
 		return Project{}, fmt.Errorf("store: create project: %w", mapConstraintError(err))
@@ -192,7 +192,7 @@ func insertProjectTx(ctx context.Context, tx *sql.Tx, actor, name string) (Proje
 	return created, nil
 }
 
-func requireProjectName(ctx context.Context, tx *sql.Tx, projectID int64) (string, error) {
+func requireProjectName(ctx context.Context, tx *transaction, projectID int64) (string, error) {
 	var name string
 	err := tx.QueryRowContext(ctx, `SELECT name FROM projects WHERE id = ?`, projectID).Scan(&name)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -204,7 +204,7 @@ func requireProjectName(ctx context.Context, tx *sql.Tx, projectID int64) (strin
 	return name, nil
 }
 
-func projectNameTaken(ctx context.Context, tx *sql.Tx, name string) (bool, error) {
+func projectNameTaken(ctx context.Context, tx *transaction, name string) (bool, error) {
 	var marker int
 	err := tx.QueryRowContext(ctx, `SELECT 1 FROM projects WHERE name = ?`, name).Scan(&marker)
 	if errors.Is(err, sql.ErrNoRows) {

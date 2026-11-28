@@ -15,7 +15,7 @@ const worktreeNameKey = "worktree_name/"
 // project until its directory is recorded. existing reports whether an earlier
 // call already reserved the name and may have sent the create request.
 func (s *Store) ReserveWorktreeName(ctx context.Context, attemptID, projectID string, directories []string) (name string, existing bool, err error) {
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *transaction) error {
 		attempt, _, err := s.attemptByID(ctx, tx, attemptID)
 		if err != nil {
 			return err
@@ -90,7 +90,7 @@ func worktreeSlug(title string) string {
 	return slug
 }
 
-func clearWorktreeName(ctx context.Context, tx *sql.Tx, taskID string) error {
+func clearWorktreeName(ctx context.Context, tx *transaction, taskID string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM store_meta WHERE key GLOB ?`, worktreeNameKey+"*/"+taskID); err != nil {
 		return fmt.Errorf("store: release worktree name for %s: %w", taskID, err)
 	}

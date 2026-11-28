@@ -85,7 +85,7 @@ func (s *Store) SaveHookCursor(ctx context.Context, hook string, cursor int64) e
 	if cursor < 0 {
 		return fmt.Errorf("%w: hook cursor must not be negative", ErrInvalid)
 	}
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	return s.withTx(ctx, func(tx *transaction) error {
 		var latest int64
 		if err := tx.QueryRowContext(ctx,
 			`SELECT coalesce(max(id), 0) FROM activity`,

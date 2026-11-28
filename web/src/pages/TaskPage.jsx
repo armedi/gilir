@@ -4,7 +4,7 @@ import { PATHS, useShell } from '../shell';
 
 // A direct link to a deleted or never-existing task is definitive: the ID is
 // never reused, so the shell marks it missing after a not_found response (or
-// immediately for a tombstoned ID) and polling stops. This view keeps the
+// immediately for a tombstoned ID). This view keeps the
 // destination URL and makes the queue one click away.
 function TaskNotFound(props) {
   return (
@@ -35,14 +35,9 @@ function TaskNotFound(props) {
 export default function TaskPage() {
   const shell = useShell();
 
-  // The shell's detail effect runs after this render, so a fresh task URL sees
-  // detailLoading=false and no detail yet. Treat "selected, not missing, no
-  // snapshot" as loading rather than letting the pane flash its unavailable
-  // state. A poll error still renders the pane's paused/error banner.
+  // A fresh task URL has no snapshot until its first detail request completes.
   const loading = createMemo(
-    () =>
-      shell.detailLoading() ||
-      (shell.detail() == null && shell.detailError() == null && !shell.detailMissing()),
+    () => shell.detail() == null && shell.detailError() == null && !shell.detailMissing(),
   );
 
   return (
@@ -59,7 +54,7 @@ export default function TaskPage() {
         onBack={() => shell.goToQueue()}
         onClose={shell.closeTask}
         onOpenMobileInspector={shell.openMobileInspector}
-        onRefresh={shell.refreshAfterTaskChange}
+        onRetry={shell.retryTaskDetail}
         onDelete={shell.handleDeleteTask}
         notify={shell.notify}
       />

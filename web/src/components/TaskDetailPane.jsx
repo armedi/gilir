@@ -192,7 +192,6 @@ export default function TaskDetailPane(props) {
     setTitleError(null);
     try {
       await command('task.update', { id: taskId, title: next });
-      await props.onRefresh();
       if (activeTaskKey === taskKey) {
         setEditingTitle(false);
         props.notify('Title updated');
@@ -275,7 +274,6 @@ export default function TaskDetailPane(props) {
     try {
       await command('task.update', { id: taskId, body: next });
       if (bodyKey) clearDraft(bodyKey);
-      await props.onRefresh();
       if (activeTaskKey === taskKey) {
         setEditingBody(false);
         props.notify('Body updated');
@@ -327,7 +325,6 @@ export default function TaskDetailPane(props) {
     try {
       await command('task.comment', { id: taskId, message });
       if (commentKey) clearDraft(commentKey);
-      await props.onRefresh();
       if (activeTaskKey === taskKey) {
         setComment('');
         props.notify('Comment added');
@@ -366,7 +363,6 @@ export default function TaskDetailPane(props) {
       await command('task.review', args);
       if (message && commentKey) clearDraft(commentKey);
       if (message && activeTaskKey === taskKey) setComment('');
-      await props.onRefresh();
       if (activeTaskKey === taskKey) {
         props.notify(approve ? 'Task approved' : 'Changes requested');
       }
@@ -405,7 +401,6 @@ export default function TaskDetailPane(props) {
       await command(unblock ? 'task.unblock' : 'task.block', args);
       if (message && commentKey) clearDraft(commentKey);
       if (message && activeTaskKey === taskKey) setComment('');
-      await props.onRefresh();
       if (activeTaskKey === taskKey) {
         props.notify(unblock ? 'Task unblocked' : 'Task blocked');
       }
@@ -418,8 +413,8 @@ export default function TaskDetailPane(props) {
     }
   }
 
-  // Comment rows own their editor state; this runs the command, refetches and
-  // toasts. Errors propagate so the row can keep its draft and show them inline.
+  // Comment rows own their editor state. Errors propagate so the row can keep
+  // its draft and show them inline.
   async function mutateComment(name, commentId, args, notice) {
     const current = task();
     if (!current || loadedTaskId() !== String(current.id)) {
@@ -427,7 +422,6 @@ export default function TaskDetailPane(props) {
     }
     const taskKey = activeTaskKey;
     await command(name, { id: current.id, comment_id: commentId, ...args });
-    await props.onRefresh();
     if (activeTaskKey === taskKey) props.notify(notice);
   }
 
@@ -653,7 +647,7 @@ export default function TaskDetailPane(props) {
             {props.detail ? 'Live updates paused. ' : 'Could not load this task. '}
             {props.error}
           </span>
-          <button class="btn btn-ghost btn-sm" type="button" onClick={props.onRefresh}>
+          <button class="btn btn-ghost btn-sm" type="button" onClick={props.onRetry}>
             Retry
           </button>
         </div>
@@ -669,7 +663,7 @@ export default function TaskDetailPane(props) {
         <div class="pane-empty">
           <h2>Task unavailable</h2>
           <p>This task could not be loaded from the local queue.</p>
-          <button class="btn btn-secondary" type="button" onClick={props.onRefresh}>
+          <button class="btn btn-secondary" type="button" onClick={props.onRetry}>
             Retry
           </button>
         </div>

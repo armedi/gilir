@@ -41,6 +41,8 @@ type Connection interface {
 type Snapshot struct {
 	ActiveParents *int
 	Error         string
+	Revision      uint64
+	Changed       <-chan struct{}
 }
 
 // Watcher schedules queued tasks onto one OpenCode server. Run one instance
@@ -54,8 +56,9 @@ type Watcher struct {
 	// answer and has not been observed since. They keep their slot.
 	uncertain map[string]bool
 
-	mu   sync.Mutex
-	snap Snapshot
+	mu      sync.Mutex
+	snap    Snapshot
+	changed chan struct{}
 }
 
 // New returns a watcher that always dispatches to the server at serverURL
@@ -73,6 +76,7 @@ func NewWithConnection(st *store.Store, conn Connection) *Watcher {
 		conn:      conn,
 		uncertain: map[string]bool{},
 		snap:      Snapshot{Error: "not yet polled"},
+		changed:   make(chan struct{}),
 	}
 }
 
@@ -93,6 +97,7 @@ func (w *Watcher) Snapshot() Snapshot {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	s := w.snap
+	s.Changed = w.changed
 	if s.ActiveParents != nil {
 		n := *s.ActiveParents
 		s.ActiveParents = &n
@@ -125,15 +130,24 @@ func (w *Watcher) Tick(ctx context.Context) error {
 	if err != nil && w.conn.Failed(err) {
 		running, err = w.tick(ctx)
 	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	next := Snapshot{ActiveParents: &running}
 	if err != nil {
 		message := w.conn.Redact(opencode.Describe(err))
-		w.snap = Snapshot{Error: message}
-		return errors.New(message)
+		next = Snapshot{Error: message}
+		err = errors.New(message)
 	}
-	w.snap = Snapshot{ActiveParents: &running}
-	return nil
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	before, after := w.snap.ActiveParents, next.ActiveParents
+	if w.snap.Error != next.Error || (before == nil) != (after == nil) ||
+		(before != nil && after != nil && *before != *after) {
+		next.Revision = w.snap.Revision + 1
+		w.snap = next
+		close(w.changed)
+		w.changed = make(chan struct{})
+	}
+	return err
 }
 
 type state int

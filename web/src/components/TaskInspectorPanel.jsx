@@ -113,7 +113,6 @@ export default function TaskInspectorPanel(props) {
     setPropError(null);
     try {
       await command('task.update', { id: current.id, ...patch });
-      await props.onRefresh();
       props.notify(message);
     } catch (requestError) {
       setPropError(errorText(requestError));
@@ -140,7 +139,6 @@ export default function TaskInspectorPanel(props) {
     setMarkingError(null);
     try {
       await command('task.mark', { id: current.id, marking, present: true });
-      await props.onRefresh();
       setMarkingInput('');
       props.notify('Marking added');
     } catch (requestError) {
@@ -158,7 +156,6 @@ export default function TaskInspectorPanel(props) {
     setMarkingError(null);
     try {
       await command('task.mark', { id: current.id, marking, present: false });
-      await props.onRefresh();
       props.notify('Marking removed');
     } catch (requestError) {
       setMarkingError(errorText(requestError));
@@ -183,7 +180,6 @@ export default function TaskInspectorPanel(props) {
     setBlockerError(null);
     try {
       await command('task.depend', { id: current.id, blocker_id: blocker.id, present: true });
-      await props.onRefresh();
       setBlockerChoice('');
       props.notify('Blocker added');
     } catch (requestError) {
@@ -205,7 +201,6 @@ export default function TaskInspectorPanel(props) {
         blocker_id: blockerId,
         present: false,
       });
-      await props.onRefresh();
       props.notify('Blocker removed');
     } catch (requestError) {
       setBlockerError(errorText(requestError));
