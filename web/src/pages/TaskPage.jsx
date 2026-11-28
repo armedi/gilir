@@ -6,7 +6,7 @@ import { PATHS, useShell } from '../shell';
 // never reused, so the shell marks it missing after a not_found response (or
 // immediately for a tombstoned ID) and polling stops. This view keeps the
 // destination URL and makes the queue one click away.
-export function TaskNotFound(props) {
+function TaskNotFound(props) {
   return (
     <section class="center-panel" aria-label="Task not found">
       <div class="mobile-back-bar">

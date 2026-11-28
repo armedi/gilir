@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	defaultCommandURL = "http://127.0.0.1:44547"
+	defaultCommandURL = "http://" + defaultHost + ":" + defaultPort
 	apiCommandPath    = "/api/v1/command"
 	// commandDialTimeout bounds reaching a service; commandTimeout must allow
 	// server work such as SQLite's busy timeout and Git during `repo add`.

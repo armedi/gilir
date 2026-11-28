@@ -47,10 +47,9 @@ export function errorText(error) {
   return 'Something went wrong.';
 }
 
-export function parseTime(value) {
+function parseTime(value) {
   if (value == null || value === '') return NaN;
-  const time = Date.parse(value);
-  return Number.isNaN(time) ? NaN : time;
+  return Date.parse(value);
 }
 
 export function formatDateTime(value) {
@@ -115,9 +114,11 @@ export function normalizeTask(task) {
 }
 
 export function normalizeDetail(data) {
-  if (!data || typeof data !== 'object' || !normalizeTask(data.task)) return null;
+  if (!data || typeof data !== 'object') return null;
+  const task = normalizeTask(data.task);
+  if (!task) return null;
   return {
-    task: normalizeTask(data.task),
+    task,
     blockers: asArray(data.blockers),
     sessions: asArray(data.sessions).filter(Boolean),
     // attempt is the open dispatch attempt, if any. The blocked composer uses
@@ -154,7 +155,7 @@ export function repoGroups(projects, repos, projectId) {
   const groups = [];
   const seen = new Set();
   for (const project of asArray(projects)) {
-    const linked = asArray(repos).filter((repo) => repoLinkedTo(repo, project.id));
+    const linked = reposForProject(repos, project.id);
     if (linked.length === 0) continue;
     for (const repo of linked) seen.add(String(repo.id));
     groups.push({ key: `project-${project.id}`, label: project.name, repos: linked });

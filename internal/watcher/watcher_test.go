@@ -1060,8 +1060,6 @@ func TestPreExistingSessionInAnotherDirectoryFailsClosed(t *testing.T) {
 	}
 }
 
-func statusPtr(status store.Status) *store.Status { return &status }
-
 func TestUnblockDuringWaitingDispatchLeavesTaskQueuedNotStranded(t *testing.T) {
 	e := setup(t, 2, 1)
 	// Reserve, block, then unblock while the reservation is still open. The

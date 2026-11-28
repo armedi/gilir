@@ -22,10 +22,8 @@
 
   /* Semantic state colors */
   --status-review: #1d4ed8;
-  --status-review-soft: #eff6ff;
   --status-review-border: #bfdbfe;
   --status-progress: #b45309;
-  --status-progress-soft: #fef3c7;
   --status-todo: #0e7490;
   --status-backlog: #545b66;
   --status-done: #0f6b4e;
@@ -151,10 +149,6 @@ p {
 
 .skip-link:focus {
   transform: translateY(0);
-}
-
-.muted {
-  color: var(--muted);
 }
 
 .muted-small {
@@ -2651,11 +2645,6 @@ p {
   .workbench.mobile-inspector-open .queue-panel,
   .workbench.mobile-inspector-open .center-panel {
     display: none;
-  }
-
-  .workbench.mobile-inspector-open .inspector-panel {
-    display: flex;
-    width: 100% !important;
   }
 
   .mobile-back-bar {

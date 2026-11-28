@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -24,7 +25,6 @@ import (
 )
 
 const (
-	defaultListen   = "127.0.0.1:44547"
 	defaultWebDir   = "web/dist"
 	shutdownTimeout = 10 * time.Second
 	statusTimeout   = 5 * time.Second
@@ -206,12 +206,13 @@ func serve(parent context.Context, listen listenConfig, dbPath string, managed b
 			controlLn.Close()
 			return fmt.Errorf("generate service token: %w", err)
 		}
+		port, _ := strconv.Atoi(listen.port)
 		state := serviceState{
 			Version:       serviceVersion,
 			Instance:      instance,
 			PID:           os.Getpid(),
 			RequestedHost: listen.host,
-			RequestedPort: requestedPort(listen.port),
+			RequestedPort: port,
 			Host:          listen.host,
 			Port:          boundAddr.Port,
 			URL:           boundURL,

@@ -28,6 +28,8 @@ const (
 	serviceInstanceEnvName = "GILIR_SERVICE_INSTANCE"
 	serviceListenEnvName   = "GILIR_SERVICE_LISTEN"
 	serviceVersion         = 1
+	defaultHost            = "127.0.0.1"
+	defaultPort            = "44547"
 
 	serviceStartTimeout = 60 * time.Second
 	serviceStopTimeout  = 30 * time.Second
@@ -49,10 +51,10 @@ type listenConfig struct {
 // literal is accepted.
 func resolveListen(host, port string) (listenConfig, error) {
 	if host == "" {
-		host = defaultHost()
+		host = defaultHost
 	}
 	if port == "" {
-		port = defaultPort()
+		port = defaultPort
 	}
 	return normalizeListen(host, port)
 }
@@ -75,29 +77,13 @@ func resolveWorkerListen(host, port string) (listenConfig, error) {
 	return resolveListen(host, port)
 }
 
-func defaultHost() string {
-	host, _, err := net.SplitHostPort(defaultListen)
-	if err != nil {
-		return "127.0.0.1"
-	}
-	return host
-}
-
-func defaultPort() string {
-	_, port, err := net.SplitHostPort(defaultListen)
-	if err != nil {
-		return "44547"
-	}
-	return port
-}
-
 func normalizeListen(host, port string) (listenConfig, error) {
 	host = normalizeHost(host)
 	if ip := net.ParseIP(host); ip != nil {
 		// Canonical spelling makes wildcard detection and identity checks
 		// independent of how the address was written (::0 vs ::, and so on).
 		host = ip.String()
-	} else if !validListenHost(host) {
+	} else if !strings.EqualFold(host, "localhost") {
 		return listenConfig{}, fmt.Errorf("listen host %q: must be an IP address or localhost", host)
 	}
 	n, err := strconv.Atoi(port)
@@ -113,13 +99,6 @@ func normalizeHost(host string) string {
 		host = host[1 : len(host)-1]
 	}
 	return host
-}
-
-func validListenHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	return net.ParseIP(host) != nil
 }
 
 func (c listenConfig) address() string {
@@ -141,11 +120,6 @@ func boundURLFor(c listenConfig, tcp *net.TCPAddr) string {
 
 func (c listenConfig) matches(other listenConfig) bool {
 	return strings.EqualFold(c.host, other.host) && c.port == other.port
-}
-
-func requestedPort(port string) int {
-	n, _ := strconv.Atoi(port)
-	return n
 }
 
 // serviceState is written by the running managed worker and read by lifecycle
@@ -468,17 +442,9 @@ func serviceStartError(logPath string, offset int64, err error) error {
 	return fmt.Errorf("%s (see %s)%s", detail, logPath, tailSuffix(logPath, offset))
 }
 
+// tailSuffix appends the last few log lines written since offset to a
+// startup error, prefixed by a newline when there is anything to show.
 func tailSuffix(path string, offset int64) string {
-	tail := logTail(path, offset)
-	if tail == "" {
-		return ""
-	}
-	return "\n" + tail
-}
-
-// logTail returns the last few log lines written since offset so a failed
-// launch can explain itself without dumping the whole log.
-func logTail(path string, offset int64) string {
 	file, err := os.Open(path)
 	if err != nil {
 		return ""
@@ -510,7 +476,7 @@ func logTail(path string, offset int64) string {
 	if len(lines) > serviceLogTailLines {
 		lines = lines[len(lines)-serviceLogTailLines:]
 	}
-	return strings.Join(lines, "\n")
+	return "\n" + strings.Join(lines, "\n")
 }
 
 func stopService(ctx context.Context) (any, error) {
