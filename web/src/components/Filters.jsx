@@ -160,7 +160,7 @@ export default function Filters(props) {
           </div>
 
           <div class="extra-filters-foot">
-            <div style="flex: 1">
+            <div class="marking-filter">
               <label class="sr-only" for={markingId}>
                 Marking
               </label>
