@@ -30,15 +30,15 @@ flags or environment variables:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/armedi/gilir/main/install.sh |
-  sh -s -- --version 0.3.0 --dir "$HOME/bin"
+  sh -s -- --version 0.3.1 --dir "$HOME/bin"
 
-GILIR_VERSION=0.3.0 GILIR_INSTALL_DIR="$HOME/bin" sh install.sh
+GILIR_VERSION=0.3.1 GILIR_INSTALL_DIR="$HOME/bin" sh install.sh
 ```
 
 Re-run the command to upgrade, then `gilir service restart` if the service is
 running. To uninstall, delete `gilir` from that directory (`~/.local/bin/gilir`
 by default). Releases before `SHA256SUMS` existed are verified against the
-per-asset digest the GitHub API reports, so v0.3.0 installs too.
+per-asset digest the GitHub API reports, so v0.3.1 installs too.
 
 Windows is not covered by this script. Use npm below, or download
 `gilir-win32-<arch>.exe` and `SHA256SUMS` from the release and compare
